@@ -41,7 +41,7 @@ The CLI initializer (`sandbox-workers init javascript|python|perl`) and the depl
 ```ts
 import { createSandbox } from "@sandbox-workers/core";
 
-const sandbox = createSandbox(env.SANDBOX, "python");
+const sandbox = createSandbox(env.SANDBOX);
 
 // Stateless, unchanged:
 await sandbox.runCode(code, { envVars });

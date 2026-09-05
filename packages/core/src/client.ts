@@ -202,7 +202,6 @@ async function fileOp(
 }
 function createSession(
   binding: LanguageEngine,
-  language: string,
   id: string,
 ): SandboxSession {
   if (!SESSION_ID.test(id))
@@ -220,7 +219,6 @@ function createSession(
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            language,
             code,
             ...(envVars ? { envVars } : {}),
             ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -316,10 +314,7 @@ function createSession(
   };
 }
 /** Only the supplied Service Binding is used; this client never calls a public URL. */
-export function createSandbox(
-  binding: LanguageEngine,
-  language = "javascript",
-) {
+export function createSandbox(binding: LanguageEngine) {
   return {
     async runCode(
       code: string,
@@ -336,7 +331,7 @@ export function createSandbox(
         new Request("https://sandbox.internal/execute", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ language, code, envVars }),
+          body: JSON.stringify({ code, envVars }),
         }),
       );
       let body: unknown;
@@ -378,7 +373,7 @@ export function createSandbox(
     },
     /** A named, durable REPL session on this binding. See `SandboxSession`. */
     session(id: string): SandboxSession {
-      return createSession(binding, language, id);
+      return createSession(binding, id);
     },
   };
 }

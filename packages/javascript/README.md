@@ -50,7 +50,7 @@ const result = await sandbox.runCode(
 ```
 
 Or use `env.SANDBOX.fetch(new Request('https://sandbox.internal/execute', ...))`
-with a JSON POST body `{ "language": "javascript", "code": "42" }`.
+with a JSON POST body `{ "code": "42" }`.
 Both Workers must be deployed in your own Cloudflare account. A Service Binding
 is to a deployed Worker name; installing this npm package alone does not create it.
 For local development run both Wrangler projects, or pass both `-c` configs to
@@ -58,11 +58,22 @@ one `wrangler dev` command.
 
 ## Execution contract
 
-`POST /execute` accepts `{language: "javascript", code, envVars}`. The language may be omitted when calling this runtime Worker directly. Code is a **script**: the value of the last top-level expression is the result; a top-level `return` is a guest `SyntaxError`. Data is passed with `envVars` (string values only) and read as `process.env.NAME`. `console.log`/`info`/`debug` calls are captured into `logs.stdout`, `warn`/`error` into `logs.stderr`, with one trailing newline stripped per entry. Results serialize as `{text}` or `{json}`; BigInt values become a string ending in `n`, and an `undefined` result produces an empty `results` array.
+`POST /execute` accepts `{code, envVars}`. This runtime Worker always executes JavaScript; the runtime is chosen by the Service Binding, not by the request, and a request that still carries a `language` key is rejected. Code is a **script**: the value of the last top-level expression is the result; a top-level `return` is a guest `SyntaxError`. Data is passed with `envVars` (string values only) and read as `process.env.NAME`. `console.log`/`info`/`debug` calls are captured into `logs.stdout`, `warn`/`error` into `logs.stderr`, with one trailing newline stripped per entry. Results serialize as `{text}` or `{json}`; BigInt values become a string ending in `n`, and an `undefined` result produces an empty `results` array.
 
-Each execution creates a fresh Wasm instance: there is no state shared between requests, and each request evaluates a fresh SpiderMonkey global. Every execution — success, guest error, or a fuel/console/result limit — returns HTTP 200 with `{code, language, engine, durationMs, logs, results, error?, usage?}`; check the `error` field (`error.name` is `ExecutionLimitError` for limits, `EngineError` for engine failures) through the shared client. Only request/transport problems (bad JSON, unsupported language, an `input` key, wrong method, oversized payload, wrong content type) use non-200 statuses.
+Each execution creates a fresh Wasm instance: there is no state shared between requests, and each request evaluates a fresh SpiderMonkey global. Every execution — success, guest error, or a fuel/console/result limit — returns HTTP 200 with `{code, language, engine, durationMs, logs, results, error?, usage?}`; check the `error` field (`error.name` is `ExecutionLimitError` for limits, `EngineError` for engine failures) through the shared client. Only request/transport problems (bad JSON, an `input`/`language` key, wrong method, oversized payload, wrong content type) use non-200 statuses.
 
 This engine has **no Web APIs**: there is no `fetch`, `URL`, `Response`, `TextEncoder`, `structuredClone`, `atob`, timers (`setTimeout`), or `WebAssembly`. A pending promise that never settles (because there is nothing to wait on) is reported as a guest error rather than hanging the request. `Intl` (e.g. `Intl.NumberFormat`, `Intl.DateTimeFormat`, `Intl.Collator`) is available and backed by real ICU data. `SharedArrayBuffer` and `Atomics` are removed before guest code runs.
+
+TypeScript is also accepted automatically: there is no `language` option and
+no separate mode. Code is parsed as JavaScript first, so valid JavaScript
+never changes meaning (e.g. `a < b > (c)` stays a comparison, never a generic
+call); only code that fails to parse as JavaScript falls back to stripping
+TypeScript-only syntax (type annotations, `interface`, generics,
+`as`/`satisfies`, `enum`, `namespace`, parameter properties) before running.
+Types are stripped, not checked, so a type error still runs and returns a
+result, like any other JavaScript mistake; a real TypeScript syntax error is
+reported as a guest `SyntaxError`. ES-module `import`/`export` remain
+unsupported in both dialects.
 
 Every execution creates a fresh Wasm instance; no context persists between
 calls. Fuel bounds the interpreter to 50,000,000 ticks via an interrupt

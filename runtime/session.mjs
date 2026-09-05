@@ -66,9 +66,11 @@ async function readJsonBody(request, maxBytes = MAX_REQUEST_BYTES) {
 
 // Reuses @sandbox-workers/core's constants/ApiError for consistent limits
 // and error shape, but readExecution() itself can't be reused as-is: it
-// consumes the request body and only returns {language, code, envVars} — a
-// session body also carries `cwd`, and a second read of the same Request
-// body isn't possible.
+// consumes the request body and only returns {code, envVars} — a session
+// body also carries `cwd`, and a second read of the same Request body isn't
+// possible. It also rejects a `language` key outright; a session body never
+// carries one either, for the same reason: the runtime is selected by the
+// Service Binding / URL path, never by the request body.
 function validateExecuteBody(body) {
   if (typeof body.code !== "string" || !body.code.trim())
     throw new ApiError(400, "Non-empty code is required");

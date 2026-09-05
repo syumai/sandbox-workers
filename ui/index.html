@@ -313,15 +313,16 @@ const output = await js.runCode(
             <div class="eyebrow">LANGUAGE-NEUTRAL PROTOCOL</div>
             <h2>One contract. More runtimes.</h2>
             <p>
-              POST code and env vars to <code>/execute</code>.<br />Language
-              adapters keep the API ready for what comes next.
+              POST code and env vars to <code>/execute/&lt;language&gt;</code
+              >.<br />The Playground gateway selects the runtime from the URL
+              path; <code>/execute</code> is an alias for
+              <code>/execute/javascript</code>.
             </p>
           </div>
-          <pre><span class="method">POST</span> /execute
+          <pre><span class="method">POST</span> /execute/javascript
 Content-Type: application/json
 
 {
-  "language": "javascript",
   "code": "const x = Number(process.env.X);\nx ** 2",
   "envVars": { "X": "12" }
 }</pre>

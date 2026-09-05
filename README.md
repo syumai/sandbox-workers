@@ -79,7 +79,7 @@ A Service Binding targets a **Worker deployed in your account**. Deploy the runt
 
 ### Python, Perl, and Ruby
 
-Replace `javascript` in the installation commands with `python`, `perl`, or `ruby`. Specify the language in the client, for example `createSandbox(env.SANDBOX, 'python')`. Each initializer generates the required configuration, including Data module rules for the Python and Perl standard libraries.
+Replace `javascript` in the installation commands with `python`, `perl`, or `ruby`. The client takes only the binding, for example `createSandbox(env.SANDBOX)`; the runtime is whichever Worker that binding targets. Each initializer generates the required configuration, including Data module rules for the Python and Perl standard libraries.
 
 ### Sessions
 
@@ -111,6 +111,8 @@ pnpm run dry-run        # Rebuild and inspect all five Workers without deploying
 Python and Perl release downloads are verified against pinned SHA-256 digests. Ruby uses a pinned npm distribution. Consumers of published packages do not run these build steps.
 
 Code is a **script**: the value of the last top-level expression is the result; a top-level `return` is not part of the supported contract. Data is passed with `envVars` (string values only) and read as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby). No context persists between calls — every call boots a fresh Wasm instance. ES module imports, Node/npm resolution, and external networking are unsupported. The editor includes language-specific examples, syntax highlighting, output tabs, local draft storage, and Cmd/Ctrl+Enter execution.
+
+The JavaScript runtime also accepts TypeScript automatically: no `language` option, no separate mode — code is parsed as JavaScript first, and only code that fails to parse falls back to stripping TypeScript-only syntax (types, `interface`, generics, `as`/`satisfies`, `enum`) before running. Types are stripped, not checked, so a type error still runs like any other JavaScript mistake. `import`/`export` remain unsupported.
 
 Use a Paid plan for runtime performance evaluation. The 64 MiB upload limit is separate from CPU and runtime memory limits. Validation so far covers local workerd and dry-run builds; production CPU time and concurrent workloads have not been measured.
 

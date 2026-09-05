@@ -6,11 +6,11 @@ Submit arbitrary JavaScript to `POST /execute` and execute it inside **SpiderMon
 
 ```text
 Browser / API client
-        │ POST /execute { language, code, envVars }
+        │ POST /execute/<language> { code, envVars }
         ▼
 sandbox-workers                     src/index.ts
   ├── Static Assets / CodeMirror   ui/
-  └── language → Service Binding
+  └── URL path → Service Binding
         │ JAVASCRIPT
         ▼
 sandbox-engine-javascript          engine/index.ts (public URLs disabled)
@@ -39,7 +39,7 @@ The editor supports completion, syntax highlighting, line numbers, folding, brac
 ```sh
 curl http://localhost:8787/execute \
   -H 'Content-Type: application/json' \
-  --data '{"language":"javascript","code":"console.log(process.env.X);\nawait Promise.resolve(Number(process.env.X) ** 2);","envVars":{"X":"12"}}'
+  --data '{"code":"console.log(process.env.X);\nawait Promise.resolve(Number(process.env.X) ** 2);","envVars":{"X":"12"}}'
 ```
 
 ```json
@@ -60,12 +60,14 @@ curl http://localhost:8787/execute \
 
 Metric values above are illustrative. Code is a **script**: the value of the last top-level expression is the result (`await` also works, but a top-level `return` is not supported and surfaces as a guest `SyntaxError`). Data is passed with `envVars` and read as `process.env.NAME`; nothing from the host environment leaks in. An `undefined` result produces an empty `results` array. Containers (objects/arrays) are returned as `{ json }`; everything else is returned as `{ text }` using a `util.inspect`-like representation (strings single-quoted, BigInt values rendered as `123n`). Circular references in a JSON-serialized result fail. ES module `import`/`export`, npm resolution, and a Node.js environment are not provided; there are no Web builtins (no `fetch`, `URL`, `Response`, `TextEncoder`, timers), but `Intl` is available and backed by real ICU data.
 
+The runtime also accepts TypeScript automatically: there is no `language` field and no separate mode. The host adapter (`packages/javascript/src/transform.mjs`, running in Workers V8, never inside the guest Wasm) parses the submitted code as JavaScript first with acorn; any code that parses as JavaScript is never touched further, so JavaScript semantics are always preserved (for example `a < b > (c)` is a comparison, never a generic call). Only code that fails to parse as JavaScript — and isn't a plain top-level `return` — is handed to sucrase (`transform(code, { transforms: ["typescript"], disableESTransforms: true })`) to strip TypeScript-only syntax: type annotations, `interface`, generics, `as`/`satisfies`, `enum`, `namespace`, and parameter properties. Sucrase performs no type checking, so a TypeScript type error still runs and produces a result, like any other dynamically-typed JavaScript mistake; only a genuine TypeScript *syntax* error is reported back as a guest `SyntaxError`. `import`/`export` remain unsupported in both dialects, since the guest has no module system.
+
 `GET /languages` lists supported languages, execution modes, capabilities, and limits.
 
 | JavaScript response                                                   | HTTP status         |
 | ---------------------------------------------------------------------- | ------------------- |
-| Success, guest error, or a fuel/console/result limit exceeded          | 200; check `error`  |
-| Invalid JSON, unsupported language, bad `envVars`, or an `input` key   | 400                 |
+| Success, guest error, or a fuel/output/result limit exceeded           | 200; check `error`  |
+| Invalid JSON, unsupported `/execute/<language>` path, bad `envVars`, or an `input`/`language` key | 400                 |
 | Unsupported method                                                     | 405                 |
 | Request or code limit exceeded                                         | 413                 |
 | Non-JSON Content-Type                                                  | 415                 |

@@ -133,6 +133,18 @@ function uniqueId(prefix) {
   console.log('javascript: import("./lib.mjs") is served from the workspace');
 }
 
+{
+  // transformForRepl strips TypeScript-only syntax the same way
+  // transformForAsyncExecution does for the stateless /execute path (acorn
+  // first, sucrase fallback), and the declaration still persists on the
+  // session's real global across calls.
+  const id = uniqueId("js-typescript");
+  await execute("javascript", id, { code: "const n: number = 41;" });
+  const r = await execute("javascript", id, { code: "n + 1" });
+  assert.deepEqual(r.results, [{ text: "42" }]);
+  console.log("javascript: a TypeScript declaration persists across session calls");
+}
+
 // ---- Python ------------------------------------------------------------
 
 {

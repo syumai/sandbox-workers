@@ -17,6 +17,7 @@ import hello from "../examples/hello.js?raw";
 import modern from "../examples/modern-javascript.js?raw";
 import transform from "../examples/data-transform.js?raw";
 import intl from "../examples/intl.js?raw";
+import typescript from "../examples/typescript.ts?raw";
 import "./style.css";
 const $ = (id) => document.getElementById(id);
 const javascriptExamples = [
@@ -28,6 +29,7 @@ const javascriptExamples = [
     envVars: { WORDS: "Books,Tools,Books,Books,Tools" },
   },
   { name: "Intl formatting", code: intl, envVars: {} },
+  { name: "TypeScript", code: typescript, envVars: { NAME: "world" } },
 ];
 const library = {
   javascript: javascriptExamples,
@@ -70,7 +72,7 @@ const clientSnippets = {
 };
 const syntax = new Compartment();
 const modes = {
-  javascript: javascript(),
+  javascript: javascript({ typescript: true }),
   python: python(),
   perl: StreamLanguage.define(perl),
   ruby: StreamLanguage.define(ruby),
@@ -178,7 +180,7 @@ function switchLanguage(next, restore = false) {
     2,
   );
   $("client-command").textContent =
-    `import { createSandbox } from "@sandbox-workers/core";\n\nconst sandbox = createSandbox(env.SANDBOX, "${next}");\nconst output = await sandbox.runCode(\n  ${JSON.stringify(clientSnippets[next])},\n  { envVars: { X: "12" } },\n);\n// { results: [{ text: "144" }], ... }`;
+    `import { createSandbox } from "@sandbox-workers/core";\n\nconst sandbox = createSandbox(env.SANDBOX);\nconst output = await sandbox.runCode(\n  ${JSON.stringify(clientSnippets[next])},\n  { envVars: { X: "12" } },\n);\n// { results: [{ text: "144" }], ... }`;
   response = undefined;
   $("output").textContent = "Run your code to see the result.";
   $("status").textContent = "Ready";
@@ -287,11 +289,10 @@ async function run() {
   $("run").disabled = true;
   $("status").textContent = "Running…";
   try {
-    const res = await fetch("/execute", {
+    const res = await fetch(`/execute/${$("language").value}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        language: $("language").value,
         code: editor.state.doc.toString(),
         envVars,
       }),

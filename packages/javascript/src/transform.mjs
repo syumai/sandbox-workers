@@ -1,5 +1,12 @@
 // Runs in Workers V8 (the host), never inside the guest Wasm sandbox.
 import * as acorn from "acorn";
+// Import sucrase's core transform entry (its package "main"), not a
+// CLI-specific path, so only the TypeScript-stripping code path is
+// reachable from this module's import graph: sucrase's separate CLI
+// entry points (bin/sucrase, dist/cli.js) and their extra dependencies
+// (commander, mz, pirates, tinyglobby) are never referenced and so never
+// get bundled by esbuild.
+import { transform as sucraseTransform } from "sucrase";
 const EMPTY = "(async () => {})()";
 const ILLEGAL_RETURN =
   '(async () => { throw new SyntaxError("Illegal return statement"); })()';
@@ -7,26 +14,57 @@ const ILLEGAL_RETURN =
  * Turns a script into an async IIFE whose return value is the value of the
  * last top-level expression statement, so callers see "code is a script,
  * the last expression is the result" without any persistent context.
+ *
+ * JavaScript is always tried first with acorn: any code that is valid
+ * JavaScript keeps JavaScript semantics unchanged (e.g. `a < b > (c)` is
+ * never reinterpreted as a generic function call). Only code acorn rejects
+ * (and that isn't a top-level `return`) is given to sucrase to strip
+ * TypeScript-only syntax; sucrase performs no type checking, it only
+ * removes types, so a TypeScript type error still runs like any other
+ * dynamically-typed JavaScript mistake. `import`/`export` remain
+ * unsupported (there is no module system in the guest); `enum`, `namespace`,
+ * and parameter properties are rewritten by sucrase's transform.
  */
 export function transformForAsyncExecution(code) {
   if (!code || !code.trim()) return EMPTY;
-  let program;
+  const program = tryParseJavaScript(code);
+  if (program) return applyLastExpression(code, program);
+  // acorn rejected the code as JavaScript. A top-level `return` is a common
+  // cause (the SDK no longer allows it); detect that specifically by
+  // re-parsing with returns allowed and checking whether one appears at the
+  // top level, so we can report a clear guest-side SyntaxError instead of
+  // whatever unrelated parse error acorn produces without
+  // allowReturnOutsideFunction.
+  if (hasTopLevelReturn(code)) return ILLEGAL_RETURN;
+  let stripped;
   try {
-    program = acorn.parse(code, {
+    stripped = sucraseTransform(code, {
+      transforms: ["typescript"],
+      disableESTransforms: true,
+    }).code;
+  } catch {
+    // Not valid TypeScript either. Let SpiderMonkey report the real
+    // SyntaxError inside the guest, against the original code so the
+    // reported error matches what the caller submitted.
+    return `(async () => {\n${code}\n})()`;
+  }
+  const strippedProgram = tryParseJavaScript(stripped);
+  if (strippedProgram) return applyLastExpression(stripped, strippedProgram);
+  if (hasTopLevelReturn(stripped)) return ILLEGAL_RETURN;
+  return `(async () => {\n${stripped}\n})()`;
+}
+function tryParseJavaScript(code) {
+  try {
+    return acorn.parse(code, {
       ecmaVersion: "latest",
       sourceType: "script",
       allowAwaitOutsideFunction: true,
     });
   } catch {
-    // acorn rejected the code. A top-level `return` is a common cause (the
-    // SDK no longer allows it); detect that specifically by re-parsing with
-    // returns allowed and checking whether one appears at the top level, so
-    // we can report a clear guest-side SyntaxError instead of whatever
-    // unrelated parse error acorn produces without allowReturnOutsideFunction.
-    if (hasTopLevelReturn(code)) return ILLEGAL_RETURN;
-    // Otherwise let SpiderMonkey report the real SyntaxError inside the guest.
-    return `(async () => {\n${code}\n})()`;
+    return null;
   }
+}
+function applyLastExpression(code, program) {
   const body = program.body;
   const last = body.at(-1);
   let statements = code;
@@ -81,62 +119,74 @@ export { hasTopLevelReturn };
 //    name to a `var` on the (still top-level, still persistent) outer
 //    scope, and rewrite each declaration, in place, into a plain assignment
 //    to that name inside the async IIFE.
+//
+// TypeScript support mirrors transformForAsyncExecution above: JavaScript is
+// always tried first with acorn, and only code acorn rejects is handed to
+// sucrase to strip TypeScript-only syntax before it is re-parsed. A
+// top-level `return` never reaches the sucrase fallback for a reason that
+// still holds after stripping: a "script" never allows `return` outside a
+// function, so any source containing one — TypeScript or not — always fails
+// tryParseJavaScript and falls through to the `raw` mode below, which
+// evaluates the (possibly stripped) source directly and unwrapped, so
+// js_eval reports a genuine SyntaxError instead of the `return` silently
+// exiting the `hoist` mode's async IIFE.
 export function transformForRepl(code) {
   if (!code || !code.trim()) return { mode: "raw", code: "" };
-  let program;
-  try {
-    program = acorn.parse(code, {
-      ecmaVersion: "latest",
-      sourceType: "script",
-      allowAwaitOutsideFunction: true,
-    });
-  } catch {
-    // Unparsable outside of a top-level return: let SpiderMonkey report the
-    // real SyntaxError directly against the guest's own code.
-    return { mode: "raw", code };
+  let program = tryParseJavaScript(code);
+  let source = code;
+  if (!program) {
+    let stripped;
+    try {
+      stripped = sucraseTransform(code, {
+        transforms: ["typescript"],
+        disableESTransforms: true,
+      }).code;
+    } catch {
+      // Not valid TypeScript either. Let SpiderMonkey report the real
+      // SyntaxError directly against the guest's own original code.
+      return { mode: "raw", code };
+    }
+    program = tryParseJavaScript(stripped);
+    if (!program) return { mode: "raw", code: stripped };
+    source = stripped;
   }
-  // A top-level `return` never reaches here: it always fails the plain
-  // acorn.parse above (a "script" never allows return outside a function),
-  // so that case already fell into the `raw` fallback and will surface as a
-  // genuine SyntaxError straight from js_eval, in both the capture and hoist
-  // shapes below.
   const needsHoist = hasTopLevelAwait(program);
   if (!needsHoist) {
     const body = program.body;
     const last = body.at(-1);
     if (last && last.type === "ExpressionStatement") {
-      const before = code.slice(0, last.start);
-      const exprText = code.slice(last.start, last.end).replace(/;\s*$/, "");
+      const before = source.slice(0, last.start);
+      const exprText = source.slice(last.start, last.end).replace(/;\s*$/, "");
       return { mode: "capture", code: `${before}globalThis.__sandboxSession.setResult(${exprText});` };
     }
     // No top-level `return` special-casing is needed here: a genuine
     // top-level `return` stays a real SyntaxError straight from js_eval,
     // because this path never wraps the code in a function.
-    return { mode: "raw", code };
+    return { mode: "raw", code: source };
   }
   const hoisted = [];
   let bodyText = "";
   let cursor = 0;
   const body = program.body;
   body.forEach((node, i) => {
-    bodyText += code.slice(cursor, node.start);
+    bodyText += source.slice(cursor, node.start);
     cursor = node.end;
     if (node.type === "VariableDeclaration") {
-      bodyText += rewriteVariableDeclaration(code, node, hoisted);
+      bodyText += rewriteVariableDeclaration(source, node, hoisted);
     } else if (
       (node.type === "FunctionDeclaration" || node.type === "ClassDeclaration") &&
       node.id
     ) {
       hoisted.push(node.id.name);
-      bodyText += `${toAssignment(code, node)};`;
+      bodyText += `${toAssignment(source, node)};`;
     } else if (i === body.length - 1 && node.type === "ExpressionStatement") {
-      const exprText = code.slice(node.start, node.end).replace(/;\s*$/, "");
+      const exprText = source.slice(node.start, node.end).replace(/;\s*$/, "");
       bodyText += `globalThis.__sandboxSession.setResult(${exprText});`;
     } else {
-      bodyText += code.slice(node.start, node.end);
+      bodyText += source.slice(node.start, node.end);
     }
   });
-  bodyText += code.slice(cursor);
+  bodyText += source.slice(cursor);
   const hoistLine = hoisted.length ? `var ${[...new Set(hoisted)].join(", ")};\n` : "";
   const wrapped = `${hoistLine}(async () => {\n  try {\n${bodyText}\n  } catch (__sandboxError) {\n    globalThis.__sandboxSession.setError(__sandboxError);\n  } finally {\n    globalThis.__sandboxSession.markDone();\n  }\n})();`;
   return { mode: "hoist", code: wrapped };

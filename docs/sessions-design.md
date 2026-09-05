@@ -79,7 +79,7 @@ to the runtime binding for `:language` as `/sessions/:id/...`.
 ## Typed client (`@sandbox-workers/core`)
 
 ```ts
-const sandbox = createSandbox(env.SANDBOX, "python");
+const sandbox = createSandbox(env.SANDBOX);
 await sandbox.runCode(code, { envVars });          // unchanged, stateless
 
 const session = sandbox.session("user-42");

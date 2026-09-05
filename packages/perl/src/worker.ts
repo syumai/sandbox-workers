@@ -54,9 +54,7 @@ export default {
     if (request.method !== "POST")
       return new Response("Method not allowed", { status: 405 });
     try {
-      const payload = await readExecution(request, "perl");
-      if (payload.language !== "perl")
-        throw new ApiError(400, "Unsupported language");
+      const payload = await readExecution(request);
       const start = performance.now();
       try {
         const result = runEmbedded(wasm, archive, "perl", payload);

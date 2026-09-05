@@ -40,7 +40,7 @@ The service name must match the deployed Worker. Install `@sandbox-workers/core`
 
 ```js
 import { createSandbox } from "@sandbox-workers/core";
-const sandbox = createSandbox(env.SANDBOX, "ruby");
+const sandbox = createSandbox(env.SANDBOX);
 const output = await sandbox.runCode('x = ENV["X"].to_i\nx ** 2', {
   envVars: { X: "12" },
 });
@@ -49,7 +49,7 @@ const output = await sandbox.runCode('x = ENV["X"].to_i\nx ** 2', {
 
 ## Execution contract
 
-`POST /execute` accepts `{language: "ruby", code, envVars}`. The language may be omitted when calling this runtime Worker directly. Code is a **script**: the value of the last top-level expression is the result. Env vars are available as `ENV["NAME"]`. Standard output is captured in the response's `logs.stdout`. Hash/Array results are returned as `{ json }`; everything else is returned as `{ text: v.inspect }`.
+`POST /execute` accepts `{ code, envVars }`. This runtime Worker always executes Ruby; the runtime is chosen by the Service Binding, not by the request. Code is a **script**: the value of the last top-level expression is the result. Env vars are available as `ENV["NAME"]`. Standard output is captured in the response's `logs.stdout`. Hash/Array results are returned as `{ json }`; everything else is returned as `{ text: v.inspect }`.
 
 Each execution creates a fresh Wasm instance; no context persists between calls. Host environment variables, networking, and files are unavailable — only the key/value pairs passed in `envVars` are visible. Limits include 64 KiB of code, a 96 KiB request, 32 KiB of combined stdout/stderr, 96 MiB of Wasm linear memory, a 64 KiB serialized result, and a fuel budget. Installing external packages or arbitrary native extensions is unsupported.
 

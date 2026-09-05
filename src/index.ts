@@ -36,17 +36,19 @@ export default {
       return Response.json({
         languages: [javascriptRuntime, pythonRuntime, perlRuntime, rubyRuntime],
       });
-    if (path === "/execute") {
+    if (path === "/execute" || path.startsWith("/execute/")) {
       if (request.method !== "POST")
         return Response.json(
           { error: "Use POST" },
           { status: 405, headers: { Allow: "POST" } },
         );
       try {
+        // The Playground gateway selects a runtime from the URL path; each
+        // runtime is deployed as a private, independently versioned Worker.
+        const id = path === "/execute" ? "javascript" : path.slice("/execute/".length);
+        const engine = engineFor(env, id);
+        if (!engine) throw new ApiError(400, `Unsupported language: ${id}`);
         const payload = await readExecution(request);
-        const engine = engineFor(env, payload.language);
-        if (!engine)
-          throw new ApiError(400, `Unsupported language: ${payload.language}`);
         return await engine.fetch(
           new Request("https://engine.internal/execute", {
             method: "POST",

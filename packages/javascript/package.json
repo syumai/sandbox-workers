@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Deployable SpiderMonkey (goccy/spidermonkey-wasm) WebAssembly sandbox for Cloudflare Workers Service Bindings",
   "type": "module",
-  "license": "MIT AND MPL-2.0 AND Unicode-3.0",
+  "license": "MIT AND Apache-2.0 AND MPL-2.0 AND Unicode-3.0",
   "files": [
     "dist",
     "bin",
@@ -25,7 +25,8 @@
   },
   "types": "./dist/worker.d.ts",
   "devDependencies": {
-    "acorn": "^8.18.0"
+    "acorn": "^8.18.0",
+    "sucrase": "^3.35.1"
   },
   "engines": {
     "node": ">=22.12"

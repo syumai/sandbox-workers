@@ -91,7 +91,7 @@ import assert from 'node:assert/strict';
 let body;
 const client = createSandbox({ async fetch(request) { body = await request.json(); return Response.json({logs:{stdout:[],stderr:[]},results:[{text:'144'}]}); } });
 assert.deepEqual(await client.runCode('process.env.X ** 2', { envVars: { X: '12' } }), {logs:{stdout:[],stderr:[]},results:[{text:'144'}]});
-assert.equal(body.language,'javascript');
+assert.equal(body.language, undefined);
 assert.equal(body.envVars.X,'12');
 const broken = createSandbox({ async fetch() { return new Response('down',{status:503}); } });
 await assert.rejects(broken.runCode('1'),SandboxTransportError);
@@ -114,7 +114,7 @@ const sessionBinding = createSandbox({
     }
     return Response.json({id:'demo',language:'javascript',engine:'x',cwd:'/workspace',createdAt:0,lastUsed:0,executions:1,workspace:{files:0,bytes:0},snapshot:null});
   },
-}, 'javascript').session('demo');
+}).session('demo');
 const executed = await sessionBinding.runCode('1', { cwd: '/workspace' });
 assert.equal(executed.session.executions, 1);
 const info = await sessionBinding.info();

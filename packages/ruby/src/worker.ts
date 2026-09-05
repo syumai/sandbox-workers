@@ -11,9 +11,7 @@ export default {
     if (request.method !== "POST")
       return new Response("Method not allowed", { status: 405 });
     try {
-      const payload = await readExecution(request, "ruby");
-      if (payload.language !== "ruby")
-        throw new ApiError(400, "Unsupported language");
+      const payload = await readExecution(request);
       const start = performance.now();
       try {
         const result = await runRuby(wasm, payload);

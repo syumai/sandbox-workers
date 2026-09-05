@@ -13,7 +13,6 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 export interface ExecutionRequest {
-  language: string;
   code: string;
   envVars?: Record<string, string>;
 }
@@ -53,7 +52,6 @@ export interface LanguageEngine {
 
 export async function readExecution(
   request: Request,
-  defaultLanguage = "javascript",
 ): Promise<ExecutionRequest> {
   if (
     !request.headers
@@ -102,13 +100,15 @@ export async function readExecution(
       400,
       "input is no longer supported; pass data with envVars",
     );
+  if ("language" in value)
+    throw new ApiError(
+      400,
+      "language is no longer supported; the runtime is selected by the Service Binding",
+    );
   if (typeof value.code !== "string" || !value.code.trim())
     throw new ApiError(400, "Non-empty code is required");
   if (new TextEncoder().encode(value.code).length > MAX_CODE_BYTES)
     throw new ApiError(413, "Code exceeds 64 KiB");
-  const language = value.language ?? defaultLanguage;
-  if (typeof language !== "string")
-    throw new ApiError(400, "language must be a string");
   let envVars: Record<string, string> | undefined;
   if (value.envVars !== undefined) {
     if (
@@ -128,7 +128,7 @@ export async function readExecution(
       envVars[key] = raw;
     }
   }
-  return { language, code: value.code, ...(envVars ? { envVars } : {}) };
+  return { code: value.code, ...(envVars ? { envVars } : {}) };
 }
 export class ApiError extends Error {
   constructor(

@@ -12,6 +12,7 @@ export const javascriptRuntime = {
     "last-expression-result",
     "promises",
     "intl",
+    "typescript",
   ],
   limits: {
     codeBytes: 65536,
