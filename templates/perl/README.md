@@ -41,6 +41,15 @@ await session.runCode(code, { envVars, cwd });
 
 A session keeps top-level variables, functions, and a writable `/workspace` alive across calls, surviving Durable Object eviction, hibernation, and redeploys via a linear-memory snapshot taken after each execution. See [the sessions guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md) for language-specific REPL semantics, the files API, the snapshot mechanism, and limits.
 
+An idle session is deleted automatically by a Durable Object alarm. Set `SESSION_IDLE_TTL_MS` (milliseconds, as a string) under `vars` in this template's `wrangler.jsonc` to change the timeout — it defaults to 24 hours (`86400000`) if unset, and `"0"` disables expiry entirely, for example:
+
+```jsonc
+// wrangler.jsonc
+{
+  "vars": { "SESSION_IDLE_TTL_MS": "3600000" }, // 1 hour; "0" disables expiry
+}
+```
+
 ## Licenses
 
 Review this project's `LICENSE`, the generated `runtime/LICENSE`, and `runtime/THIRD_PARTY_NOTICES.md` before use or redistribution. Bundled interpreters retain their upstream licenses, included in `runtime/licenses/`; the MIT license for sandbox-workers code does not replace them.
