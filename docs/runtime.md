@@ -28,11 +28,11 @@ The adapter implements the Fastly HTTP body/request/response APIs, randomness, c
 Requires Node.js 22.12 or later (tested with 24.18), npm, and an operating system supported by Wizer.
 
 ```sh
-npm ci
-npm run dev
+ppnpm add --frozen-lockfile
+pnpm run dev
 ```
 
-Open [localhost:8787](http://localhost:8787). The command builds the engines, packages, and UI, then starts the gateway and four runtime Workers. The first build can take several minutes. After UI changes, run `npm run build:ui` in another terminal. JavaScript guest changes require `npm run build:engine`.
+Open [localhost:8787](http://localhost:8787). The command builds the engines, packages, and UI, then starts the gateway and four runtime Workers. The first build can take several minutes. After UI changes, run `pnpm run build:ui` in another terminal. JavaScript guest changes require `pnpm run build:engine`.
 
 The editor supports completion, syntax highlighting, line numbers, folding, bracket matching, search, and undo/redo. Cmd/Ctrl+Enter runs the code. Draft code and JSON input are saved in local storage.
 
@@ -85,10 +85,10 @@ Validated on September 5, 2026 with Wrangler 4.129.0 and workerd 1.20260903.1.
 UI files are served through Static Assets separately from Worker code. All runtime bundles fit within 64 MiB; see [language runtimes](languages.md) for other engines' sizes. Execution has been verified through local Service Bindings and the browser UI. Production uploads, cold starts, CPU/memory billing, and concurrent workloads have not been validated. Local `durationMs` measurements are not production performance guarantees.
 
 ```sh
-npm run check
-npm test             # Real Wasm tests across all four languages
-npm run test:http    # Requires a running localhost:8787 Playground
-npm run dry-run      # Rebuild and inspect all five Workers
+pnpm run check
+pnpm test             # Real Wasm tests across all four languages
+pnpm run test:http    # Requires a running localhost:8787 Playground
+pnpm run dry-run      # Rebuild and inspect all five Workers
 ```
 
 Set `SANDBOX_URL` to change the HTTP test target. JavaScript coverage includes normal and async execution, BigInt/private fields, syntax errors, examples, state isolation, infinite loops, recursion, expensive regular expressions, denied networking, and input/output/memory limits.
@@ -107,11 +107,11 @@ Set `SANDBOX_URL` to change the HTTP test target. JavaScript coverage includes n
 ## Deploy
 
 ```sh
-npm run build
-npm run dry-run
+pnpm run build
+pnpm run dry-run
 npx wrangler login
-npm run deploy:engines
-npm run deploy:gateway
+pnpm run deploy:engines
+pnpm run deploy:gateway
 ```
 
 Deploy engines first. Their `workers_dev` and `preview_urls` settings are false, and they have no public routes. Applications call them through Service Bindings. If a name conflicts with an existing Worker in your account, update the runtime configuration and its corresponding binding service name together.
@@ -127,6 +127,6 @@ Python, Perl, and Ruby have independent `packages/<language>` packages and Worke
 - [StarlingMonkey](https://github.com/bytecodealliance/StarlingMonkey)
 - [Static Wasm imports in Workers](https://developers.cloudflare.com/workers/runtime-apis/webassembly/javascript/)
 
-Dependencies are pinned in `package-lock.json`. Generated Wasm is excluded from Git and rebuilt with `npm run build:engine` for JavaScript or `npm run build:languages` for the other engines. Distributed engines remain subject to their upstream licenses and third-party notices.
+Dependencies are pinned in `pnpm-lock.yaml`. Generated Wasm is excluded from Git and rebuilt with `pnpm run build:engine` for JavaScript or `pnpm run build:languages` for the other engines. Distributed engines remain subject to their upstream licenses and third-party notices.
 
 `npm audit` reports a known vulnerability in Fastly's build-time `weval → decompress` dependency. This configuration does not use AOT/weval or bundle those build tools into the Worker. An upstream fix still needs tracking; Fastly has not been automatically downgraded to address the report.

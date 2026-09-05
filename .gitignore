@@ -5,3 +5,9 @@ dist/
 engine/.build/
 packages/*/dist/
 *.tgz
+
+.blume/
+.astro/
+website/dist/
+templates/*/.runtime-build/
+templates/*/runtime/

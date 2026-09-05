@@ -19,7 +19,7 @@ alone does not cover that software.
 The upstream C++ sources are not edited by sandbox-workers. The binary is
 snapshotted with the included src/guest.js and instrumented with fuel calls and
 a linear-memory ceiling. Reproduction sources and pinned dependencies are in
-the sandbox-workers repository (scripts/meter.mjs and package-lock.json).
+the sandbox-workers repository (scripts/meter.mjs and pnpm-lock.yaml).
 Preserve these notices when redistributing the runtime. Before publishing a
 release, verify the complete upstream notices and matching source references
 for the selected engine release (see the repository release checklist).

@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sandbox-javascript",
+  "main": "runtime/worker.js",
+  "compatibility_date": "2026-09-04",
+  "workers_dev": false,
+  "preview_urls": false,
+  "limits": {
+    "cpu_ms": 1000
+  },
+  "build": {
+    "command": "pnpm run build"
+  },
+  "rules": [
+    {
+      "type": "Data",
+      "globs": [
+        "**/*.bin"
+      ],
+      "fallthrough": true
+    }
+  ]
+}

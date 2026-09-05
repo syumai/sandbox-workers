@@ -165,6 +165,68 @@
               >v0.1.0 package preview<br />npm publication pending</span
             >
           </div>
+          <div class="deploy-buttons" aria-label="Deploy runtime Workers">
+            <a
+              href="https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fsyumai%2Fsandbox-workers%2Ftree%2Fmain%2Ftemplates%2Fjavascript"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Deploy JavaScript to Cloudflare"
+              ><span>JavaScript</span
+              ><img
+                src="https://deploy.workers.cloudflare.com/button"
+                alt="Deploy to Cloudflare"
+                width="180"
+                height="32"
+                loading="lazy"
+            /></a>
+            <a
+              href="https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fsyumai%2Fsandbox-workers%2Ftree%2Fmain%2Ftemplates%2Fpython"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Deploy Python to Cloudflare"
+              ><span>Python</span
+              ><img
+                src="https://deploy.workers.cloudflare.com/button"
+                alt="Deploy to Cloudflare"
+                width="180"
+                height="32"
+                loading="lazy"
+            /></a>
+            <a
+              href="https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fsyumai%2Fsandbox-workers%2Ftree%2Fmain%2Ftemplates%2Fperl"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Deploy Perl to Cloudflare"
+              ><span>Perl</span
+              ><img
+                src="https://deploy.workers.cloudflare.com/button"
+                alt="Deploy to Cloudflare"
+                width="180"
+                height="32"
+                loading="lazy"
+            /></a>
+            <a
+              href="https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fsyumai%2Fsandbox-workers%2Ftree%2Fmain%2Ftemplates%2Fruby"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Deploy Ruby to Cloudflare"
+              ><span>Ruby</span
+              ><img
+                src="https://deploy.workers.cloudflare.com/button"
+                alt="Deploy to Cloudflare"
+                width="180"
+                height="32"
+                loading="lazy"
+            /></a>
+          </div>
+          <p class="step-note">
+            Each button deploys one private runtime. Connect it with a Service
+            Binding afterward.
+            <a href="/docs/getting-started/deploy/"
+              >Read the deployment guide</a
+            >
+            and <a href="/docs/reference/licenses/">runtime license notices</a>.
+          </p>
           <div class="install-steps">
             <article>
               <span class="step-number">01 / INSTALL</span>
@@ -174,11 +236,11 @@
                 Wasm engine is included; no C++ or Wasm toolchain needed.
               </p>
               <pre id="install-command">
-npx @sandbox-workers/javascript init my-sandbox
+pnpm dlx @sandbox-workers/cli init javascript my-sandbox
 cd my-sandbox
-npm install
-npm run dry-run
-npm run deploy</pre>
+pnpm install
+pnpm dry-run
+pnpm run deploy</pre>
               <p class="step-note">
                 Choose a unique Worker name before deploying. The generated
                 Worker has no public URL. For now, install a local release

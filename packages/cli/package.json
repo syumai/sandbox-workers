@@ -1,0 +1,21 @@
+{
+  "name": "@sandbox-workers/cli",
+  "version": "0.1.0",
+  "description": "Initialize private sandbox runtime Workers for Cloudflare Service Bindings",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "sandbox-workers": "./bin/cli.mjs"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

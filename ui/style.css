@@ -764,3 +764,8 @@ footer > span:last-child {
     font-size: 17px;
   }
 }
+
+.deploy-buttons { display: flex; flex-wrap: wrap; gap: 16px; margin: 24px 0 16px; }
+.deploy-buttons a { display: flex; flex-direction: column; gap: 8px; color: inherit; text-decoration: none; }
+.deploy-buttons span { font-size: 13px; font-weight: 600; }
+.deploy-buttons img { display: block; }

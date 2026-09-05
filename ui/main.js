@@ -156,7 +156,7 @@ function switchLanguage(next, restore = false) {
   $("input-name").textContent = next === "perl" ? "$input" : "input";
   $("editor").setAttribute("aria-label", `${next} code editor`);
   $("install-command").textContent =
-    `npx @sandbox-workers/${next} init my-sandbox\ncd my-sandbox\nnpm install\nnpm run dry-run\nnpm run deploy`;
+    `pnpm dlx @sandbox-workers/cli init ${next} my-sandbox\ncd my-sandbox\npnpm install\npnpm dry-run\npnpm run deploy`;
   $("binding-command").textContent = JSON.stringify(
     { services: [{ binding: "SANDBOX", service: `sandbox-${next}` }] },
     null,

@@ -10,7 +10,9 @@ const { version } = JSON.parse(
 const js = join(root, `dist/sandbox-workers-javascript-${version}.tgz`);
 const core = join(root, `dist/sandbox-workers-core-${version}.tgz`);
 await access(js);
+const cli = join(root, `dist/sandbox-workers-cli-${version}.tgz`);
 await access(core);
+await access(cli);
 const dir = await mkdtemp(join(tmpdir(), "sandbox-workers-package-"));
 const run = (cmd, args, cwd = dir) =>
   execFileSync(cmd, args, {
@@ -28,6 +30,7 @@ try {
     "--no-fund",
     js,
     core,
+    cli,
   ]);
   const pkg = JSON.parse(
     await readFile(
@@ -40,13 +43,10 @@ try {
     undefined,
     "runtime must not need build tools or workspace dependencies",
   );
-  const init = join(
-    dir,
-    "node_modules/@sandbox-workers/javascript/bin/init.mjs",
-  );
-  run(process.execPath, [init, "init", "worker"]);
+  const init = join(dir, "node_modules/@sandbox-workers/cli/bin/cli.mjs");
+  run(process.execPath, [init, "init", "javascript", "worker"]);
   assert.throws(
-    () => run(process.execPath, [init, "init", "worker"]),
+    () => run(process.execPath, [init, "init", "javascript", "worker"]),
     /Refusing to overwrite/,
   );
   const worker = join(dir, "worker");

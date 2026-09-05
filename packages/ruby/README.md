@@ -1,5 +1,9 @@
 # @sandbox-workers/ruby
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fsyumai%2Fsandbox-workers%2Ftree%2Fmain%2Ftemplates%2Fruby)
+
+Use the source template before npm publication. It creates a private Worker; configure your caller’s Service Binding after deployment. The source repository must be public for the button to work.
+
 A Cloudflare Workers Service Binding runtime containing CRuby 4.0.0 compiled to Wasm. Version 0.1.0 preview; not yet published to npm.
 
 ## Quick start
@@ -7,14 +11,14 @@ A Cloudflare Workers Service Binding runtime containing CRuby 4.0.0 compiled to 
 After the first npm release:
 
 ```sh
-npx @sandbox-workers/ruby init my-ruby
+pnpm dlx @sandbox-workers/cli init ruby my-ruby
 cd my-ruby
-npm install
-npm run dry-run
-npm run deploy
+pnpm install
+pnpm run dry-run
+pnpm run deploy
 ```
 
-Before publication, install the local tarball produced by the repository's `npm run pack`.
+Before publication, install the local tarball produced by the repository's `pnpm run pack`.
 
 The initializer refuses to overwrite existing files. Choose a Worker name in `wrangler.jsonc` that fits your account. Public URLs are disabled. Use a Paid plan for execution: interpreter initialization can exceed the Free plan's CPU allowance.
 

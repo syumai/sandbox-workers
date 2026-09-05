@@ -7,4 +7,4 @@ Upstream Wasm source and build instructions: https://github.com/goccy/python-was
 CPython source: https://github.com/python/cpython/tree/v3.14.6
 The Python license includes notices for bundled components.
 
-The original Wasm is modified by `scripts/instrument.mjs` in the sandbox-workers repository: it inserts a fuel callback at function entries and loops and caps linear memory. The original interpreter source is unchanged. Python/Perl download URLs and SHA-256 digests are recorded in `scripts/runtime-sources.json`; Ruby's npm archive integrity is pinned in package-lock.json.
+The original Wasm is modified by `scripts/instrument.mjs` in the sandbox-workers repository: it inserts a fuel callback at function entries and loops and caps linear memory. The original interpreter source is unchanged. Python/Perl download URLs and SHA-256 digests are recorded in `scripts/runtime-sources.json`; Ruby's npm archive integrity is pinned in pnpm-lock.yaml.

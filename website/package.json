@@ -1,0 +1,14 @@
+{
+  "name": "@sandbox-workers/docs",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "blume dev",
+    "build": "blume build",
+    "validate": "blume validate"
+  },
+  "devDependencies": {
+    "blume": "1.6.0"
+  }
+}

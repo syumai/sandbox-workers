@@ -1,0 +1,19 @@
+{
+  "name": "sandbox-perl-worker",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "pnpm@10.7.1",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "dry-run": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "4.129.0"
+  },
+  "engines": {
+    "node": ">=22.12"
+  }
+}

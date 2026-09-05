@@ -25,10 +25,10 @@ for (const language of ["python", "perl", "ruby"]) {
   );
   const tarball = join(root, `dist/sandbox-workers-${language}-${version}.tgz`);
   const worker = join(dir, language);
-  run([join(root, `packages/${language}/bin/init.mjs`), "init", worker]);
+  run([join(root, `packages/cli/bin/cli.mjs`), "init", language, worker]);
   assert.throws(
     () =>
-      run([join(root, `packages/${language}/bin/init.mjs`), "init", worker]),
+      run([join(root, `packages/cli/bin/cli.mjs`), "init", language, worker]),
     /Refusing to overwrite/,
   );
   try {

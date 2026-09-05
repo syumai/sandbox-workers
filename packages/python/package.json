@@ -24,9 +24,6 @@
     }
   },
   "types": "./dist/worker.d.ts",
-  "bin": {
-    "sandbox-workers-python": "./bin/init.mjs"
-  },
   "engines": {
     "node": ">=22.12"
   },

@@ -1,5 +1,9 @@
 # @sandbox-workers/javascript
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fsyumai%2Fsandbox-workers%2Ftree%2Fmain%2Ftemplates%2Fjavascript)
+
+Use the source template before npm publication. It creates a private Worker; configure your caller’s Service Binding after deployment. The source repository must be public for the button to work.
+
 A deployable JavaScript sandbox Worker powered by SpiderMonkey WebAssembly from
 `@fastly/js-compute@3.45.0`. The npm artifact includes the compiled engine and host
 adapter. Consumers need Wrangler, **not** Fastly, Binaryen, Wizer or a C++ compiler.
@@ -7,14 +11,14 @@ adapter. Consumers need Wrangler, **not** Fastly, Binaryen, Wizer or a C++ compi
 ## Quick start
 
 These registry commands apply after the first npm release. Until then, install
-the `.tgz` produced by the repository's `npm run pack`.
+the `.tgz` produced by the repository's `pnpm run pack`.
 
 ```sh
-npx @sandbox-workers/javascript init my-sandbox
+pnpm dlx @sandbox-workers/cli init javascript my-sandbox
 cd my-sandbox
-npm install
-npm run dry-run
-npm run deploy
+pnpm install
+pnpm run dry-run
+pnpm run deploy
 ```
 
 The initializer only creates local files. It never installs dependencies or
@@ -27,8 +31,8 @@ configuration also works without that Paid-only setting.
 ## Existing project
 
 ```sh
-npm install @sandbox-workers/javascript
-npm install -D wrangler
+pnpm add @sandbox-workers/javascript
+pnpm add -D wrangler
 ```
 
 ```js
@@ -54,7 +58,7 @@ Deploy this dedicated Worker, then add to your caller's Wrangler configuration:
 ```
 
 ```ts
-// In your caller (npm install @sandbox-workers/core)
+// In your caller (pnpm add @sandbox-workers/core)
 import { createSandbox } from "@sandbox-workers/core";
 const sandbox = createSandbox(env.SANDBOX);
 const result = await sandbox.execute({
