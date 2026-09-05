@@ -32,7 +32,7 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
     compatibility_date: "2026-09-04",
     workers_dev: false,
     preview_urls: false,
-    limits: { cpu_ms: language === "javascript" ? 1000 : 2000 },
+    limits: { cpu_ms: 2000 },
     build: { command: "pnpm run build" },
     rules: [{ type: "Data", globs: ["**/*.bin"], fallthrough: true }],
   });

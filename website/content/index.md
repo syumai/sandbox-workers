@@ -18,7 +18,7 @@ sandbox-workers packages JavaScript, Python, Perl, and Ruby interpreters as sepa
 
 | Runtime                            | Engine                       | Env vars accessed as |
 | ---------------------------------- | ---------------------------- | --------------------- |
-| [JavaScript](/runtimes/javascript) | SpiderMonkey / Fastly 3.45.0 | `process.env.NAME`    |
+| [JavaScript](/runtimes/javascript) | SpiderMonkey 147 / goccy spidermonkey-wasm v0.2.6 | `process.env.NAME`    |
 | [Python](/runtimes/python)         | CPython 3.14.6               | `os.environ["NAME"]`  |
 | [Perl](/runtimes/perl)             | Perl 5.42.2                  | `$ENV{NAME}`          |
 | [Ruby](/runtimes/ruby)             | CRuby 4.0.0                  | `ENV["NAME"]`         |

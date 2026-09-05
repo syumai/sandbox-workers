@@ -4,61 +4,43 @@
 
 Use the source template before npm publication. It creates a private Worker; configure your caller’s Service Binding after deployment. The source repository must be public for the button to work.
 
-A deployable JavaScript sandbox Worker powered by SpiderMonkey WebAssembly from
-`@fastly/js-compute@3.45.0`. The npm artifact includes the compiled engine and host
-adapter. Consumers need Wrangler, **not** Fastly, Binaryen, Wizer or a C++ compiler.
+A Cloudflare Workers Service Binding runtime containing SpiderMonkey (Firefox 147)
+compiled to Wasm via [goccy/spidermonkey-wasm](https://github.com/goccy/spidermonkey-wasm)
+v0.2.6. Version 0.1.0 preview; not yet published to npm.
 
 ## Quick start
 
-These registry commands apply after the first npm release. Until then, install
-the `.tgz` produced by the repository's `pnpm run pack`.
+After the first npm release:
 
 ```sh
-pnpm dlx @sandbox-workers/cli init javascript my-sandbox
-cd my-sandbox
+pnpm dlx @sandbox-workers/cli init javascript my-javascript
+cd my-javascript
 pnpm install
 pnpm run dry-run
 pnpm run deploy
 ```
 
-The initializer only creates local files. It never installs dependencies or
-publishes/deploys anything. It refuses to overwrite existing project files.
-Choose your own Worker name before deploying. Default: `sandbox-javascript`.
-`workers_dev` and `preview_urls` are disabled and there are no public routes.
-On Paid plans you can optionally set `limits.cpu_ms: 1000`; the generated
-configuration also works without that Paid-only setting.
+Before publication, install the local tarball produced by the repository's `pnpm run pack`.
 
-## Existing project
+The initializer refuses to overwrite existing files. Choose a Worker name in `wrangler.jsonc` that fits your account. Public URLs are disabled.
 
-```sh
-pnpm add @sandbox-workers/javascript
-pnpm add -D wrangler
-```
+## Existing Worker project
+
+Use this entrypoint in a dedicated Worker:
 
 ```js
-// index.js
 export { default } from "@sandbox-workers/javascript";
 ```
 
-```jsonc
-// wrangler.jsonc
-{
-  "name": "sandbox-javascript",
-  "main": "index.js",
-  "compatibility_date": "2026-09-04",
-  "workers_dev": false,
-  "preview_urls": false,
-}
-```
+Disable `workers_dev` and `preview_urls`, deploy the runtime, and add a Service Binding to the calling application's configuration:
 
-Deploy this dedicated Worker, then add to your caller's Wrangler configuration:
-
-```jsonc
+```json
 { "services": [{ "binding": "SANDBOX", "service": "sandbox-javascript" }] }
 ```
 
-```ts
-// In your caller (pnpm add @sandbox-workers/core)
+The service name must match the deployed Worker. Install `@sandbox-workers/core` in the calling application:
+
+```js
 import { createSandbox } from "@sandbox-workers/core";
 const sandbox = createSandbox(env.SANDBOX);
 const result = await sandbox.runCode(
@@ -74,32 +56,23 @@ is to a deployed Worker name; installing this npm package alone does not create 
 For local development run both Wrangler projects, or pass both `-c` configs to
 one `wrangler dev` command.
 
-## Exports
+## Execution contract
 
-- `@sandbox-workers/javascript`: default Worker handler (imports Wasm).
-- `@sandbox-workers/javascript/metadata`: lightweight `javascriptRuntime`
-  descriptor (no Wasm import), for runtime catalogs and capability discovery.
+`POST /execute` accepts `{language: "javascript", code, envVars}`. The language may be omitted when calling this runtime Worker directly. Code is a **script**: the value of the last top-level expression is the result; a top-level `return` is a guest `SyntaxError`. Data is passed with `envVars` (string values only) and read as `process.env.NAME`. `console.log`/`info`/`debug` calls are captured into `logs.stdout`, `warn`/`error` into `logs.stderr`, with one trailing newline stripped per entry. Results serialize as `{text}` or `{json}`; BigInt values become a string ending in `n`, and an `undefined` result produces an empty `results` array.
 
-## Execution contract and limits
+Each execution creates a fresh Wasm instance: there is no state shared between requests, and each request evaluates a fresh SpiderMonkey global. Every execution — success, guest error, or a fuel/console/result limit — returns HTTP 200 with `{code, language, engine, durationMs, logs, results, error?, usage?}`; check the `error` field (`error.name` is `ExecutionLimitError` for limits, `EngineError` for engine failures) through the shared client. Only request/transport problems (bad JSON, unsupported language, an `input` key, wrong method, oversized payload, wrong content type) use non-200 statuses.
 
-Code is a **script**: the value of the last top-level expression is the
-result. `await` also works; a top-level `return` is a SyntaxError. Data is passed
-with `envVars` (string values only) and read as `process.env.NAME`. Console
-logs (split into `stdout`/`stderr`), the result, duration, and fuel/memory
-metrics are returned. BigInt becomes a string ending in `n`; an `undefined`
-result produces an empty `results` array. ES-module imports, npm resolution,
-Node APIs, external networking and files are not provided. Pure promises and
-supported Fastly Web builtins work; timers and indefinitely pending promises
-are unsupported.
+This engine has **no Web APIs**: there is no `fetch`, `URL`, `Response`, `TextEncoder`, `structuredClone`, `atob`, timers (`setTimeout`), or `WebAssembly`. A pending promise that never settles (because there is nothing to wait on) is reported as a guest error rather than hanging the request. `Intl` (e.g. `Intl.NumberFormat`, `Intl.DateTimeFormat`, `Intl.Collator`) is available and backed by real ICU data. `SharedArrayBuffer` and `Atomics` are removed before guest code runs.
 
 Every execution creates a fresh Wasm instance; no context persists between
-calls. Fuel bounds engine function/loop entries to 5,000,000; the linear
-memory maximum is 64 MiB. Code is limited to 64 KiB, request to 96 KiB and
-the serialized result to 64 KiB. Console capture is bounded to 200 entries /
-32,768 UTF-16 code units combined across `stdout`/`stderr`. CPU/isolate
-overhead and concurrent memory use still need to fit Cloudflare's separate
-resource limits.
+calls. Fuel bounds the interpreter to 50,000,000 ticks via an interrupt
+request rather than a trap, so it stays catchable inside the guest; the linear
+memory maximum is 64 MiB, with a 32 MiB heap cap enforced by the engine itself.
+Code is limited to 64 KiB, request to 96 KiB and the serialized result to
+64 KiB. Console capture is bounded to 200 entries / 32,768 UTF-16 code units
+combined across `stdout`/`stderr`. CPU/isolate overhead and concurrent memory
+use still need to fit Cloudflare's separate resource limits.
 
 This is an experimental runtime, not a claim of full Test262 conformance or a
 production security audit. The demo is independent of your deployment.
-See THIRD_PARTY_NOTICES.md for the embedded runtime licenses and source references.
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the embedded runtime licenses and source references.

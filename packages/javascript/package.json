@@ -1,9 +1,9 @@
 {
   "name": "@sandbox-workers/javascript",
   "version": "0.1.0",
-  "description": "Deployable SpiderMonkey WebAssembly sandbox for Cloudflare Workers Service Bindings",
+  "description": "Deployable SpiderMonkey (goccy/spidermonkey-wasm) WebAssembly sandbox for Cloudflare Workers Service Bindings",
   "type": "module",
-  "license": "MIT AND Apache-2.0 WITH LLVM-exception AND MPL-2.0",
+  "license": "MIT AND MPL-2.0 AND Unicode-3.0",
   "files": [
     "dist",
     "bin",

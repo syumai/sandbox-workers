@@ -1,6 +1,6 @@
 import { instrument } from "./instrument.mjs";
 for (const language of process.argv.slice(2)) {
-  if (!["python", "perl", "ruby"].includes(language))
+  if (!["javascript", "python", "perl", "ruby"].includes(language))
     throw new Error("Unsupported runtime: " + language);
   const path =
     language === "ruby"

@@ -71,11 +71,12 @@ const run = (command, args) =>
   });
 run("npm", ["ci", "--no-audit", "--no-fund"]);
 await mkdir(resolve(source, "engine/.build"), { recursive: true });
-if (spec.language === "javascript") run("npm", ["run", "build:engine"]);
-else {
-  run(process.execPath, ["scripts/fetch-languages.mjs"]);
-  run(process.execPath, ["scripts/meter-languages.mjs", spec.language]);
-}
+run(process.execPath, ["scripts/fetch-languages.mjs"]);
+run(process.execPath, [
+  "--max-old-space-size=8192",
+  "scripts/meter-languages.mjs",
+  spec.language,
+]);
 run("npm", ["run", "build:packages"]);
 const packageRoot = resolve(source, "packages", spec.language);
 await rm(output, { recursive: true, force: true });

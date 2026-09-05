@@ -48,7 +48,7 @@ The generated Worker entrypoint is one line:
 export { default } from "@sandbox-workers/javascript";
 ```
 
-Packages include **prebuilt Wasm**, so consumers do not need the Fastly SDK, Wizer, Binaryen, or a C++ compiler. The default Worker name is `sandbox-javascript`; choose a unique name in your account before deploying. Public and preview URLs are disabled.
+Packages include **prebuilt Wasm**, so consumers do not need Binaryen or a C++ compiler. The default Worker name is `sandbox-javascript`; choose a unique name in your account before deploying. Public and preview URLs are disabled.
 
 Add a Service Binding to your application's `wrangler.jsonc`:
 

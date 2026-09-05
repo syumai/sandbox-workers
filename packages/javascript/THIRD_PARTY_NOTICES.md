@@ -1,31 +1,25 @@
-# Third-party runtime notices
+# Third-party notices
 
-The host adapter, initializer, and guest wrapper are MIT licensed (LICENSE).
-The distributed `dist/engine.wasm` embeds third-party software; the MIT license
-alone does not cover that software.
+This package includes SpiderMonkey (Firefox 147), a WebAssembly embedding bridge, ICU
+Unicode data, browser_wasi_shim (MIT OR Apache-2.0), and fflate (MIT). See `licenses/`
+for their license texts. The adapter code is MIT (`LICENSE`).
 
-- Fastly JavaScript Compute runtime 3.45.0: Apache-2.0 with LLVM exception.
-  Full license: licenses/FASTLY.txt.
-  Source: https://github.com/fastly/js-compute-runtime (release v3.45.0).
-  Binary input: npm package @fastly/js-compute@3.45.0, fastly.wasm.
 - Acorn 8.18.0: MIT. Used by the host-side `transformForAsyncExecution` helper
   (src/transform.mjs) to rewrite a script's last expression into a `return`;
   esbuild bundles it into dist/worker.js, so it ships in this package's code,
   not as a separate npm dependency.
   Full license: licenses/ACORN.txt.
   Source: https://github.com/acornjs/acorn (npm package acorn@8.18.0).
-- SpiderMonkey / Mozilla code in the upstream runtime: MPL-2.0 and the
-  applicable notices in the upstream source files.
-  License: https://www.mozilla.org/MPL/2.0/
-  Upstream build/dependency source references:
-  https://github.com/fastly/js-compute-runtime/tree/v3.45.0
-  https://github.com/bytecodealliance/StarlingMonkey
-  https://firefox-source-docs.mozilla.org/js/
 
-The upstream C++ sources are not edited by sandbox-workers. The binary is
-snapshotted with the included src/guest.js and instrumented with fuel calls and
-a linear-memory ceiling. Reproduction sources and pinned dependencies are in
-the sandbox-workers repository (scripts/meter.mjs and pnpm-lock.yaml).
-Preserve these notices when redistributing the runtime. Before publishing a
-release, verify the complete upstream notices and matching source references
-for the selected engine release (see the repository release checklist).
+Upstream Wasm source and build instructions: https://github.com/goccy/spidermonkey-wasm/tree/v0.2.6
+
+The embedding bridge (`js.h` and the generated glue) is MIT licensed: `licenses/BRIDGE.txt`.
+SpiderMonkey itself is built from a prebuilt distribution provided by
+https://github.com/bytecodealliance/StarlingMonkey (wasm32-wasi, Intl/ICU enabled) and is
+MPL-2.0 licensed: `licenses/MPL-2.0.txt`. The ICU data compiled into the engine for `Intl`
+support is licensed under the Unicode License v3: `licenses/UNICODE.txt`.
+
+The original Wasm is modified by `scripts/instrument.mjs` in the sandbox-workers repository:
+it inserts a fuel callback at function entries and loops and caps linear memory. The
+original interpreter source is unchanged. The download URL and SHA-256 digest are recorded
+in `scripts/runtime-sources.json`.

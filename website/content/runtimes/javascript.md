@@ -1,9 +1,9 @@
 ---
 title: JavaScript
-description: Execute code with SpiderMonkey / Fastly 3.45.0 inside a dedicated Wasm Worker.
+description: Execute code with SpiderMonkey 147 (goccy/spidermonkey-wasm v0.2.6) inside a dedicated Wasm Worker.
 ---
 
-Package: `@sandbox-workers/javascript`. Code is a script: the value of the last expression is the result. Supports `await`, promises, modern JavaScript syntax, and selected Fastly Web builtins. ES modules, Node/npm resolution, timers, and networking are unavailable. BigInt results become strings ending in n.
+Package: `@sandbox-workers/javascript`. Code is a script: the value of the last expression is the result. Supports `await`, promises, modern JavaScript syntax, and `Intl`. There are no Web builtins (no `fetch`, `URL`, `Response`, timers); ES modules, Node/npm resolution, and networking are also unavailable. BigInt results become strings ending in n.
 
 ## Deploy
 

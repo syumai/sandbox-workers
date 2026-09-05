@@ -1,5 +1,10 @@
 [
   {
+    "file": "javascript.wasm",
+    "url": "https://github.com/goccy/spidermonkey-wasm/releases/download/v0.2.6/spidermonkey.wasm",
+    "sha256": "12604b5bd756868552ef3a2d3ab266993dfedaff9d13f08783a3f9d5dfd99a19"
+  },
+  {
     "file": "python.wasm",
     "url": "https://github.com/goccy/python-wasm/releases/download/v0.2.0/python.wasm",
     "sha256": "6b89255cdbda9c0b5738c4bf91dec75a0f291f19d337c33429138c14c3d4f192"

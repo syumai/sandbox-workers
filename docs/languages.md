@@ -2,7 +2,7 @@
 
 | Package                     | Engine                         | Uncompressed Worker size (approx.) | Wasm memory cap | Fuel        |
 | --------------------------- | ------------------------------ | ---------------------------------- | --------------- | ----------- |
-| @sandbox-workers/javascript | SpiderMonkey / Fastly 3.45.0   | 11.35 MiB                          | 64 MiB          | 5,000,000   |
+| @sandbox-workers/javascript | SpiderMonkey 147 / goccy spidermonkey-wasm v0.2.6 | 26.70 MiB        | 64 MiB          | 50,000,000  |
 | @sandbox-workers/python     | CPython 3.14.6 / goccy v0.2.0  | 7.80 MiB                           | 64 MiB          | 100,000,000 |
 | @sandbox-workers/perl       | Perl 5.42.2 / goccy v0.2.1     | 14.04 MiB                          | 64 MiB          | 10,000,000  |
 | @sandbox-workers/ruby       | CRuby 4.0.0 / ruby.wasm 2.10.1 | 31.22 MiB                          | 96 MiB          | 30,000,000  |

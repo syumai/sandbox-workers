@@ -1,5 +1,6 @@
 import wasm from "./engine.wasm";
-import { runEngine, ExecutionLimitError } from "./host.mjs";
+import { ExecutionLimitError } from "../../../runtime/wasi.mjs";
+import { runJavaScript } from "../../../runtime/javascript.mjs";
 import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
 export default {
   async fetch(request: Request): Promise<Response> {
@@ -8,17 +9,17 @@ export default {
     if (request.method !== "POST")
       return new Response("Method not allowed", { status: 405 });
     try {
-      const payload = await readExecution(request);
+      const payload = await readExecution(request, "javascript");
       if (payload.language !== "javascript")
         throw new ApiError(400, "Unsupported language");
       const start = performance.now();
       try {
-        const result = runEngine(wasm, payload);
+        const result = runJavaScript(wasm, payload);
         return Response.json(
           {
             code: payload.code,
             language: "javascript",
-            engine: "SpiderMonkey / Fastly 3.45.0",
+            engine: "SpiderMonkey 147 / goccy spidermonkey-wasm v0.2.6",
             durationMs: performance.now() - start,
             ...result,
           },
@@ -30,7 +31,7 @@ export default {
           {
             code: payload.code,
             language: "javascript",
-            engine: "SpiderMonkey / Fastly 3.45.0",
+            engine: "SpiderMonkey 147 / goccy spidermonkey-wasm v0.2.6",
             durationMs: performance.now() - start,
             logs: { stdout: [], stderr: [] },
             results: [],

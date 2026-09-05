@@ -33,14 +33,14 @@ Every execution — success, a guest error, or a fuel/output/result limit — re
 {
   "code": "const x = Number(process.env.X);\nx ** 2",
   "language": "javascript",
-  "engine": "SpiderMonkey / Fastly 3.45.0",
+  "engine": "SpiderMonkey 147 / goccy spidermonkey-wasm v0.2.6",
   "durationMs": 8,
   "logs": { "stdout": [], "stderr": [] },
   "results": [{ "text": "144" }],
   "usage": {
-    "fuelConsumed": 13000,
-    "fuelLimit": 5000000,
-    "memoryBytes": 7667712
+    "fuelConsumed": 1800000,
+    "fuelLimit": 50000000,
+    "memoryBytes": 34668544
   }
 }
 ```

@@ -16,7 +16,7 @@ import { keymap } from "@codemirror/view";
 import hello from "../examples/hello.js?raw";
 import modern from "../examples/modern-javascript.js?raw";
 import transform from "../examples/data-transform.js?raw";
-import web from "../examples/web-apis.js?raw";
+import intl from "../examples/intl.js?raw";
 import "./style.css";
 const $ = (id) => document.getElementById(id);
 const javascriptExamples = [
@@ -27,7 +27,7 @@ const javascriptExamples = [
     code: transform,
     envVars: { WORDS: "Books,Tools,Books,Books,Tools" },
   },
-  { name: "Web primitives", code: web, envVars: {} },
+  { name: "Intl formatting", code: intl, envVars: {} },
 ];
 const library = {
   javascript: javascriptExamples,

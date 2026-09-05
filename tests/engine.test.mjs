@@ -1,17 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import {
-  runEngine,
-  ExecutionLimitError,
-} from "../packages/javascript/src/host.mjs";
+import { runJavaScript, ExecutionLimitError } from "../runtime/javascript.mjs";
 import { transformForAsyncExecution } from "../packages/javascript/src/transform.mjs";
 const module = new WebAssembly.Module(
   readFileSync(
     new URL("../packages/javascript/dist/engine.wasm", import.meta.url),
   ),
 );
-const run = (code, envVars) => runEngine(module, { code, envVars });
+const run = (code, envVars) => runJavaScript(module, { code, envVars });
 
 test("last top-level expression becomes the result", () => {
   assert.deepEqual(run("1 + 1;").results, [{ text: "2" }]);
@@ -31,10 +28,7 @@ test("top-level return is rejected like the Cloudflare Sandbox SDK", () => {
 });
 
 test("return inside a nested function still works", () => {
-  assert.equal(
-    run("function f() { return 2 } f()").results[0].text,
-    "2",
-  );
+  assert.equal(run("function f() { return 2 } f()").results[0].text, "2");
 });
 
 test("actual Wasm supports async, BigInt, private fields and console", () => {
@@ -60,7 +54,10 @@ test("console output is split into stdout and stderr", () => {
   const result = run(
     'console.log("a"); console.info("b"); console.debug("c"); console.warn("d"); console.error("e");',
   );
-  assert.deepEqual(result.logs, { stdout: ["a", "b", "c"], stderr: ["d", "e"] });
+  assert.deepEqual(result.logs, {
+    stdout: ["a", "b", "c"],
+    stderr: ["d", "e"],
+  });
 });
 
 test("a single trailing newline is stripped from each console entry", () => {
@@ -94,7 +91,7 @@ test("all shipped examples execute without error", () => {
     "hello",
     "modern-javascript",
     "data-transform",
-    "web-apis",
+    "intl",
   ]) {
     const result = run(
       readFileSync(new URL(`../examples/${name}.js`, import.meta.url), "utf8"),
@@ -108,30 +105,52 @@ test("fuel interrupts unbounded JavaScript", () => {
   assert.throws(() => run("while (true) {}"), ExecutionLimitError);
 });
 
-test("fuel interrupts recursive execution and regex engine", () => {
-  assert.ok(run("function f() { return f(); } f();").error);
+test("recursion returns a catchable error, not a trap", () => {
+  const result = run("function f() { return 1 + f(); } f();");
+  assert.equal(result.error.name, "InternalError");
+});
+
+test("catastrophic regex backtracking is interrupted", () => {
   assert.throws(
-    () => run('/^(a+)+$/.test("a".repeat(100)+"!");'),
+    () => run('/^(a+)+$/.test("a".repeat(100) + "!");'),
     ExecutionLimitError,
   );
 });
 
-test("host network is denied", () => {
-  assert.throws(
-    () => run('await fetch("https://example.com")'),
-    /Unsupported host capability/,
+test("there is no fetch or other host network access", () => {
+  const result = run('typeof fetch === "undefined" ? "gone" : "present";');
+  assert.equal(result.results[0].text, "'gone'");
+  assert.equal(
+    run("await fetch('https://example.com')").error.name,
+    "ReferenceError",
   );
 });
 
-test("console and result output are bounded", () => {
-  const console_ = run("for(let i=0;i<201;i++) console.log(i)");
-  assert.equal(console_.error.name, "ExecutionLimitError");
-  const oversized = run('"a".repeat(140000)');
-  assert.equal(oversized.error.name, "ExecutionLimitError");
+test("console output is bounded to 200 entries / 32768 UTF-16 units", () => {
+  const result = run("for (let i = 0; i < 201; i++) console.log(i);");
+  assert.equal(result.error.name, "ExecutionLimitError");
+});
+
+test("serialized result is bounded to 64 KiB", () => {
+  const result = run('"a".repeat(140000);');
+  assert.equal(result.error.name, "ExecutionLimitError");
 });
 
 test("linear memory maximum is enforced", () => {
-  assert.ok(run("new Uint8Array(80 * 1024 * 1024).length").error);
+  const result = run("new Uint8Array(80 * 1024 * 1024).length;");
+  assert.ok(result.error);
+});
+
+test("SharedArrayBuffer and Atomics are removed before guest code runs", () => {
+  const result = run('typeof SharedArrayBuffer + "," + typeof Atomics;');
+  assert.equal(result.results[0].text, "'undefined,undefined'");
+});
+
+test("Intl is available and backed by real locale data", () => {
+  const result = run(
+    'new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" }).format(1234);',
+  );
+  assert.match(result.results[0].text, /1,?234/);
 });
 
 test("transformForAsyncExecution rewrites the last expression into a return", () => {

@@ -56,7 +56,7 @@ The example code is covered by the repository's [MIT LICENSE](../../LICENSE), co
 
 Before using or redistributing a runtime, review that package's **LICENSE**, **THIRD_PARTY_NOTICES.md**, and bundled upstream license files:
 
-- [JavaScript](../../packages/javascript/README.md): SpiderMonkey, Fastly runtime, and related dependencies.
+- [JavaScript](../../packages/javascript/README.md): SpiderMonkey, goccy/spidermonkey-wasm, and related dependencies.
 - [Python](../../packages/python/README.md): CPython and bundled standard library/dependencies.
 - [Perl](../../packages/perl/README.md): Perl and its bundled distribution.
 - [Ruby](../../packages/ruby/README.md): Ruby, ruby.wasm, and bundled dependencies.
