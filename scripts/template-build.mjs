@@ -69,7 +69,9 @@ const run = (command, args) =>
     stdio: "inherit",
     env: { ...process.env, CI: "true" },
   });
-run("npm", ["ci", "--no-audit", "--no-fund"]);
+// The source tree is a pnpm workspace (workspace:* dependencies, pnpm-lock.yaml),
+// so it must be installed and built with pnpm; npm has no lockfile to work from.
+run("pnpm", ["install", "--frozen-lockfile"]);
 await mkdir(resolve(source, "engine/.build"), { recursive: true });
 run(process.execPath, ["scripts/fetch-languages.mjs"]);
 run(process.execPath, [
@@ -77,7 +79,7 @@ run(process.execPath, [
   "scripts/meter-languages.mjs",
   spec.language,
 ]);
-run("npm", ["run", "build:packages"]);
+run("pnpm", ["run", "build:packages"]);
 const packageRoot = resolve(source, "packages", spec.language);
 await rm(output, { recursive: true, force: true });
 await cp(resolve(packageRoot, "dist"), output, { recursive: true });
