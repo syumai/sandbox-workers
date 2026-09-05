@@ -65,6 +65,9 @@ let selected = 0,
   tab = "result",
   response,
   busy = false;
+let requestedLanguage = null;
+const param = new URLSearchParams(location.search).get("language");
+if (library[param]) requestedLanguage = param;
 let saved;
 try {
   saved = JSON.parse(
@@ -172,6 +175,17 @@ function switchLanguage(next, restore = false) {
 }
 renderExamples();
 $("language").onchange = () => switchLanguage($("language").value);
+for (const item of document.querySelectorAll(".runtime-item[data-language]")) {
+  item.addEventListener("click", () => {
+    const next = item.dataset.language;
+    if (!library[next]) return;
+    requestedLanguage = next;
+    if ($("language").querySelector(`option[value="${next}"]`)) {
+      $("language").value = next;
+      switchLanguage(next);
+    }
+  });
+}
 $("input").oninput = persist;
 $("reset").onclick = () => selectExample(selected);
 $("run").onclick = run;
@@ -288,9 +302,13 @@ fetch("/languages")
           return option;
         }),
     );
-    const initial = library[saved?.language] ? saved.language : "javascript";
+    const initial = library[requestedLanguage]
+      ? requestedLanguage
+      : library[saved?.language]
+        ? saved.language
+        : "javascript";
     $("language").value = initial;
-    switchLanguage(initial, true);
+    switchLanguage(initial, initial !== requestedLanguage);
   })
   .catch(() => {
     $("status").textContent = "Runtime discovery unavailable";
