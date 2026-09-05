@@ -1,7 +1,6 @@
 packages:
   - packages/*
   - website
-  - examples/cloudflare-computer
 
 onlyBuiltDependencies:
   - esbuild
