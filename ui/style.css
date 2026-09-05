@@ -41,8 +41,10 @@ header {
   padding: 0 4.5%;
   font-size: 12px;
 }
-header > a:last-child {
+.header-links {
   margin-left: auto;
+  display: flex;
+  gap: 22px;
   color: #aeb5c0;
 }
 .brand {
@@ -528,8 +530,9 @@ footer > span:last-child {
     height: 64px;
     padding: 0 20px;
   }
-  header > a:last-child {
+  .header-links {
     font-size: 9px;
+    gap: 14px;
   }
   .intro {
     padding: 35px 0 25px;

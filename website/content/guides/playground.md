@@ -3,7 +3,7 @@ title: Playground
 description: Try each engine using the same packages you can deploy.
 ---
 
-The Playground is at the site root. Choose a runtime from the selector, load an example, edit its function body, and provide JSON input. Click **Run code** or press Cmd/Ctrl+Enter.
+The Playground is at the [site root](/docs/../). Choose a runtime from the selector, load an example, edit its function body, and provide JSON input. Click **Run code** or press Cmd/Ctrl+Enter.
 
 - **Result** shows the returned JSON value or execution error.
 - **Console** shows captured output.
