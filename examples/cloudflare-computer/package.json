@@ -1,0 +1,21 @@
+{
+  "name": "@sandbox-workers/example-cloudflare-computer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "check": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "dry-run": "wrangler deploy --dry-run",
+    "test:http": "node smoke.mjs"
+  },
+  "dependencies": {
+    "@cloudflare/computer": "0.2.1",
+    "@sandbox-workers/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260905.1",
+    "typescript": "^5.9.3",
+    "wrangler": "4.129.0"
+  }
+}

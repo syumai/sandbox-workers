@@ -162,3 +162,7 @@ Create `packages/<language>` with an independent Worker, Wasm engine, and metada
 ## License
 
 Original sandbox-workers code is licensed under the [MIT License](LICENSE), copyright (c) 2026 syumai. Bundled interpreters and third-party components retain their upstream licenses; see each runtime package's `THIRD_PARTY_NOTICES.md` and `licenses/` directory.
+
+## Cloudflare Computer example
+
+Use Computer’s SQLite filesystem with all four runtime Service Bindings: [example and deployment instructions](examples/cloudflare-computer/README.md). The example persists code, JSON input, and results without requiring containers or an AI provider.
