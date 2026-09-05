@@ -5,23 +5,23 @@ description: The language-neutral JSON execution contract.
 
 ## POST /execute
 
-Use `Content-Type: application/json`.
+Use `Content-Type: application/json`. A runtime Worker (the one behind your Service Binding) always executes a single language, so the request body carries no language field:
 
 | Field      | Type                     | Required | Meaning                                                |
 | ---------- | ------------------------ | -------- | ------------------------------------------------------- |
-| `language` | string                   | No       | `javascript`, `python`, `perl`, or `ruby`               |
 | `code`     | string                   | Yes      | Nonempty script; maximum 64 KiB UTF-8                   |
 | `envVars`  | object of string values  | No       | Environment variables exposed to the script             |
 
-The gateway defaults to JavaScript. Individual engine Workers default to their own language. An explicitly mismatched language is rejected. The complete request is limited to 96 KiB. `envVars` keys must match `/^[A-Za-z_][A-Za-z0-9_]*$/`, and every value must be a string; `null`/`undefined` values are skipped. A request that still contains an `input` key is rejected — pass data with `envVars` instead.
+The complete request is limited to 96 KiB. `envVars` keys must match `/^[A-Za-z_][A-Za-z0-9_]*$/`, and every value must be a string; `null`/`undefined` values are skipped. A request that still contains an `input` or `language` key is rejected — pass data with `envVars`, and let the Service Binding (or, on the Playground gateway, the URL path) choose the runtime.
 
 ```json
 {
-  "language": "javascript",
   "code": "const x = Number(process.env.X);\nx ** 2",
   "envVars": { "X": "12" }
 }
 ```
+
+Only the Playground gateway fronts more than one runtime, and it picks one from the URL path: `POST /execute/<language>`, where `<language>` is `javascript`, `python`, `perl`, or `ruby`. `POST /execute` on the gateway is an alias for `/execute/javascript`.
 
 Code is a **script**: the value of the last top-level expression is the result. There is no persistent context between calls — every call boots a fresh Wasm instance.
 
@@ -93,7 +93,7 @@ Only the key/value pairs passed in `envVars` are visible; nothing from the host 
 | Status | Meaning                                                                             |
 | ------ | ------------------------------------------------------------------------------------ |
 | 200    | Every execution: success, a guest error, or a fuel/output/result limit — check `error` |
-| 400    | Invalid JSON, unsupported language, invalid `envVars`, or an `input` key in the body  |
+| 400    | Invalid JSON, an unsupported `/execute/<language>` gateway path, invalid `envVars`, or an `input`/`language` key in the body |
 | 405    | Wrong HTTP method                                                                     |
 | 413    | Request or code too large                                                            |
 | 415    | Unsupported Content-Type                                                             |

@@ -79,7 +79,7 @@ A Service Binding targets a **Worker deployed in your account**. Deploy the runt
 
 ### Python, Perl, and Ruby
 
-Replace `javascript` in the installation commands with `python`, `perl`, or `ruby`. Specify the language in the client, for example `createSandbox(env.SANDBOX, 'python')`. Each initializer generates the required configuration, including Data module rules for the Python and Perl standard libraries.
+Replace `javascript` in the installation commands with `python`, `perl`, or `ruby`. The client takes only the binding, for example `createSandbox(env.SANDBOX)`; the runtime is whichever Worker that binding targets. Each initializer generates the required configuration, including Data module rules for the Python and Perl standard libraries.
 
 ## Develop the Playground
 

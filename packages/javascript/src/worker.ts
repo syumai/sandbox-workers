@@ -1,6 +1,6 @@
 import wasm from "./engine.wasm";
 import { runEngine, ExecutionLimitError } from "./host.mjs";
-import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
+import { errorResponse, readExecution } from "@sandbox-workers/core";
 export default {
   async fetch(request: Request): Promise<Response> {
     if (new URL(request.url).pathname !== "/execute")
@@ -9,8 +9,6 @@ export default {
       return new Response("Method not allowed", { status: 405 });
     try {
       const payload = await readExecution(request);
-      if (payload.language !== "javascript")
-        throw new ApiError(400, "Unsupported language");
       const start = performance.now();
       try {
         const result = runEngine(wasm, payload);

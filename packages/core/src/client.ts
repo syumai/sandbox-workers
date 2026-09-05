@@ -14,10 +14,7 @@ export class SandboxTransportError extends Error {
   }
 }
 /** Only the supplied Service Binding is used; this client never calls a public URL. */
-export function createSandbox(
-  binding: LanguageEngine,
-  language = "javascript",
-) {
+export function createSandbox(binding: LanguageEngine) {
   return {
     async runCode(
       code: string,
@@ -34,7 +31,7 @@ export function createSandbox(
         new Request("https://sandbox.internal/execute", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ language, code, envVars }),
+          body: JSON.stringify({ code, envVars }),
         }),
       );
       let body: unknown;

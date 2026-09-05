@@ -79,7 +79,7 @@ import assert from 'node:assert/strict';
 let body;
 const client = createSandbox({ async fetch(request) { body = await request.json(); return Response.json({logs:{stdout:[],stderr:[]},results:[{text:'144'}]}); } });
 assert.deepEqual(await client.runCode('process.env.X ** 2', { envVars: { X: '12' } }), {logs:{stdout:[],stderr:[]},results:[{text:'144'}]});
-assert.equal(body.language,'javascript');
+assert.equal(body.language, undefined);
 assert.equal(body.envVars.X,'12');
 const broken = createSandbox({ async fetch() { return new Response('down',{status:503}); } });
 await assert.rejects(broken.runCode('1'),SandboxTransportError);

@@ -44,7 +44,7 @@ The host uses this sequence inside the Durable Object:
 
 ```ts
 await workspace.fs.writeFile("/input.json", JSON.stringify(data));
-const execution = await createSandbox(env.PYTHON, "python").runCode(
+const execution = await createSandbox(env.PYTHON).runCode(
   await workspace.fs.readFile("/program.txt", "utf8"),
   { envVars: JSON.parse(await workspace.fs.readFile("/input.json", "utf8")) },
 );

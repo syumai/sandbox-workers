@@ -23,7 +23,7 @@ After deployment, add this to your application's Wrangler configuration. Use the
 { "services": [{ "binding": "SANDBOX", "service": "sandbox-ruby" }] }
 ```
 
-Call `env.SANDBOX.fetch()` with a JSON POST to `https://sandbox.internal/execute` containing `{language: "ruby", code, envVars}`. Code is a script: the value of the last expression is the result. Env vars (string values only) are available as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby).
+Call `env.SANDBOX.fetch()` with a JSON POST to `https://sandbox.internal/execute` containing `{ code, envVars }`. This Worker always executes ruby; the runtime is determined by the Service Binding, not by the request. Code is a script: the value of the last expression is the result. Env vars (string values only) are available as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby).
 
 Public and preview URLs are disabled. Deploying the runtime does not deploy the Playground or create the caller's Service Binding.
 

@@ -178,7 +178,7 @@ function switchLanguage(next, restore = false) {
     2,
   );
   $("client-command").textContent =
-    `import { createSandbox } from "@sandbox-workers/core";\n\nconst sandbox = createSandbox(env.SANDBOX, "${next}");\nconst output = await sandbox.runCode(\n  ${JSON.stringify(clientSnippets[next])},\n  { envVars: { X: "12" } },\n);\n// { results: [{ text: "144" }], ... }`;
+    `import { createSandbox } from "@sandbox-workers/core";\n\nconst sandbox = createSandbox(env.SANDBOX);\nconst output = await sandbox.runCode(\n  ${JSON.stringify(clientSnippets[next])},\n  { envVars: { X: "12" } },\n);\n// { results: [{ text: "144" }], ... }`;
   response = undefined;
   $("output").textContent = "Run your code to see the result.";
   $("status").textContent = "Ready";
@@ -287,11 +287,10 @@ async function run() {
   $("run").disabled = true;
   $("status").textContent = "Running…";
   try {
-    const res = await fetch("/execute", {
+    const res = await fetch(`/execute/${$("language").value}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        language: $("language").value,
         code: editor.state.doc.toString(),
         envVars,
       }),

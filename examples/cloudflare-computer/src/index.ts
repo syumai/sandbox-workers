@@ -54,7 +54,6 @@ export class SandboxComputer extends DurableObject<Env> {
       const { items } = JSON.parse(await fs.readFile("/input.json", "utf8"));
       const execution = await createSandbox(
         bindings[language],
-        language,
       ).runCode(await fs.readFile("/program.txt", "utf8"), {
         envVars: { ITEMS: JSON.stringify(items) },
       });

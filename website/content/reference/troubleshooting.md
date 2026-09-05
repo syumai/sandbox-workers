@@ -21,7 +21,7 @@ This is expected. Public and preview URLs are disabled. Call it through a Servic
 
 ## Binding unavailable or wrong language
 
-Check the deployed Worker name and account. In local development, ensure the engine's Wrangler process is running. Select the language that matches that binding; the language field does not route to another Worker automatically.
+Check the deployed Worker name and account. In local development, ensure the engine's Wrangler process is running. A Service Binding always targets exactly one runtime Worker — there is no `language` field in the request to route it elsewhere. If you need another language, bind to that runtime's Worker (or, on the Playground gateway, call `/execute/<language>`).
 
 ## Execution fuel exhausted
 

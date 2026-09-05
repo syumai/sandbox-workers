@@ -68,7 +68,7 @@ const result = await sandbox.runCode(
 ```
 
 Or use `env.SANDBOX.fetch(new Request('https://sandbox.internal/execute', ...))`
-with a JSON POST body `{ "language": "javascript", "code": "42" }`.
+with a JSON POST body `{ "code": "42" }`.
 Both Workers must be deployed in your own Cloudflare account. A Service Binding
 is to a deployed Worker name; installing this npm package alone does not create it.
 For local development run both Wrangler projects, or pass both `-c` configs to

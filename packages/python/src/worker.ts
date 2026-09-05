@@ -2,7 +2,7 @@ import wasm from "./engine.wasm";
 import { ExecutionLimitError } from "../../../runtime/wasi.mjs";
 import archive from "./stdlib.bin";
 import { runEmbedded } from "../../../runtime/embedded.mjs";
-import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
+import { errorResponse, readExecution } from "@sandbox-workers/core";
 export default {
   async fetch(request: Request): Promise<Response> {
     if (new URL(request.url).pathname !== "/execute")
@@ -10,9 +10,7 @@ export default {
     if (request.method !== "POST")
       return new Response("Method not allowed", { status: 405 });
     try {
-      const payload = await readExecution(request, "python");
-      if (payload.language !== "python")
-        throw new ApiError(400, "Unsupported language");
+      const payload = await readExecution(request);
       const start = performance.now();
       try {
         const result = runEmbedded(wasm, archive, "python", payload);

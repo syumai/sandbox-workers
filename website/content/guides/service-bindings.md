@@ -27,7 +27,7 @@ pnpm add @sandbox-workers/core
 ```ts
 import { createSandbox, SandboxTransportError } from "@sandbox-workers/core";
 
-const python = createSandbox(env.PYTHON, "python");
+const python = createSandbox(env.PYTHON);
 try {
   const output = await python.runCode("import os\nint(os.environ['X']) ** 2", {
     envVars: { X: "12" },
@@ -49,7 +49,7 @@ Before publication, install the local core tarball or use the raw fetch example 
 
 ## Multiple runtimes
 
-Create one client per binding and language. JavaScript is the client's default when the second argument is omitted. Changing the language argument does not change the target Worker: both must agree.
+Create one client per binding. `createSandbox(binding)` takes only the binding — the runtime is whichever Worker that binding targets, not something the client selects.
 
 In local development, run the target Workers too. The repository's `pnpm dev` starts all five Workers together. Separate projects can run separate Wrangler dev processes.
 

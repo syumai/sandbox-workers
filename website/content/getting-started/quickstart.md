@@ -33,7 +33,6 @@ export default {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          language: "python",
           code: "print('Hello!')\nimport os\nint(os.environ['X']) ** 2",
           envVars: { X: "12" },
         }),

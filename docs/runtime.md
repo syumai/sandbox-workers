@@ -6,11 +6,11 @@ Submit arbitrary JavaScript to `POST /execute` and execute it inside **SpiderMon
 
 ```text
 Browser / API client
-        │ POST /execute { language, code, envVars }
+        │ POST /execute/<language> { code, envVars }
         ▼
 sandbox-workers                     src/index.ts
   ├── Static Assets / CodeMirror   ui/
-  └── language → Service Binding
+  └── URL path → Service Binding
         │ JAVASCRIPT
         ▼
 sandbox-engine-javascript          engine/index.ts (public URLs disabled)
@@ -39,7 +39,7 @@ The editor supports completion, syntax highlighting, line numbers, folding, brac
 ```sh
 curl http://localhost:8787/execute \
   -H 'Content-Type: application/json' \
-  --data '{"language":"javascript","code":"console.log(process.env.X);\nawait Promise.resolve(Number(process.env.X) ** 2);","envVars":{"X":"12"}}'
+  --data '{"code":"console.log(process.env.X);\nawait Promise.resolve(Number(process.env.X) ** 2);","envVars":{"X":"12"}}'
 ```
 
 ```json
@@ -65,7 +65,7 @@ Metric values above are illustrative. Code is a **script**: the value of the las
 | JavaScript response                                                   | HTTP status         |
 | ---------------------------------------------------------------------- | ------------------- |
 | Success, guest error, or a fuel/output/result limit exceeded           | 200; check `error`  |
-| Invalid JSON, unsupported language, bad `envVars`, or an `input` key   | 400                 |
+| Invalid JSON, unsupported `/execute/<language>` path, bad `envVars`, or an `input`/`language` key | 400                 |
 | Unsupported method                                                     | 405                 |
 | Request or code limit exceeded                                         | 413                 |
 | Non-JSON Content-Type                                                  | 415                 |
