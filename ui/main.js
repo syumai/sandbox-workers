@@ -1,4 +1,4 @@
-import { Compartment } from "@codemirror/state";
+import { Compartment, Prec } from "@codemirror/state";
 import { StreamLanguage } from "@codemirror/language";
 import { python } from "@codemirror/lang-python";
 import { ruby } from "@codemirror/legacy-modes/mode/ruby";
@@ -24,7 +24,7 @@ import session from "../examples/session.js?raw";
 import "./style.css";
 const $ = (id) => document.getElementById(id);
 const STORAGE_KEY = "sandbox-workers-playground-v2";
-const MAX_TRANSCRIPT = 20;
+const MAX_CELLS = 50;
 const TABS = ["result", "console", "raw", "workspace"];
 const javascriptExamples = [
   { name: "Hello, sandbox", code: hello, envVars: { NAME: "world" } },
@@ -36,7 +36,7 @@ const javascriptExamples = [
   },
   { name: "Intl formatting", code: intl, envVars: {} },
   { name: "TypeScript", code: typescript, envVars: { NAME: "world" } },
-  { name: "Session demo", code: session, envVars: {} },
+  { name: "REPL demo", code: session, envVars: {} },
 ];
 const library = {
   javascript: javascriptExamples,
@@ -47,7 +47,7 @@ const library = {
       code: pyStdlib,
       envVars: { WORDS: "hello,world,hello" },
     },
-    { name: "Session demo", code: pySession, envVars: {} },
+    { name: "REPL demo", code: pySession, envVars: {} },
   ],
   perl: [
     { name: "Hello, Perl", code: plHello, envVars: { NAME: "world" } },
@@ -56,7 +56,7 @@ const library = {
       code: plRegex,
       envVars: { WORDS: "hello,world,hello,perl" },
     },
-    { name: "Session demo", code: plSession, envVars: {} },
+    { name: "REPL demo", code: plSession, envVars: {} },
   ],
   ruby: [
     { name: "Hello, Ruby", code: rbHello, envVars: { NAME: "world" } },
@@ -74,12 +74,15 @@ const envNames = {
   ruby: "ENV",
 };
 const clientSnippets = {
-  javascript: 'const x = Number(process.env.X);\nx ** 2',
+  javascript: "const x = Number(process.env.X);\nx ** 2",
   python: 'import os\nx = int(os.environ["X"])\nx ** 2',
   perl: "my $x = $ENV{X};\n$x ** 2",
   ruby: 'x = ENV["X"].to_i\nx ** 2',
 };
 const syntax = new Compartment();
+// Mode-specific editor keymap (Enter / ArrowUp / ArrowDown), only active in
+// REPL mode — see replKeymapExtension() below.
+const replKeys = new Compartment();
 const modes = {
   javascript: javascript({ typescript: true }),
   python: python(),
@@ -99,21 +102,69 @@ let saved;
 try {
   saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
 } catch {}
-// Session mode (see website/content/guides/playground.md "Session mode").
-// `userMode` is the mode the user picked; Ruby has no session mode, so the
-// *effective* mode (effectiveMode()) forces "script" there without losing
-// the user's preference for the other languages. `sessionIds` maps each
-// language to one Playground-generated session id, persisted so the same
-// browser reuses it across visits. `transcripts` (in-memory only, cleared on
-// New session / Reset) maps a session id to its last MAX_TRANSCRIPT
-// {code, text, isError} entries.
-let userMode = saved?.mode === "session" ? "session" : "script";
+// REPL mode (see website/content/guides/playground.md "REPL mode").
+// `userMode` is the mode the user picked ("script" or "repl"); Ruby has no
+// REPL mode, so the *effective* mode (effectiveMode()) forces "script" there
+// without losing the user's preference for the other languages. `sessionIds`
+// maps each language to one Playground-generated session id, persisted so
+// the same browser reuses it across visits. `cells` maps a session id to its
+// last MAX_CELLS REPL log entries: {id, code, status, response, resultText,
+// stdout, stderr, isError, durationMs}. A compact form (without `response`
+// and without any still-pending entry) is persisted per session id so a
+// reload keeps the REPL history visible.
+let userMode =
+  saved?.mode === "session" || saved?.mode === "repl" ? "repl" : "script";
 let sessionIds =
-  saved?.sessionIds && typeof saved.sessionIds === "object" && !Array.isArray(saved.sessionIds)
+  saved?.sessionIds &&
+  typeof saved.sessionIds === "object" &&
+  !Array.isArray(saved.sessionIds)
     ? { ...saved.sessionIds }
     : {};
-let transcripts = {};
+let cellSeq = 0;
+let cells = {};
+if (
+  saved?.cells &&
+  typeof saved.cells === "object" &&
+  !Array.isArray(saved.cells)
+) {
+  for (const [sid, list] of Object.entries(saved.cells)) {
+    if (!Array.isArray(list)) continue;
+    cells[sid] = list
+      .filter((c) => c && typeof c.code === "string")
+      .slice(-MAX_CELLS)
+      .map((c) => ({
+        id: ++cellSeq,
+        code: c.code,
+        status: "done",
+        response: undefined,
+        resultText: typeof c.resultText === "string" ? c.resultText : "",
+        stdout: Array.isArray(c.stdout) ? c.stdout : [],
+        stderr: Array.isArray(c.stderr) ? c.stderr : [],
+        isError: !!c.isError,
+        durationMs: typeof c.durationMs === "number" ? c.durationMs : undefined,
+      }));
+  }
+}
+// Per-session-id UI state (not persisted): which cell is shown in the result
+// pane, and whether the log should keep following the newest cell.
+let selectedCellId = {};
+let followLatest = {};
+for (const [sid, list] of Object.entries(cells)) {
+  followLatest[sid] = true;
+  selectedCellId[sid] = list.length ? list[list.length - 1].id : undefined;
+}
+// REPL prompt history (ArrowUp/ArrowDown). historyCursor indexes into the
+// current session's cell codes; historyDraft holds the in-progress text that
+// was showing before history navigation started.
+let historyCursor = null;
+let historyDraft = "";
+let historyRecalling = false;
 let workspaceOpenPath = null;
+// Bumped whenever the "current run" identity changes (language switch, New
+// session, Reset). In-flight requests started before a bump must not touch
+// shared UI (status/metrics/response/display) once it no longer matches —
+// see run(), runScript() and runReplCell().
+let generation = 0;
 function effectiveMode() {
   return language === "ruby" ? "script" : userMode;
 }
@@ -127,18 +178,101 @@ function sessionIdFor(lang) {
   }
   return sessionIds[lang];
 }
+
+// ---- REPL keymap ------------------------------------------------------
+// Tiny "does this obviously continue?" heuristic: unbalanced brackets, or a
+// trailing ':' (Python block header), '\' (line continuation) or ','
+// (unfinished argument/tuple list). Anything else submits on Enter.
+function needsContinuation(code) {
+  let depth = 0;
+  for (const ch of code) {
+    if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch)) depth--;
+  }
+  if (depth > 0) return true;
+  const trimmed = code.trimEnd();
+  return (
+    trimmed.endsWith(":") || trimmed.endsWith("\\") || trimmed.endsWith(",")
+  );
+}
+function replEnterHandler(view) {
+  const code = view.state.doc.toString();
+  if (!code.trim()) return false;
+  if (needsContinuation(code)) return false;
+  submitReplLine();
+  return true;
+}
+function atFirstLine(view) {
+  const sel = view.state.selection.main;
+  return sel.empty && view.state.doc.lineAt(sel.head).number === 1;
+}
+function atLastLine(view) {
+  const sel = view.state.selection.main;
+  return (
+    sel.empty && view.state.doc.lineAt(sel.head).number === view.state.doc.lines
+  );
+}
+function recallHistory(view, code) {
+  historyRecalling = true;
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: code },
+    selection: { anchor: code.length },
+  });
+  historyRecalling = false;
+}
+function historyUp(view) {
+  if (!atFirstLine(view)) return false;
+  const list = (cells[sessionIdFor(language)] ?? []).map((c) => c.code);
+  if (!list.length) return false;
+  if (historyCursor === null) {
+    historyDraft = view.state.doc.toString();
+    historyCursor = list.length - 1;
+  } else if (historyCursor > 0) {
+    historyCursor--;
+  } else {
+    return true;
+  }
+  recallHistory(view, list[historyCursor]);
+  return true;
+}
+function historyDown(view) {
+  if (!atLastLine(view)) return false;
+  if (historyCursor === null) return false;
+  const list = (cells[sessionIdFor(language)] ?? []).map((c) => c.code);
+  historyCursor++;
+  if (historyCursor >= list.length) {
+    recallHistory(view, historyDraft);
+    historyCursor = null;
+    historyDraft = "";
+  } else {
+    recallHistory(view, list[historyCursor]);
+  }
+  return true;
+}
+function replKeymapExtension() {
+  return Prec.highest(
+    keymap.of([
+      { key: "Enter", run: replEnterHandler },
+      { key: "ArrowUp", run: historyUp },
+      { key: "ArrowDown", run: historyDown },
+    ]),
+  );
+}
+
 const editor = new EditorView({
   doc: typeof saved?.code === "string" ? saved.code : hello,
   extensions: [
     basicSetup,
     syntax.of(modes.javascript),
+    replKeys.of([]),
     oneDark,
     EditorView.lineWrapping,
     keymap.of([
       {
         key: "Mod-Enter",
         run: () => {
-          run();
+          if (effectiveMode() === "repl") submitReplLine();
+          else run();
           return true;
         },
       },
@@ -146,6 +280,10 @@ const editor = new EditorView({
     EditorView.updateListener.of((update) => {
       if (update.docChanged) {
         $("dirty").textContent = "•";
+        if (!historyRecalling) {
+          historyCursor = null;
+          historyDraft = "";
+        }
         persist();
       }
     }),
@@ -153,6 +291,22 @@ const editor = new EditorView({
   parent: $("editor"),
 });
 if (typeof saved?.envVars === "string") $("env-vars").value = saved.envVars;
+function compactCells() {
+  const out = {};
+  for (const [sid, list] of Object.entries(cells)) {
+    out[sid] = list
+      .filter((c) => c.status !== "pending")
+      .map(({ code, resultText, stdout, stderr, isError, durationMs }) => ({
+        code,
+        resultText,
+        stdout,
+        stderr,
+        isError,
+        durationMs,
+      }));
+  }
+  return out;
+}
 function persist() {
   try {
     localStorage.setItem(
@@ -163,6 +317,7 @@ function persist() {
         envVars: $("env-vars").value,
         mode: userMode,
         sessionIds,
+        cells: compactCells(),
       }),
     );
   } catch {}
@@ -193,6 +348,7 @@ function renderExamples() {
   $("example-count").textContent = String(examples.length).padStart(2, "0");
 }
 function switchLanguage(next, restore = false) {
+  generation++;
   language = next;
   examples = library[next];
   editor.dispatch({ effects: syntax.reconfigure(modes[next]) });
@@ -204,10 +360,7 @@ function switchLanguage(next, restore = false) {
     });
     if (typeof saved.envVars === "string") $("env-vars").value = saved.envVars;
   }
-  $("filename").textContent =
-    `experiment.${{ javascript: "js", python: "py", perl: "pl", ruby: "rb" }[next]}`;
   $("env-name").textContent = envNames[next];
-  $("editor").setAttribute("aria-label", `${next} code editor`);
   $("install-command").textContent =
     `pnpm dlx @sandbox-workers/cli init ${next} my-sandbox\ncd my-sandbox\npnpm install\npnpm dry-run\npnpm run deploy`;
   $("binding-command").textContent = JSON.stringify(
@@ -218,16 +371,18 @@ function switchLanguage(next, restore = false) {
   $("client-command").textContent =
     `import { createSandbox } from "@sandbox-workers/core";\n\nconst sandbox = createSandbox(env.SANDBOX);\nconst output = await sandbox.runCode(\n  ${JSON.stringify(clientSnippets[next])},\n  { envVars: { X: "12" } },\n);\n// { results: [{ text: "144" }], ... }`;
   response = undefined;
+  historyCursor = null;
+  historyDraft = "";
   $("output").textContent = "Run your code to see the result.";
   $("status").textContent = "Ready";
   $("log-count").textContent = "0";
   persist();
-  syncSessionUI();
+  syncModeUI();
 }
 renderExamples();
 $("language").onchange = () => switchLanguage($("language").value);
 $("mode-script").onclick = () => setMode("script");
-$("mode-session").onclick = () => setMode("session");
+$("mode-session").onclick = () => setMode("repl");
 for (const item of document.querySelectorAll(".runtime-item[data-language]")) {
   item.addEventListener("click", () => {
     const next = item.dataset.language;
@@ -241,6 +396,17 @@ for (const item of document.querySelectorAll(".runtime-item[data-language]")) {
 }
 $("env-vars").oninput = persist;
 $("reset").onclick = () => selectExample(selected);
+$("repl-clear").onclick = () => {
+  const sid = sessionIdFor(language);
+  cells[sid] = [];
+  selectedCellId[sid] = undefined;
+  followLatest[sid] = true;
+  historyCursor = null;
+  historyDraft = "";
+  persist();
+  renderReplLog(sid, true);
+  display();
+};
 $("run").onclick = run;
 function logRow(label, text, isError) {
   const row = document.createElement("div");
@@ -255,6 +421,10 @@ function logRow(label, text, isError) {
 function display() {
   if (tab === "workspace") {
     renderWorkspacePanel($("output"));
+    return;
+  }
+  if (effectiveMode() === "repl") {
+    displayReplSelection();
     return;
   }
   const out = $("output");
@@ -279,9 +449,7 @@ function display() {
     out.append(pre);
   } else if (response.error) {
     const { name, message, traceback } = response.error;
-    pre.textContent = [`${name}: ${message}`, ...(traceback ?? [])].join(
-      "\n",
-    );
+    pre.textContent = [`${name}: ${message}`, ...(traceback ?? [])].join("\n");
     pre.className = "error";
     out.append(pre);
   } else {
@@ -301,7 +469,8 @@ for (const name of TABS)
   $(name + "-tab").onclick = () => {
     if ($(name + "-tab").hidden) return;
     tab = name;
-    for (const t of TABS) $(t + "-tab").setAttribute("aria-selected", String(t === tab));
+    for (const t of TABS)
+      $(t + "-tab").setAttribute("aria-selected", String(t === tab));
     display();
   };
 $("copy").onclick = async () => {
@@ -318,10 +487,24 @@ function parseEnvVars(text) {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     throw new Error("envVars must be an object");
   for (const v of Object.values(value))
-    if (typeof v !== "string") throw new Error("envVars values must be strings");
+    if (typeof v !== "string")
+      throw new Error("envVars values must be strings");
   return value;
 }
-async function run() {
+
+function run() {
+  if (effectiveMode() === "repl") {
+    submitReplLine();
+    return;
+  }
+  runScript();
+}
+
+// Stateless "Script" mode: boots a fresh instance per run. `lang` is
+// captured up front and used for both the URL and every staleness check, so
+// a runtime switch while the request is in flight can never let an older
+// response overwrite a newer language's UI.
+async function runScript() {
   if (busy) return;
   let envVars;
   try {
@@ -334,11 +517,11 @@ async function run() {
   busy = true;
   $("run").disabled = true;
   $("status").textContent = "Running…";
-  const sessionMode = effectiveMode() === "session";
+  const gen = generation;
+  const lang = language;
   const code = editor.state.doc.toString();
-  const url = sessionMode
-    ? `/languages/${$("language").value}/sessions/${sessionIdFor(language)}/execute`
-    : `/execute/${$("language").value}`;
+  const url = `/execute/${lang}`;
+  let result;
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -348,21 +531,20 @@ async function run() {
     });
     if (!res.headers.get("content-type")?.includes("application/json"))
       throw new Error(`Worker returned HTTP ${res.status}`);
-    response = await res.json();
-    $("status").textContent = response.error
-      ? "Execution failed"
-      : "✓ Completed";
+    result = await res.json();
   } catch (error) {
-    response = {
+    result = {
       error: { name: error.name, message: error.message, traceback: [] },
       logs: { stdout: [], stderr: [] },
       results: [],
     };
-    $("status").textContent = "Request failed";
   } finally {
     busy = false;
     $("run").disabled = false;
   }
+  if (generation !== gen || language !== lang) return; // a newer run is now current
+  response = result;
+  $("status").textContent = response.error ? "Execution failed" : "✓ Completed";
   $("log-count").textContent =
     (response.logs?.stdout?.length ?? 0) + (response.logs?.stderr?.length ?? 0);
   $("metrics").children[0].textContent =
@@ -372,66 +554,93 @@ async function run() {
   $("metrics").children[1].textContent = response.usage
     ? `${response.usage.fuelConsumed.toLocaleString()} / ${response.usage.fuelLimit.toLocaleString()} fuel`
     : "— fuel";
-  if (sessionMode) {
-    addTranscriptEntry(code, response);
-    await refreshSessionInfo();
-  }
   display();
 }
 
-// ---- Session mode ---------------------------------------------------------
-// See website/content/guides/playground.md "Session mode" and
+// ---- REPL mode --------------------------------------------------------
+// See website/content/guides/playground.md "REPL mode" and
 // website/content/guides/sessions.md for the underlying HTTP contract.
 
 function setMode(next) {
   if ($("mode-session").disabled) next = "script";
   userMode = next;
   persist();
-  syncSessionUI();
+  syncModeUI();
 }
 
-// Reconciles every session-mode-dependent bit of the UI with the current
-// language + userMode. Called after switchLanguage() and setMode().
-function syncSessionUI() {
+// Reconciles every mode-dependent bit of the UI with the current language +
+// userMode. Called after switchLanguage() and setMode().
+function syncModeUI() {
   const isRuby = language === "ruby";
-  const isSession = effectiveMode() === "session";
-  $("mode-script").setAttribute("aria-pressed", String(!isSession));
-  $("mode-session").setAttribute("aria-pressed", String(isSession));
+  const isRepl = effectiveMode() === "repl";
+  $("mode-script").setAttribute("aria-pressed", String(!isRepl));
+  $("mode-session").setAttribute("aria-pressed", String(isRepl));
   $("mode-session").disabled = isRuby;
   $("mode-session").title = isRuby
-    ? "Sessions are not available for Ruby"
-    : "Run code in a durable, per-browser session";
-  $("session-bar").hidden = !isSession;
-  $("session-strip").hidden = !isSession;
-  $("transcript").hidden = !isSession;
-  $("workspace-tab").hidden = !isSession;
-  $("editor-mode").textContent = `${language} · ${isSession ? "session" : "script"}`;
-  if (!isSession && tab === "workspace") {
+    ? "REPL mode is not available for Ruby (sessions aren't supported)"
+    : "Evaluate code in a durable, per-browser REPL session";
+  $("session-bar").hidden = !isRepl;
+  $("session-strip").hidden = !isRepl;
+  $("workspace-tab").hidden = !isRepl;
+  $("editor-pane").classList.toggle("repl", isRepl);
+  $("repl-log").hidden = !isRepl;
+  $("reset").hidden = isRepl;
+  $("repl-clear").hidden = !isRepl;
+  $("filename").textContent = isRepl
+    ? "repl"
+    : `experiment.${{ javascript: "js", python: "py", perl: "pl", ruby: "rb" }[language]}`;
+  $("run").innerHTML = isRepl
+    ? `↵ Eval <kbd>↵</kbd>`
+    : `▶ Run code <kbd>⌘ ↵</kbd>`;
+  $("editor").setAttribute(
+    "aria-label",
+    isRepl ? `${language} REPL prompt` : `${language} code editor`,
+  );
+  $("editor-mode").textContent = `${language} · ${isRepl ? "repl" : "script"}`;
+  $("editor-footer-hint").textContent = isRepl
+    ? "Enter evaluates · Shift+Enter newline · ↑↓ history"
+    : "The last expression is the result";
+  editor.dispatch({
+    effects: replKeys.reconfigure(isRepl ? replKeymapExtension() : []),
+  });
+  if (!isRepl && tab === "workspace") {
     tab = "result";
-    for (const t of TABS) $(t + "-tab").setAttribute("aria-selected", String(t === tab));
+    for (const t of TABS)
+      $(t + "-tab").setAttribute("aria-selected", String(t === tab));
   }
-  if (isSession) {
-    $("session-id").textContent = sessionIdFor(language);
-    renderTranscript();
+  if (isRepl) {
+    const sid = sessionIdFor(language);
+    $("session-id").textContent = sid;
+    if (selectedCellId[sid] === undefined) {
+      const list = cells[sid] ?? [];
+      selectedCellId[sid] = list.length ? list[list.length - 1].id : undefined;
+      followLatest[sid] = true;
+    }
+    renderReplLog(sid, true);
     renderSessionStrip(null);
     refreshSessionInfo();
   }
   display();
 }
 
-function sessionBaseUrl() {
-  return `/languages/${language}/sessions/${sessionIdFor(language)}`;
+function sessionBaseUrl(lang, sid) {
+  return `/languages/${lang}/sessions/${sid}`;
 }
 
 async function refreshSessionInfo() {
-  if (effectiveMode() !== "session") return;
+  if (effectiveMode() !== "repl") return;
+  const lang = language;
+  const sid = sessionIdFor(lang);
+  let info = null;
   try {
-    const res = await fetch(sessionBaseUrl());
+    const res = await fetch(sessionBaseUrl(lang, sid));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    renderSessionStrip(await res.json());
+    info = await res.json();
   } catch {
-    renderSessionStrip(null);
+    info = null;
   }
+  if (!(language === lang && sessionIds[lang] === sid)) return; // a newer run is now current
+  renderSessionStrip(info);
   if (tab === "workspace") loadWorkspace();
 }
 
@@ -461,76 +670,330 @@ function renderSessionStrip(info) {
     ? `${info.snapshot.pages} snapshot page(s)${info.snapshot.stale ? " (stale)" : ""}`
     : "no snapshot yet";
   $("session-expires").textContent =
-    typeof info.expiresAt === "number" ? `expires ${relativeTime(info.expiresAt)}` : "";
+    typeof info.expiresAt === "number"
+      ? `expires ${relativeTime(info.expiresAt)}`
+      : "";
 }
 
 function resultText(response) {
-  if (response.error) return `${response.error.name}: ${response.error.message}`;
+  if (response.error)
+    return `${response.error.name}: ${response.error.message}`;
   const result = response.results?.[0];
   if (!result) return "(no result)";
   return result.json !== undefined ? JSON.stringify(result.json) : result.text;
 }
 
-function addTranscriptEntry(code, response) {
-  const id = sessionIdFor(language);
-  const list = transcripts[id] ?? (transcripts[id] = []);
-  list.push({ code, text: resultText(response), isError: !!response.error });
-  while (list.length > MAX_TRANSCRIPT) list.shift();
-  renderTranscript();
+function selectedCellFor(sid) {
+  const list = cells[sid] ?? [];
+  const cell = list.find((c) => c.id === selectedCellId[sid]);
+  return cell ?? list.at(-1);
 }
 
-function renderTranscript() {
-  const list = transcripts[sessionIdFor(language)] ?? [];
-  const container = $("transcript");
+function updateMetricsFromCell(cell) {
+  $("log-count").textContent = cell
+    ? String((cell.stdout?.length ?? 0) + (cell.stderr?.length ?? 0))
+    : "0";
+  $("metrics").children[0].textContent =
+    cell?.durationMs !== undefined
+      ? `${cell.durationMs.toFixed(1)} ms`
+      : "— ms";
+  $("metrics").children[1].textContent = cell?.response?.usage
+    ? `${cell.response.usage.fuelConsumed.toLocaleString()} / ${cell.response.usage.fuelLimit.toLocaleString()} fuel`
+    : "— fuel";
+}
+
+function displayReplSelection() {
+  const sid = sessionIdFor(language);
+  const cell = selectedCellFor(sid);
+  const out = $("output");
+  updateMetricsFromCell(cell);
+  if (!cell) {
+    out.textContent = "Evaluate a line to see the result.";
+    return;
+  }
+  out.replaceChildren();
+  const pre = document.createElement("pre");
+  if (tab === "console") {
+    const stdout = cell.stdout ?? [];
+    const stderr = cell.stderr ?? [];
+    if (!stdout.length && !stderr.length) {
+      pre.textContent = "No console output.";
+      pre.className = "muted";
+      out.append(pre);
+    }
+    for (const text of stdout) out.append(logRow("stdout", text, false));
+    for (const text of stderr) out.append(logRow("stderr", text, true));
+  } else if (tab === "raw") {
+    if (cell.response) {
+      pre.textContent = JSON.stringify(cell.response, null, 2);
+    } else {
+      pre.textContent =
+        cell.status === "pending"
+          ? "Evaluating…"
+          : "No JSON payload available (restored from local storage).";
+      pre.className = "muted";
+    }
+    out.append(pre);
+  } else if (cell.status === "pending") {
+    pre.textContent = "Evaluating…";
+    pre.className = "muted";
+    out.append(pre);
+  } else if (cell.isError) {
+    if (cell.response?.error) {
+      const { name, message, traceback } = cell.response.error;
+      pre.textContent = [`${name}: ${message}`, ...(traceback ?? [])].join(
+        "\n",
+      );
+    } else {
+      pre.textContent = cell.resultText;
+    }
+    pre.className = "error";
+    out.append(pre);
+  } else if (!cell.resultText || cell.resultText === "(no result)") {
+    pre.textContent = "No result (the last expression was undefined/None).";
+    pre.className = "muted";
+    out.append(pre);
+  } else {
+    pre.textContent = cell.resultText;
+    out.append(pre);
+  }
+}
+
+function buildCellElement(sid, cell) {
+  const el = document.createElement("div");
+  el.className = `repl-cell${cell.isError ? " error" : ""}${
+    selectedCellId[sid] === cell.id ? " selected" : ""
+  }`;
+  const promptRow = document.createElement("div");
+  promptRow.className = "repl-cell-prompt";
+  const gutter = document.createElement("span");
+  gutter.className = "repl-gutter";
+  gutter.textContent = "›";
+  const code = document.createElement("pre");
+  code.className = "repl-code";
+  code.textContent = cell.code;
+  promptRow.append(gutter, code);
+  el.append(promptRow);
+  for (const text of cell.stdout ?? []) {
+    const line = document.createElement("pre");
+    line.className = "repl-stdout";
+    line.textContent = text;
+    el.append(line);
+  }
+  for (const text of cell.stderr ?? []) {
+    const line = document.createElement("pre");
+    line.className = "repl-stderr";
+    line.textContent = text;
+    el.append(line);
+  }
+  const resultRow = document.createElement("div");
+  resultRow.className = "repl-result";
+  if (cell.status === "pending") {
+    resultRow.classList.add("pending");
+    resultRow.textContent = "… evaluating";
+  } else {
+    const pre = document.createElement("pre");
+    if (cell.isError) {
+      if (cell.response?.error) {
+        const { name, message, traceback } = cell.response.error;
+        pre.textContent = [`${name}: ${message}`, ...(traceback ?? [])].join(
+          "\n",
+        );
+      } else {
+        pre.textContent = cell.resultText;
+      }
+      pre.className = "error";
+    } else if (!cell.resultText || cell.resultText === "(no result)") {
+      pre.textContent = "(no result)";
+      pre.className = "muted";
+    } else {
+      pre.textContent = `=> ${cell.resultText}`;
+      pre.className = "repl-value";
+    }
+    resultRow.append(pre);
+    if (cell.durationMs !== undefined) {
+      const dur = document.createElement("span");
+      dur.className = "repl-duration";
+      dur.textContent = `${cell.durationMs.toFixed(1)} ms`;
+      resultRow.append(dur);
+    }
+  }
+  el.append(resultRow);
+  el.onclick = () => selectCell(sid, cell.id);
+  return el;
+}
+
+function renderReplLog(sid, scrollToEnd) {
+  const container = $("repl-log");
+  if (!container) return;
+  const list = cells[sid] ?? [];
   container.replaceChildren();
-  list.forEach((entry, i) => {
-    const details = document.createElement("details");
-    details.className = `transcript-entry${entry.isError ? " error" : ""}`;
-    const summary = document.createElement("summary");
-    summary.textContent = `#${i + 1}  ${entry.code.split("\n")[0].slice(0, 60)}`;
-    const codePre = document.createElement("pre");
-    codePre.textContent = entry.code;
-    const resultPre = document.createElement("pre");
-    resultPre.className = entry.isError ? "error" : "muted";
-    resultPre.textContent = entry.text;
-    details.append(summary, codePre, resultPre);
-    container.append(details);
+  if (!list.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted repl-empty";
+    empty.textContent = "Evaluate a line to start the REPL.";
+    container.append(empty);
+  } else {
+    for (const cell of list) container.append(buildCellElement(sid, cell));
+  }
+  if (scrollToEnd) container.scrollTop = container.scrollHeight;
+}
+
+function selectCell(sid, cellId) {
+  const list = cells[sid] ?? [];
+  selectedCellId[sid] = cellId;
+  followLatest[sid] = list.length > 0 && list[list.length - 1].id === cellId;
+  renderReplLog(sid, false);
+  if (!(effectiveMode() === "repl" && sessionIdFor(language) === sid)) return;
+  const cell = list.find((c) => c.id === cellId);
+  if (cell) {
+    $("status").textContent =
+      cell.status === "pending"
+        ? "Evaluating…"
+        : cell.isError
+          ? "Execution failed"
+          : "✓ Completed";
+  }
+  display();
+}
+
+function submitReplLine() {
+  if (effectiveMode() !== "repl") return;
+  const code = editor.state.doc.toString();
+  if (!code.trim()) return;
+  editor.dispatch({
+    changes: { from: 0, to: editor.state.doc.length, insert: "" },
   });
+  historyCursor = null;
+  historyDraft = "";
+  runReplCell(code);
+  editor.focus();
+}
+
+async function runReplCell(code) {
+  let envVars;
+  try {
+    envVars = parseEnvVars($("env-vars").value);
+  } catch {
+    $("status").textContent = "Invalid env vars JSON";
+    $("env-vars").focus();
+    return;
+  }
+  const gen = generation;
+  const lang = language;
+  const sid = sessionIdFor(lang);
+  const cell = {
+    id: ++cellSeq,
+    code,
+    status: "pending",
+    response: undefined,
+    resultText: "",
+    stdout: [],
+    stderr: [],
+    isError: false,
+    durationMs: undefined,
+  };
+  const list = cells[sid] ?? (cells[sid] = []);
+  list.push(cell);
+  while (list.length > MAX_CELLS) list.shift();
+  if (followLatest[sid] !== false) selectedCellId[sid] = cell.id;
+  $("status").textContent = "Evaluating…";
+  if (language === lang && sessionIds[lang] === sid) {
+    renderReplLog(sid, followLatest[sid] !== false);
+    if (selectedCellId[sid] === cell.id) display();
+  }
+  const url = `/languages/${lang}/sessions/${sid}/execute`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code, envVars }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.headers.get("content-type")?.includes("application/json"))
+      throw new Error(`Worker returned HTTP ${res.status}`);
+    const response = await res.json();
+    Object.assign(cell, {
+      status: "done",
+      response,
+      resultText: resultText(response),
+      stdout: response.logs?.stdout ?? [],
+      stderr: response.logs?.stderr ?? [],
+      isError: !!response.error,
+      durationMs: response.durationMs,
+    });
+  } catch (error) {
+    Object.assign(cell, {
+      status: "done",
+      response: undefined,
+      resultText: `${error.name}: ${error.message}`,
+      stdout: [],
+      stderr: [],
+      isError: true,
+      durationMs: undefined,
+    });
+  }
+  persist();
+  if (generation !== gen || language !== lang || sessionIds[lang] !== sid)
+    return; // stale
+  renderReplLog(sid, followLatest[sid] !== false);
+  $("status").textContent = cell.isError ? "Execution failed" : "✓ Completed";
+  if (selectedCellId[sid] === cell.id) display();
+  refreshSessionInfo();
 }
 
 $("session-new").onclick = async () => {
-  const old = sessionIds[language];
+  generation++;
+  const lang = language;
+  const old = sessionIds[lang];
   if (old) {
     try {
-      await fetch(`/languages/${language}/sessions/${old}`, { method: "DELETE" });
+      await fetch(sessionBaseUrl(lang, old), { method: "DELETE" });
     } catch {}
-    delete transcripts[old];
+    delete cells[old];
+    delete selectedCellId[old];
+    delete followLatest[old];
   }
-  sessionIds[language] = newSessionId();
+  sessionIds[lang] = newSessionId();
+  const sid = sessionIds[lang];
+  cells[sid] = [];
+  selectedCellId[sid] = undefined;
+  followLatest[sid] = true;
+  historyCursor = null;
+  historyDraft = "";
   persist();
   workspaceOpenPath = null;
   $("status").textContent = "New session started";
-  renderTranscript();
+  renderReplLog(sid, true);
   renderSessionStrip(null);
+  display();
   await refreshSessionInfo();
 };
 
 $("session-reset").onclick = async () => {
-  const id = sessionIdFor(language);
+  generation++;
+  const lang = language;
+  const sid = sessionIdFor(lang);
   try {
-    await fetch(`${sessionBaseUrl()}/reset`, { method: "POST" });
+    await fetch(`${sessionBaseUrl(lang, sid)}/reset`, { method: "POST" });
   } catch {}
-  transcripts[id] = [];
+  cells[sid] = [];
+  selectedCellId[sid] = undefined;
+  followLatest[sid] = true;
+  historyCursor = null;
+  historyDraft = "";
+  persist();
   workspaceOpenPath = null;
   $("status").textContent = "Session reset";
-  renderTranscript();
+  renderReplLog(sid, true);
+  display();
   await refreshSessionInfo();
 };
 
 // ---- Workspace tab ----------------------------------------------------
 
-async function sessionFilesOp(body) {
-  const res = await fetch(`${sessionBaseUrl()}/files`, {
+async function sessionFilesOp(lang, sid, body) {
+  const res = await fetch(`${sessionBaseUrl(lang, sid)}/files`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -578,7 +1041,8 @@ function renderWorkspacePanel(out) {
     saveBtn.id = "workspace-new-save";
     saveBtn.className = "quiet";
     saveBtn.textContent = "Create / overwrite";
-    saveBtn.onclick = () => writeWorkspaceFile(nameInput.value.trim(), contentArea.value);
+    saveBtn.onclick = () =>
+      writeWorkspaceFile(nameInput.value.trim(), contentArea.value);
     newFile.append(newLabel, nameInput, contentArea, saveBtn);
 
     const view = document.createElement("div");
@@ -593,13 +1057,21 @@ function renderWorkspacePanel(out) {
 }
 
 async function loadWorkspace() {
+  const lang = language;
+  const sid = sessionIdFor(lang);
   const list = $("workspace-list");
   if (!list) return;
   list.textContent = "Loading…";
   try {
-    const result = await sessionFilesOp({ op: "list", path: "/workspace", recursive: true });
+    const result = await sessionFilesOp(lang, sid, {
+      op: "list",
+      path: "/workspace",
+      recursive: true,
+    });
+    if (!(language === lang && sessionIds[lang] === sid)) return; // stale
     renderWorkspaceList(result.entries ?? []);
   } catch (error) {
+    if (!(language === lang && sessionIds[lang] === sid)) return; // stale
     list.textContent = `Could not load workspace: ${error.message}`;
   }
 }
@@ -620,7 +1092,8 @@ function renderWorkspaceList(entries) {
     const name = document.createElement("button");
     name.className = "workspace-entry-name";
     name.textContent = entry.path + (entry.type === "directory" ? "/" : "");
-    if (entry.type === "file") name.onclick = () => openWorkspaceFile(entry.path);
+    if (entry.type === "file")
+      name.onclick = () => openWorkspaceFile(entry.path);
     else name.disabled = true;
     const size = document.createElement("span");
     size.className = "workspace-entry-size";
@@ -631,8 +1104,11 @@ function renderWorkspaceList(entries) {
 }
 
 async function openWorkspaceFile(path) {
+  const lang = language;
+  const sid = sessionIdFor(lang);
   try {
-    const result = await sessionFilesOp({ op: "read", path });
+    const result = await sessionFilesOp(lang, sid, { op: "read", path });
+    if (!(language === lang && sessionIds[lang] === sid)) return; // stale
     workspaceOpenPath = path;
     const view = $("workspace-file-view");
     view.hidden = false;
@@ -643,7 +1119,9 @@ async function openWorkspaceFile(path) {
     heading.textContent = path;
     const textarea = document.createElement("textarea");
     textarea.id = "workspace-file-content";
-    textarea.value = result.isBinary ? "(binary file — editing unsupported)" : result.content;
+    textarea.value = result.isBinary
+      ? "(binary file — editing unsupported)"
+      : result.content;
     textarea.disabled = result.isBinary;
     const actions = document.createElement("div");
     actions.className = "workspace-file-actions";
@@ -661,6 +1139,7 @@ async function openWorkspaceFile(path) {
     actions.append(saveBtn, deleteBtn);
     view.append(heading, textarea, actions);
   } catch (error) {
+    if (!(language === lang && sessionIds[lang] === sid)) return; // stale
     $("status").textContent = `Could not open ${path}: ${error.message}`;
   }
 }
@@ -670,18 +1149,25 @@ async function writeWorkspaceFile(path, content) {
     $("status").textContent = "File name is required";
     return;
   }
+  const lang = language;
+  const sid = sessionIdFor(lang);
   try {
-    await sessionFilesOp({ op: "write", path, content });
+    await sessionFilesOp(lang, sid, { op: "write", path, content });
+    if (!(language === lang && sessionIds[lang] === sid)) return; // stale
     $("status").textContent = `Saved ${path}`;
     await loadWorkspace();
   } catch (error) {
+    if (!(language === lang && sessionIds[lang] === sid)) return; // stale
     $("status").textContent = `Could not save ${path}: ${error.message}`;
   }
 }
 
 async function deleteWorkspaceFile(path) {
+  const lang = language;
+  const sid = sessionIdFor(lang);
   try {
-    await sessionFilesOp({ op: "delete", path });
+    await sessionFilesOp(lang, sid, { op: "delete", path });
+    if (!(language === lang && sessionIds[lang] === sid)) return; // stale
     if (workspaceOpenPath === path) {
       workspaceOpenPath = null;
       $("workspace-file-view").hidden = true;
@@ -689,6 +1175,7 @@ async function deleteWorkspaceFile(path) {
     $("status").textContent = `Deleted ${path}`;
     await loadWorkspace();
   } catch (error) {
+    if (!(language === lang && sessionIds[lang] === sid)) return; // stale
     $("status").textContent = `Could not delete ${path}: ${error.message}`;
   }
 }

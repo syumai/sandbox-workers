@@ -92,7 +92,12 @@
               <option value="javascript">JavaScript</option>
             </select>
             <div class="section-label mode-label">MODE</div>
-            <div id="mode-toggle" class="mode-toggle" role="group" aria-label="Execution mode">
+            <div
+              id="mode-toggle"
+              class="mode-toggle"
+              role="group"
+              aria-label="Execution mode"
+            >
               <button
                 id="mode-script"
                 type="button"
@@ -104,9 +109,9 @@
                 id="mode-session"
                 type="button"
                 aria-pressed="false"
-                title="Run code in a durable, per-browser session"
+                title="Evaluate code in a durable, per-browser REPL session"
               >
-                Session
+                REPL
               </button>
             </div>
             <div class="section-label examples-label">
@@ -117,13 +122,13 @@
               <span>◇</span><strong>Room to experiment</strong>
               <p>
                 Write a script — the last expression is the result. Standard
-                libraries run inside an isolated Wasm instance. No host
-                network or files.
+                libraries run inside an isolated Wasm instance. No host network
+                or files.
               </p>
               <a href="#api-panel">Explore the API ↓</a>
             </div>
           </aside>
-          <section class="editor-pane">
+          <section class="editor-pane" id="editor-pane">
             <div class="pane-toolbar">
               <span
                 ><span id="filename">experiment.js</span>
@@ -131,9 +136,11 @@
               ></span>
               <div>
                 <button id="reset" class="quiet">Reset</button
+                ><button id="repl-clear" class="quiet" hidden>Clear log</button
                 ><button id="run" class="run">▶ Run code <kbd>⌘ ↵</kbd></button>
               </div>
             </div>
+            <div id="repl-log" class="repl-log" hidden></div>
             <div id="editor" aria-label="JavaScript code editor"></div>
             <div class="input-heading">
               <label for="env-vars"
@@ -143,11 +150,17 @@
                 ></label
               ><span>JSON</span>
             </div>
-            <textarea id="env-vars" spellcheck="false" aria-label="Environment variables JSON">
+            <textarea
+              id="env-vars"
+              spellcheck="false"
+              aria-label="Environment variables JSON"
+            >
 {"NAME":"world"}</textarea>
             <div class="editor-footer">
               <span id="editor-mode">JavaScript · script</span
-              ><span>The last expression is the result</span>
+              ><span id="editor-footer-hint"
+                >The last expression is the result</span
+              >
             </div>
           </section>
           <section class="result-pane">
@@ -175,13 +188,17 @@
                 Console <span id="log-count">0</span></button
               ><button id="raw-tab" role="tab" aria-selected="false">
                 JSON</button
-              ><button id="workspace-tab" role="tab" aria-selected="false" hidden>
+              ><button
+                id="workspace-tab"
+                role="tab"
+                aria-selected="false"
+                hidden
+              >
                 Workspace</button
               ><button id="copy" title="Copy output" aria-label="Copy output">
                 ⧉
               </button>
             </div>
-            <div id="transcript" class="transcript" hidden></div>
             <div id="output" role="tabpanel">
               <div class="empty">
                 <div>↗</div>
@@ -347,9 +364,10 @@ const output = await js.runCode(
             <div class="eyebrow">LANGUAGE-NEUTRAL PROTOCOL</div>
             <h2>One contract. More runtimes.</h2>
             <p>
-              POST code and env vars to <code>/execute/&lt;language&gt;</code
-              >.<br />The Playground gateway selects the runtime from the URL
-              path; <code>/execute</code> is an alias for
+              POST code and env vars to
+              <code>/execute/&lt;language&gt;</code>.<br />The Playground
+              gateway selects the runtime from the URL path;
+              <code>/execute</code> is an alias for
               <code>/execute/javascript</code>.
             </p>
           </div>

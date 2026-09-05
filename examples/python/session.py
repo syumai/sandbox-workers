@@ -1,4 +1,4 @@
-# Session mode only: top-level state survives from one run to the next in
+# REPL mode only: top-level state survives from one run to the next in
 # the same session, so this keeps counting instead of resetting to 1.
 runs = globals().get("runs", 0) + 1
 
