@@ -47,6 +47,16 @@ header {
   gap: 22px;
   color: #aeb5c0;
 }
+.header-links .docs-link {
+  color: var(--lime);
+  border: 1px solid #5a6a2e;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-weight: 600;
+}
+.header-links .docs-link:hover {
+  background: #dcf99218;
+}
 .brand {
   display: flex;
   align-items: center;
@@ -100,6 +110,29 @@ h1 span {
   font-size: 13px;
   line-height: 1.75;
   color: var(--muted);
+}
+.intro-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+.cta {
+  display: inline-block;
+  padding: 10px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: #e7e9ed;
+}
+.cta:hover {
+  border-color: #5a6a2e;
+}
+.cta-primary {
+  background: var(--lime);
+  border-color: var(--lime);
+  color: #1b2510;
 }
 .engine-card {
   border: 1px solid var(--border);
@@ -482,6 +515,53 @@ pre {
 .method {
   color: var(--lime);
 }
+.docs-panel {
+  border-top: 1px solid var(--border);
+  padding: 44px 0 48px;
+}
+.docs-panel-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 22px;
+  flex-wrap: wrap;
+}
+.docs-panel h2 {
+  font: 500 24px "Space Grotesk";
+  letter-spacing: -0.7px;
+  margin: 8px 0 6px;
+}
+.docs-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.docs-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  margin-top: 26px;
+}
+.docs-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #171c22;
+}
+.docs-card:hover {
+  border-color: #5a6a2e;
+}
+.docs-card strong {
+  font-size: 13px;
+}
+.docs-card small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
 footer {
   border-top: 1px solid var(--border);
   padding: 23px 0 30px;
@@ -768,7 +848,23 @@ footer > span:last-child {
   }
 }
 
-.deploy-buttons { display: flex; flex-wrap: wrap; gap: 16px; margin: 24px 0 16px; }
-.deploy-buttons a { display: flex; flex-direction: column; gap: 8px; color: inherit; text-decoration: none; }
-.deploy-buttons span { font-size: 13px; font-weight: 600; }
-.deploy-buttons img { display: block; }
+.deploy-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 24px 0 16px;
+}
+.deploy-buttons a {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+.deploy-buttons span {
+  font-size: 13px;
+  font-weight: 600;
+}
+.deploy-buttons img {
+  display: block;
+}

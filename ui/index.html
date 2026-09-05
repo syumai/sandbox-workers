@@ -13,7 +13,8 @@
           >◈ <span>sandbox<span class="brand-light">-workers</span></span></a
         ><span class="header-label">PLAYGROUND / DEMO</span>
         <nav class="header-links">
-          <a href="/docs/">Docs</a><a href="#quickstart">Deploy your own ↗</a>
+          <a class="docs-link" href="/docs/">Docs ↗</a
+          ><a href="#quickstart">Deploy your own ↗</a>
         </nav>
       </header>
       <main>
@@ -28,6 +29,12 @@
               Explore JavaScript, Python, Perl, and Ruby, then connect your own
               sandbox with Service Bindings.
             </p>
+            <div class="intro-actions">
+              <a class="cta cta-primary" href="/docs/">Read the docs →</a>
+              <a class="cta" href="/docs/getting-started/quickstart/"
+                >Quickstart</a
+              >
+            </div>
           </div>
           <div class="engine-card">
             <span class="chip">FOUR INDEPENDENT RUNTIMES</span>
@@ -317,6 +324,39 @@ Content-Type: application/json
   "code": "return input.x ** 2;",
   "input": { "x": 12 }
 }</pre>
+        </section>
+        <section class="docs-panel" aria-label="Documentation">
+          <div class="docs-panel-heading">
+            <div>
+              <div class="eyebrow">GO DEEPER</div>
+              <h2>Read the documentation.</h2>
+              <p>
+                Guides, runtime details, and the full API reference for every
+                engine.
+              </p>
+            </div>
+            <a class="cta cta-primary" href="/docs/">Open docs →</a>
+          </div>
+          <div class="docs-links">
+            <a class="docs-card" href="/docs/getting-started/quickstart/"
+              ><strong>Quickstart</strong
+              ><small>Deploy an engine and run your first request.</small></a
+            >
+            <a class="docs-card" href="/docs/guides/service-bindings/"
+              ><strong>Service Bindings</strong
+              ><small
+                >Call a runtime from your Worker without exposing it.</small
+              ></a
+            >
+            <a class="docs-card" href="/docs/reference/api/"
+              ><strong>API reference</strong
+              ><small>Request fields, responses, and error handling.</small></a
+            >
+            <a class="docs-card" href="/docs/reference/limits/"
+              ><strong>Limits</strong
+              ><small>Fuel, memory, and output bounds per run.</small></a
+            >
+          </div>
         </section>
         <footer>
           <span
