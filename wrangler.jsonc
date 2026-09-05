@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sandbox-playground",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-04",
+  "assets": {
+    "directory": "dist/ui",
+    "binding": "ASSETS",
+    "run_worker_first": ["/execute", "/languages"],
+  },
+  "services": [
+    { "binding": "JAVASCRIPT", "service": "sandbox-engine-javascript" },
+    { "binding": "PYTHON", "service": "sandbox-engine-python" },
+    { "binding": "PERL", "service": "sandbox-engine-perl" },
+    { "binding": "RUBY", "service": "sandbox-engine-ruby" },
+
+  ],
+}

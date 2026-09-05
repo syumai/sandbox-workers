@@ -1,0 +1,39 @@
+{
+  "name": "@sandbox-workers/javascript",
+  "version": "0.1.0",
+  "description": "Deployable SpiderMonkey WebAssembly sandbox for Cloudflare Workers Service Bindings",
+  "type": "module",
+  "license": "MIT AND Apache-2.0 WITH LLVM-exception AND MPL-2.0",
+  "files": [
+    "dist",
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "licenses"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    },
+    "./metadata": {
+      "types": "./dist/metadata.d.ts",
+      "import": "./dist/metadata.js"
+    }
+  },
+  "types": "./dist/worker.d.ts",
+  "bin": {
+    "sandbox-workers-javascript": "./bin/init.mjs"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "node bin/verify.mjs"
+  }
+}

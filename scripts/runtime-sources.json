@@ -1,0 +1,22 @@
+[
+  {
+    "file": "python.wasm",
+    "url": "https://github.com/goccy/python-wasm/releases/download/v0.2.0/python.wasm",
+    "sha256": "6b89255cdbda9c0b5738c4bf91dec75a0f291f19d337c33429138c14c3d4f192"
+  },
+  {
+    "file": "python.zip",
+    "url": "https://github.com/goccy/python-wasm/releases/download/v0.2.0/python_stdlib.zip",
+    "sha256": "da5660664fedea7d9be4e93f5476f819e3d44b7a0e4a81a822b04ac1a96862a2"
+  },
+  {
+    "file": "perl.wasm",
+    "url": "https://github.com/goccy/perl-wasm/releases/download/v0.2.1/perl.wasm",
+    "sha256": "d45690b993475e3de8674683c15cf448a11de3a9d730e068a58627a265a6cfd2"
+  },
+  {
+    "file": "perl.zip",
+    "url": "https://github.com/goccy/perl-wasm/releases/download/v0.2.1/perl_stdlib.zip",
+    "sha256": "92a66c9744c671d8aca2af6e9c3a1e1e3aebe603debc441b3d7e9ec1aac0e1b1"
+  }
+]

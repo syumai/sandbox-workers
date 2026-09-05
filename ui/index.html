@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#11151b" />
+    <title>sandbox-workers — Runtime Playground</title>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <a class="brand" href="/"
+          >◈ <span>sandbox<span class="brand-light">-workers</span></span></a
+        ><span class="header-label">PLAYGROUND / DEMO</span
+        ><a href="#quickstart">Deploy your own ↗</a>
+      </header>
+      <main>
+        <div class="intro">
+          <div>
+            <div class="eyebrow">YOUR ACCOUNT. YOUR RUNTIMES.</div>
+            <h1>Try it here.<br /><span>Run it on your Workers.</span></h1>
+            <p>
+              Composable language runtimes, packaged for Cloudflare Workers.<br
+                class="wide"
+              />
+              Explore JavaScript, Python, Perl, and Ruby, then connect your own
+              sandbox with Service Bindings.
+            </p>
+          </div>
+          <div class="engine-card">
+            <span class="chip">FOUR INDEPENDENT RUNTIMES</span>
+            <h2>Choose your language.</h2>
+            <p>
+              <code>@sandbox-workers/*</code><br />SpiderMonkey · CPython · Perl
+              · CRuby
+            </p>
+            <div class="engine-details">
+              <span>Isolated per run</span><span>Bounded execution</span>
+            </div>
+          </div>
+        </div>
+        <section class="runtime-catalog" aria-label="Runtime packages">
+          <a class="runtime-item" href="#playground"
+            ><span class="runtime-badge">JS</span>
+            <div>
+              <strong>@sandbox-workers/javascript</strong
+              ><small>SpiderMonkey</small>
+            </div>
+            <span class="runtime-state">Live demo</span></a
+          >
+          <a class="runtime-item" href="#playground"
+            ><span class="runtime-badge">Py</span>
+            <div>
+              <strong>@sandbox-workers/python</strong
+              ><small>CPython 3.14</small>
+            </div>
+            <span class="runtime-state">Live demo</span></a
+          >
+          <a class="runtime-item" href="#playground"
+            ><span class="runtime-badge">Pl</span>
+            <div>
+              <strong>@sandbox-workers/perl</strong><small>Perl 5.42</small>
+            </div>
+            <span class="runtime-state">Live demo</span></a
+          >
+          <a class="runtime-item" href="#playground"
+            ><span class="runtime-badge">Rb</span>
+            <div>
+              <strong>@sandbox-workers/ruby</strong><small>CRuby 4.0</small>
+            </div>
+            <span class="runtime-state">Live demo</span></a
+          >
+        </section>
+        <div id="playground" class="demo-heading">
+          <h2>Runtime Playground</h2>
+          <span>This demo runs the same package you deploy.</span>
+        </div>
+        <div class="workspace">
+          <aside>
+            <div class="section-label">EXPLORER</div>
+            <label for="language">Runtime</label
+            ><select id="language">
+              <option value="javascript">JavaScript</option>
+            </select>
+            <div class="section-label examples-label">
+              EXAMPLES <span id="example-count">04</span>
+            </div>
+            <nav id="examples" aria-label="Code examples"></nav>
+            <div class="aside-note">
+              <span>◇</span><strong>Room to experiment</strong>
+              <p>
+                Pass JSON in, return JSON out. Standard libraries run inside an
+                isolated Wasm instance. No host network or files.
+              </p>
+              <a href="#api-panel">Explore the API ↓</a>
+            </div>
+          </aside>
+          <section class="editor-pane">
+            <div class="pane-toolbar">
+              <span
+                ><span id="filename">experiment.js</span>
+                <span id="dirty" aria-label="Unsaved changes"></span
+              ></span>
+              <div>
+                <button id="reset" class="quiet">Reset</button
+                ><button id="run" class="run">▶ Run code <kbd>⌘ ↵</kbd></button>
+              </div>
+            </div>
+            <div id="editor" aria-label="JavaScript code editor"></div>
+            <div class="input-heading">
+              <label for="input"
+                >INPUT
+                <span
+                  >Available as <code id="input-name">input</code></span
+                ></label
+              ><span>JSON</span>
+            </div>
+            <textarea id="input" spellcheck="false" aria-label="JSON input">
+{"name":"world"}</textarea>
+            <div class="editor-footer">
+              <span id="editor-mode">JavaScript · async function body</span
+              ><span>Use <code>return</code> for a result</span>
+            </div>
+          </section>
+          <section class="result-pane">
+            <div class="pane-toolbar">
+              <span>OUTPUT</span
+              ><span id="status" role="status" aria-live="polite">Ready</span>
+            </div>
+            <div class="result-tabs" role="tablist" aria-label="Output views">
+              <button id="result-tab" role="tab" aria-selected="true">
+                Result</button
+              ><button id="console-tab" role="tab" aria-selected="false">
+                Console <span id="log-count">0</span></button
+              ><button id="raw-tab" role="tab" aria-selected="false">
+                JSON</button
+              ><button id="copy" title="Copy output" aria-label="Copy output">
+                ⧉
+              </button>
+            </div>
+            <div id="output" role="tabpanel">
+              <div class="empty">
+                <div>↗</div>
+                <h3>Make something happen.</h3>
+                <p>
+                  Run your code to see the result here.<br />Your next idea
+                  starts with a line.
+                </p>
+              </div>
+            </div>
+            <div id="metrics"><span>— ms</span><span>— fuel</span></div>
+          </section>
+        </div>
+        <section id="quickstart" class="quickstart">
+          <div class="quickstart-heading">
+            <div>
+              <div class="eyebrow">TAKE IT TO YOUR ACCOUNT</div>
+              <h2>One package. A private Worker.</h2>
+              <p>
+                Deploy the runtime once. Call it from your application through a
+                Service Binding.
+              </p>
+            </div>
+            <span class="release-note"
+              >v0.1.0 package preview<br />npm publication pending</span
+            >
+          </div>
+          <div class="install-steps">
+            <article>
+              <span class="step-number">01 / INSTALL</span>
+              <h3>Create the runtime Worker</h3>
+              <p>
+                After the first npm release, use the initializer. A prebuilt
+                Wasm engine is included; no C++ or Wasm toolchain needed.
+              </p>
+              <pre id="install-command">
+npx @sandbox-workers/javascript init my-sandbox
+cd my-sandbox
+npm install
+npm run dry-run
+npm run deploy</pre>
+              <p class="step-note">
+                Choose a unique Worker name before deploying. The generated
+                Worker has no public URL. For now, install a local release
+                tarball as described in the repository README.
+              </p>
+            </article>
+            <article>
+              <span class="step-number">02 / BIND</span>
+              <h3>Connect your application</h3>
+              <p>
+                Add this Service Binding to your application's
+                <code>wrangler.jsonc</code>. Both Workers belong to your
+                Cloudflare account.
+              </p>
+              <pre id="binding-command">
+{
+  "services": [{
+    "binding": "SANDBOX",
+    "service": "sandbox-javascript"
+  }]
+}</pre>
+              <p class="step-note">
+                The service name must match the deployed runtime Worker. Keep
+                your application's existing configuration.
+              </p>
+            </article>
+            <article>
+              <span class="step-number">03 / EXECUTE</span>
+              <h3>Use the typed client</h3>
+              <p>
+                Install <code>@sandbox-workers/core</code> in your caller. The
+                client uses your binding directly.
+              </p>
+              <pre id="client-command">
+import { createSandbox } from
+  "@sandbox-workers/core";
+
+const js = createSandbox(env.SANDBOX);
+const output = await js.execute({
+  code: "return input.x ** 2;",
+  input: { x: 12 },
+});
+// { ok: true, result: 144, ... }</pre>
+            </article>
+          </div>
+          <details>
+            <summary>
+              Already have a Worker project? Import the runtime directly.
+            </summary>
+            <p>
+              Install <code>@sandbox-workers/javascript</code> and use this
+              entrypoint in a dedicated Worker. Disable workers.dev and preview
+              URLs, deploy it, then bind your application to its name.
+            </p>
+            <pre>export { default } from "@sandbox-workers/javascript";</pre>
+          </details>
+        </section>
+        <section id="api-panel">
+          <div>
+            <div class="eyebrow">LANGUAGE-NEUTRAL PROTOCOL</div>
+            <h2>One contract. More runtimes.</h2>
+            <p>
+              POST code and JSON input to <code>/execute</code>.<br />Language
+              adapters keep the API ready for what comes next.
+            </p>
+          </div>
+          <pre><span class="method">POST</span> /execute
+Content-Type: application/json
+
+{
+  "language": "javascript",
+  "code": "return input.x ** 2;",
+  "input": { "x": 12 }
+}</pre>
+        </section>
+        <footer>
+          <span
+            >sandbox-workers · Independent runtimes. One execution
+            protocol.</span
+          ><span>PLAYGROUND · v0.1.0</span>
+        </footer>
+      </main>
+    </div>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

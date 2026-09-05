@@ -1,0 +1,39 @@
+{
+  "name": "@sandbox-workers/ruby",
+  "version": "0.1.0",
+  "description": "Deployable Ruby WebAssembly sandbox for Cloudflare Workers Service Bindings",
+  "type": "module",
+  "license": "SEE LICENSE IN THIRD_PARTY_NOTICES.md",
+  "files": [
+    "dist",
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "licenses"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    },
+    "./metadata": {
+      "types": "./dist/metadata.d.ts",
+      "import": "./dist/metadata.js"
+    }
+  },
+  "types": "./dist/worker.d.ts",
+  "bin": {
+    "sandbox-workers-ruby": "./bin/init.mjs"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "node bin/verify.mjs"
+  }
+}
