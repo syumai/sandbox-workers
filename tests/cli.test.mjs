@@ -22,10 +22,23 @@ for (const runtime of ["javascript", "python", "perl", "ruby"])
     assert.equal(config.name, `sandbox-${runtime}`);
     assert.equal(config.workers_dev, false);
     assert.equal(config.preview_urls, false);
-    assert.match(
-      readFileSync(join(dir, "index.js"), "utf8"),
-      new RegExp("@sandbox-workers/" + runtime),
-    );
+    const indexSource = readFileSync(join(dir, "index.js"), "utf8");
+    assert.match(indexSource, new RegExp("@sandbox-workers/" + runtime));
+    // Sessions (a Durable Object-backed REPL) are wired for every language
+    // except Ruby; see docs/sessions-design.md.
+    if (runtime === "ruby") {
+      assert.equal(config.durable_objects, undefined);
+      assert.equal(config.migrations, undefined);
+      assert.doesNotMatch(indexSource, /SandboxSession/);
+    } else {
+      assert.deepEqual(config.durable_objects, {
+        bindings: [{ name: "SESSIONS", class_name: "SandboxSession" }],
+      });
+      assert.deepEqual(config.migrations, [
+        { tag: "v1", new_sqlite_classes: ["SandboxSession"] },
+      ]);
+      assert.match(indexSource, /SandboxSession/);
+    }
     assert.match(
       readFileSync(join(dir, "README.md"), "utf8"),
       new RegExp("packages/" + runtime + "/LICENSE"),

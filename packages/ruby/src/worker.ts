@@ -4,6 +4,8 @@ import { runRuby } from "../../../runtime/ruby.mjs";
 import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
 export default {
   async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname.startsWith("/sessions/"))
+      return errorResponse(new ApiError(400, "Sessions are not supported for ruby"));
     if (new URL(request.url).pathname !== "/execute")
       return new Response("Not found", { status: 404 });
     if (request.method !== "POST")

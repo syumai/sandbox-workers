@@ -6,7 +6,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "limits": {
-    "cpu_ms": 1000
+    "cpu_ms": 2000
   },
   "build": {
     "command": "pnpm run build"
@@ -18,6 +18,22 @@
         "**/*.bin"
       ],
       "fallthrough": true
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SESSIONS",
+        "class_name": "SandboxSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "SandboxSession"
+      ]
     }
   ]
 }

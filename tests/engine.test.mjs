@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { runJavaScript, ExecutionLimitError } from "../runtime/javascript.mjs";
-import { transformForAsyncExecution } from "../packages/javascript/src/transform.mjs";
+import { runJavaScript, createJavaScriptSession, ExecutionLimitError } from "../runtime/javascript.mjs";
+import { transformForAsyncExecution, transformForRepl } from "../packages/javascript/src/transform.mjs";
+import { Workspace } from "../runtime/workspace.mjs";
 const module = new WebAssembly.Module(
   readFileSync(
     new URL("../packages/javascript/dist/engine.wasm", import.meta.url),
@@ -201,4 +202,106 @@ test("transformForAsyncExecution leaves nested returns alone", () => {
     transformForAsyncExecution("(() => { return 3 })()"),
     "(async () => {\nreturn ((() => { return 3 })())\n})()",
   );
+});
+
+// ---- transformForRepl (session REPL transform) --------------------------
+
+test("transformForRepl only rewrites the last expression when there is no top-level await", () => {
+  const result = transformForRepl("let x = 1; x + 1");
+  assert.equal(result.mode, "capture");
+  assert.equal(result.code, "let x = 1; globalThis.__sandboxSession.setResult(x + 1);");
+});
+
+test("transformForRepl hoists declarations into an async IIFE when top-level await is present", () => {
+  const result = transformForRepl("let x = 1; await Promise.resolve(); x");
+  assert.equal(result.mode, "hoist");
+  assert.match(result.code, /^var x;/);
+  assert.match(result.code, /\(x = 1\)/);
+  assert.match(result.code, /globalThis\.__sandboxSession\.setResult\(x\)/);
+});
+
+test("transformForRepl leaves a top-level return as raw source (a real SyntaxError from js_eval)", () => {
+  assert.deepEqual(transformForRepl("return 1"), { mode: "raw", code: "return 1" });
+  assert.deepEqual(transformForRepl("await 1; return 1"), {
+    mode: "raw",
+    code: "await 1; return 1",
+  });
+});
+
+// ---- createJavaScriptSession (durable sessions, phase 1) -----------------
+
+function makeSession(cwd = "/workspace") {
+  const workspace = new Workspace();
+  const cwdChanges = [];
+  const session = createJavaScriptSession(module, {
+    workspace,
+    cwd,
+    onCwdChange: (next) => cwdChanges.push(next),
+  });
+  return { session, workspace, cwdChanges };
+}
+
+test("session: var/let/const/class declarations persist across executions", () => {
+  const { session } = makeSession();
+  session.execute({ code: "var a = 1; let b = 2; const c = 3; class D { hi() { return 4; } }" });
+  const result = session.execute({ code: "a + b + c + new D().hi()" });
+  assert.deepEqual(result.results, [{ text: "10" }]);
+});
+
+test("session: a top-level await still persists declarations", () => {
+  const { session } = makeSession();
+  session.execute({ code: "let z = 5; await Promise.resolve(); z" });
+  const result = session.execute({ code: "z" });
+  assert.deepEqual(result.results, [{ text: "5" }]);
+});
+
+test("session: fs is backed by the shared workspace, visible to the HTTP files API", () => {
+  const { session, workspace } = makeSession();
+  session.execute({ code: 'fs.writeFileSync("/workspace/a.txt", "hi")' });
+  assert.equal(workspace.read("/workspace/a.txt", "/workspace").content, "hi");
+  workspace.write("/workspace/b.txt", "/workspace", "from host");
+  const result = session.execute({ code: 'fs.readFileSync("/workspace/b.txt", "utf8")' });
+  assert.deepEqual(result.results, [{ text: "'from host'" }]);
+});
+
+test("session: fs errors surface as real Error instances with a Node-style .code", () => {
+  const { session } = makeSession();
+  const result = session.execute({
+    code:
+      'let code; try { fs.readFileSync("/workspace/missing.txt", "utf8"); } catch (e) { code = e.code; } code',
+  });
+  assert.deepEqual(result.results, [{ text: "'ENOENT'" }]);
+});
+
+test("session: process.cwd()/chdir persist and call onCwdChange", () => {
+  const { session, cwdChanges } = makeSession();
+  session.execute({ code: 'fs.mkdirSync("/workspace/sub"); process.chdir("sub")' });
+  const result = session.execute({ code: "process.cwd()" });
+  assert.deepEqual(result.results, [{ text: "'/workspace/sub'" }]);
+  assert.equal(session.cwd, "/workspace/sub");
+  assert.ok(cwdChanges.includes("/workspace/sub"));
+});
+
+test("session: import() is served from the workspace", () => {
+  const { session } = makeSession();
+  session.execute({ code: 'fs.writeFileSync("/workspace/lib.mjs", "export const v = 7;")' });
+  const result = session.execute({ code: 'const m = await import("./lib.mjs"); m.v' });
+  assert.deepEqual(result.results, [{ text: "7" }]);
+});
+
+test("session: fuel exhaustion is reported without invalidating the instance", () => {
+  const { session } = makeSession();
+  session.execute({ code: "var survivor = 42" });
+  assert.throws(() => session.execute({ code: "while (true) {}" }), ExecutionLimitError);
+  const result = session.execute({ code: "survivor" });
+  assert.deepEqual(result.results, [{ text: "42" }]);
+});
+
+test("session: an ordinary guest exception does not clobber prior globals", () => {
+  const { session } = makeSession();
+  session.execute({ code: "var kept = 1" });
+  const failed = session.execute({ code: "null.x" });
+  assert.equal(failed.error.name, "TypeError");
+  const result = session.execute({ code: "kept" });
+  assert.deepEqual(result.results, [{ text: "1" }]);
 });

@@ -103,6 +103,24 @@ Only request/transport failures (400, 405, 413, 415, 502) use a non-200 status, 
 
 Always check the `error` field, not the HTTP status, to see whether guest code succeeded.
 
+## Sessions
+
+A **session** is a named, durable REPL backed by a Durable Object — see the [sessions guide](/guides/sessions) for the full contract, the files API, and per-language semantics. Sessions are supported for JavaScript, Python, and Perl; every `/sessions/*` route on a Ruby runtime Worker returns 400 `Sessions are not supported for ruby`. Session ids match `^[A-Za-z0-9._-]{1,128}$`.
+
+| Method and path | Body | Response |
+| --- | --- | --- |
+| `POST /sessions/:id/execute` | `{code, envVars?, cwd?}` | The `/execute` result plus `session: {id, cwd, executions}`; always 200 |
+| `GET /sessions/:id` | | `{id, language, engine, cwd, createdAt, lastUsed, executions, workspace: {files, bytes}, snapshot: null}` |
+| `DELETE /sessions/:id` | | `{ok: true}` |
+| `POST /sessions/:id/reset` | | `{ok: true}` |
+| `POST /sessions/:id/files` | `{op, path, newPath?, content?, encoding?, recursive?, force?}` | Per operation — see the sessions guide |
+
+`snapshot` is always `null` in this phase; memory snapshots that survive Durable Object eviction are a later phase. File operation failures return a 4xx status with `{error: {name: "FileError", code, message}}`; other transport and validation errors on these routes use the same `{error: {name: "ApiError", message}}` shape as `/execute`.
+
+### Gateway path
+
+The Playground gateway forwards `/languages/:language/sessions/:id` and any further sub-path (for example `/languages/:language/sessions/:id/execute` or `/languages/:language/sessions/:id/files`) to the matching runtime binding's `/sessions/:id[/...]`, for `GET`, `POST`, and `DELETE`, preserving the body and status code. An unsupported `:language` returns 400, the same as `/execute`.
+
 ## GET /languages
 
 The Playground gateway returns `{languages:[...]}` with runtime IDs, names, package versions, engine names, execution modes, capabilities, and configured limits. Individual engine Workers expose only `/execute`.

@@ -5,6 +5,9 @@ const sha256 =
 for (const language of ["javascript", "python", "perl", "ruby"]) {
   const directory = `templates/${language}`;
   await mkdir(directory, { recursive: true });
+  // Sessions (a Durable Object-backed REPL) are not supported for Ruby; see
+  // docs/sessions-design.md.
+  const sessionsSupported = language !== "ruby";
   const write = (name, value) =>
     writeFile(
       `${directory}/${name}`,
@@ -35,6 +38,14 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
     limits: { cpu_ms: 2000 },
     build: { command: "pnpm run build" },
     rules: [{ type: "Data", globs: ["**/*.bin"], fallthrough: true }],
+    ...(sessionsSupported
+      ? {
+          durable_objects: {
+            bindings: [{ name: "SESSIONS", class_name: "SandboxSession" }],
+          },
+          migrations: [{ tag: "v1", new_sqlite_classes: ["SandboxSession"] }],
+        }
+      : {}),
   });
   await write("runtime-source.json", {
     language,
@@ -49,11 +60,21 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
   await write(".node-version", "24\n");
   await copyFile("scripts/template-build.mjs", `${directory}/build.mjs`);
   await copyFile("LICENSE", `${directory}/LICENSE`);
+  const readme = await readFile("scripts/template-readme.md", "utf8");
   await write(
     "README.md",
-    (await readFile("scripts/template-readme.md", "utf8")).replaceAll(
-      "{{language}}",
-      language,
-    ),
+    renderTemplate(readme, language, sessionsSupported),
   );
+}
+// Minimal templating: {{language}} substitution and {{#sessions}}...{{/sessions}}
+// / {{^sessions}}...{{/sessions}} blocks kept or dropped for the language.
+function renderTemplate(text, language, sessionsSupported) {
+  return text
+    .replace(/{{#sessions}}\n([\s\S]*?){{\/sessions}}\n/g, (_, block) =>
+      sessionsSupported ? block : "",
+    )
+    .replace(/{{\^sessions}}\n([\s\S]*?){{\/sessions}}\n/g, (_, block) =>
+      sessionsSupported ? "" : block,
+    )
+    .replaceAll("{{language}}", language);
 }

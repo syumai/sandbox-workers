@@ -19,5 +19,21 @@
       ],
       "fallthrough": true
     }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SESSIONS",
+        "class_name": "SandboxSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "SandboxSession"
+      ]
+    }
   ]
 }

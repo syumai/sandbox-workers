@@ -27,6 +27,27 @@ Call `env.SANDBOX.fetch()` with a JSON POST to `https://sandbox.internal/execute
 
 Public and preview URLs are disabled. Deploying the runtime does not deploy the Playground or create the caller's Service Binding.
 
+{{#sessions}}
+## Sessions
+
+This template's `wrangler.jsonc` includes a `SESSIONS` Durable Object binding (`SandboxSession`, with a `new_sqlite_classes` migration), so callers can also open a named, durable session instead of the stateless `runCode`:
+
+```ts
+import { createSandbox } from "@sandbox-workers/core";
+
+const sandbox = createSandbox(env.SANDBOX, "{{language}}");
+const session = sandbox.session("user-42");
+await session.runCode(code, { envVars, cwd });
+```
+
+A session keeps top-level variables, functions, and a writable `/workspace` alive across calls for as long as its Durable Object stays in memory (persistence across eviction is a later phase). See [the sessions guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md) for language-specific REPL semantics, the files API, and limits.
+{{/sessions}}
+{{^sessions}}
+## Sessions
+
+Sessions (durable, stateful REPLs backed by a Durable Object) are not supported for Ruby: its initial memory and `RubyVM`'s host-side state rule out the memory-snapshot mechanism the other languages use. This template only serves the stateless `POST /execute`. See [the sessions guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md).
+{{/sessions}}
+
 ## Licenses
 
 Review this project's `LICENSE`, the generated `runtime/LICENSE`, and `runtime/THIRD_PARTY_NOTICES.md` before use or redistribution. Bundled interpreters retain their upstream licenses, included in `runtime/licenses/`; the MIT license for sandbox-workers code does not replace them.

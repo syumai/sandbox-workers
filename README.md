@@ -81,6 +81,10 @@ A Service Binding targets a **Worker deployed in your account**. Deploy the runt
 
 Replace `javascript` in the installation commands with `python`, `perl`, or `ruby`. Specify the language in the client, for example `createSandbox(env.SANDBOX, 'python')`. Each initializer generates the required configuration, including Data module rules for the Python and Perl standard libraries.
 
+### Sessions
+
+`runCode` above is stateless. `sandbox.session(id)` opens a durable, stateful REPL instead — top-level variables and a writable `/workspace` persist across calls, backed by a Durable Object the runtime Worker exports (`SESSIONS` / `SandboxSession`, already wired into the CLI initializer and deploy templates for JavaScript, Python, and Perl; Ruby does not support sessions). See the [sessions guide](website/content/guides/sessions.md) and [language runtimes](docs/languages.md) for the client API, the files API, and per-language REPL semantics.
+
 ## Develop the Playground
 
 Requires Node.js 22.12 or later (tested with 24.18) and pnpm 10.7.1.

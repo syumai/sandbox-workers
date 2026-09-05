@@ -5,7 +5,10 @@ import { javascriptRuntime } from "@sandbox-workers/javascript/metadata";
 import {
   ApiError,
   errorResponse,
+  readBody,
   readExecution,
+  MAX_REQUEST_BYTES,
+  MAX_FILES_REQUEST_BYTES,
   type LanguageEngine,
 } from "@sandbox-workers/core";
 interface Env {
@@ -15,6 +18,17 @@ interface Env {
   RUBY: Fetcher;
   ASSETS: Fetcher;
 }
+// Each runtime is deployed as a private, independently versioned Worker.
+function engineFor(env: Env, language: string): LanguageEngine | undefined {
+  const engines: Record<string, LanguageEngine> = Object.create(null);
+  engines.javascript = env.JAVASCRIPT;
+  engines.python = env.PYTHON;
+  engines.perl = env.PERL;
+  engines.ruby = env.RUBY;
+  return engines[language];
+}
+const SESSION_ROUTE = /^\/languages\/([^/]+)(\/sessions\/.+)$/;
+const SESSION_METHODS = new Set(["GET", "POST", "DELETE"]);
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const path = new URL(request.url).pathname;
@@ -30,13 +44,7 @@ export default {
         );
       try {
         const payload = await readExecution(request);
-        // Each runtime is deployed as a private, independently versioned Worker.
-        const engines: Record<string, LanguageEngine> = Object.create(null);
-        engines.javascript = env.JAVASCRIPT;
-        engines.python = env.PYTHON;
-        engines.perl = env.PERL;
-        engines.ruby = env.RUBY;
-        const engine = engines[payload.language];
+        const engine = engineFor(env, payload.language);
         if (!engine)
           throw new ApiError(400, `Unsupported language: ${payload.language}`);
         return await engine.fetch(
@@ -52,6 +60,42 @@ export default {
     }
     if (path === "/languages")
       return new Response("Method not allowed", { status: 405 });
+    // Forward /languages/:language/sessions/:id[/...] to the runtime binding
+    // for :language as /sessions/:id[/...]. Bodies are passed through
+    // unchanged (size-limited like /execute); status codes and bodies are
+    // relayed verbatim.
+    const sessionMatch = SESSION_ROUTE.exec(path);
+    if (sessionMatch) {
+      const [, language, rest] = sessionMatch;
+      if (!SESSION_METHODS.has(request.method))
+        return new Response("Method not allowed", {
+          status: 405,
+          headers: { Allow: "GET, POST, DELETE" },
+        });
+      try {
+        const engine = engineFor(env, language);
+        if (!engine)
+          throw new ApiError(400, `Unsupported language: ${language}`);
+        const init: RequestInit = { method: request.method };
+        if (request.method === "POST") {
+          init.body = await readBody(
+            request,
+            rest.endsWith("/files")
+              ? MAX_FILES_REQUEST_BYTES
+              : MAX_REQUEST_BYTES,
+          );
+          init.headers = {
+            "content-type":
+              request.headers.get("content-type") ?? "application/json",
+          };
+        }
+        return await engine.fetch(
+          new Request(`https://engine.internal${rest}`, init),
+        );
+      } catch (error) {
+        return errorResponse(error);
+      }
+    }
     return env.ASSETS.fetch(request);
   },
 } satisfies ExportedHandler<Env>;

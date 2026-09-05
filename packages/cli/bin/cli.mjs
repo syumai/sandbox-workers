@@ -18,6 +18,10 @@ const directory = resolve(directoryArg ?? `sandbox-${runtime}`);
 const { version } = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 );
+// Sessions (durable REPLs backed by a Durable Object) are not supported for
+// Ruby: its initial memory and RubyVM's host-side state rule out the
+// memory-snapshot mechanism the other languages use. See docs/sessions-design.md.
+const sessionsSupported = runtime !== "ruby";
 const files = {
   "package.json":
     JSON.stringify(
@@ -36,7 +40,9 @@ const files = {
       null,
       2,
     ) + "\n",
-  "index.js": `export { default } from "@sandbox-workers/${runtime}";\n`,
+  "index.js": sessionsSupported
+    ? `export { default, SandboxSession } from "@sandbox-workers/${runtime}";\n`
+    : `export { default } from "@sandbox-workers/${runtime}";\n`,
   "wrangler.jsonc":
     JSON.stringify(
       {
@@ -47,11 +53,27 @@ const files = {
         workers_dev: false,
         preview_urls: false,
         rules: [{ type: "Data", globs: ["**/*.bin"], fallthrough: true }],
+        ...(sessionsSupported
+          ? {
+              durable_objects: {
+                bindings: [
+                  { name: "SESSIONS", class_name: "SandboxSession" },
+                ],
+              },
+              migrations: [
+                { tag: "v1", new_sqlite_classes: ["SandboxSession"] },
+              ],
+            }
+          : {}),
       },
       null,
       2,
     ) + "\n",
-  "README.md": `# ${runtime} sandbox Worker\n\nRun pnpm install, pnpm dry-run, then pnpm run deploy. Set a unique Worker name first. Bind your caller to that Worker name. Code is a function body with JSON input (input, or $input for Perl).\n\n## Licenses\n\nBefore use or redistribution, review [the runtime LICENSE](https://github.com/syumai/sandbox-workers/blob/main/packages/${runtime}/LICENSE) and [THIRD_PARTY_NOTICES.md](https://github.com/syumai/sandbox-workers/blob/main/packages/${runtime}/THIRD_PARTY_NOTICES.md). Installed copies are in node_modules/@sandbox-workers/${runtime}/. Bundled engines retain their upstream licenses; sandbox-workers' MIT license does not replace them.\n`,
+  "README.md": `# ${runtime} sandbox Worker\n\nRun pnpm install, pnpm dry-run, then pnpm run deploy. Set a unique Worker name first. Bind your caller to that Worker name. Code is a function body with JSON input (input, or $input for Perl).\n${
+    sessionsSupported
+      ? `\nThis Worker also includes a \`SESSIONS\` Durable Object binding and a \`new_sqlite_classes\` migration, both already in \`wrangler.jsonc\`, so callers can open durable sessions with \`sandbox.session(id)\` in addition to the stateless \`runCode\`. See the [sessions guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md).\n`
+      : `\nSessions (durable, stateful REPLs) are not supported for ${runtime}; this Worker only serves the stateless execution API.\n`
+  }\n## Licenses\n\nBefore use or redistribution, review [the runtime LICENSE](https://github.com/syumai/sandbox-workers/blob/main/packages/${runtime}/LICENSE) and [THIRD_PARTY_NOTICES.md](https://github.com/syumai/sandbox-workers/blob/main/packages/${runtime}/THIRD_PARTY_NOTICES.md). Installed copies are in node_modules/@sandbox-workers/${runtime}/. Bundled engines retain their upstream licenses; sandbox-workers' MIT license does not replace them.\n`,
   ".gitignore": "node_modules/\n.wrangler/\n.dev.vars\n",
 };
 // Refuse existing files, including dangling symlinks, and never overwrite them.

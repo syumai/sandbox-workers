@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { runEmbedded } from "../runtime/embedded.mjs";
+import { runEmbedded, createEmbeddedSession } from "../runtime/embedded.mjs";
 import { runRuby } from "../runtime/ruby.mjs";
+import { Workspace } from "../runtime/workspace.mjs";
 const cases = {
   python: {
     normal:
@@ -113,6 +114,83 @@ for (const [language, samples] of Object.entries(cases)) {
       assert.deepEqual(r.results, [{ json: { name: "世界" } }]);
     });
 }
+// ---- createEmbeddedSession (durable sessions, phase 1: Python & Perl) ----
+
+for (const language of ["python", "perl"]) {
+  const module = new WebAssembly.Module(readFileSync(`packages/${language}/dist/engine.wasm`));
+  const archive = readFileSync(`packages/${language}/dist/stdlib.bin`);
+  const varDef = language === "python" ? "counter = 1" : "our $counter = 1; 1;";
+  const varUse = language === "python" ? "counter + 1" : "$counter + 1";
+  const writeCode =
+    language === "python"
+      ? 'open("/workspace/a.txt", "w").write("hi")'
+      : 'open(my $fh, ">", "/workspace/a.txt") or die $!; print $fh "hi"; close($fh); 1;';
+  const readCode = language === "python" ? 'open("/workspace/a.txt").read()' : undefined;
+  const chdirCode =
+    language === "python"
+      ? 'import os\nos.mkdir("/workspace/sub")\nos.chdir("sub")\nos.getcwd()'
+      : 'mkdir("/workspace/sub"); chdir("sub") or die $!; 1;';
+  const loopCode = language === "python" ? "while True: pass" : "while(1) {}";
+
+  test(`${language} session: a variable defined in call 1 is visible in call 2`, () => {
+    const workspace = new Workspace();
+    const session = createEmbeddedSession(module, archive, language, { workspace, cwd: "/workspace" });
+    session.execute({ code: varDef });
+    const r = session.execute({ code: varUse });
+    assert.deepEqual(r.results, [{ text: "2" }]);
+  });
+
+  test(`${language} session: files written by the guest are readable via the shared workspace`, () => {
+    const workspace = new Workspace();
+    const session = createEmbeddedSession(module, archive, language, { workspace, cwd: "/workspace" });
+    session.execute({ code: writeCode });
+    assert.equal(workspace.read("/workspace/a.txt", "/workspace").content, "hi");
+    if (readCode) {
+      workspace.write("/workspace/b.txt", "/workspace", "from host");
+      const r = session.execute({ code: 'open("/workspace/b.txt").read()' });
+      assert.deepEqual(r.results, [{ text: "'from host'" }]);
+    }
+  });
+
+  test(`${language} session: cwd persists across calls after chdir`, () => {
+    const workspace = new Workspace();
+    const session = createEmbeddedSession(module, archive, language, { workspace, cwd: "/workspace" });
+    session.execute({ code: chdirCode });
+    assert.equal(session.cwd, "/workspace/sub");
+  });
+
+  test(`${language} session: fuel exhaustion invalidates the instance (caller must rebuild)`, () => {
+    const workspace = new Workspace();
+    const session = createEmbeddedSession(module, archive, language, { workspace, cwd: "/workspace" });
+    session.execute({ code: varDef });
+    const r = session.execute({ code: loopCode });
+    assert.equal(r.error.name, "ExecutionLimitError");
+    assert.equal(session.invalid, true);
+  });
+
+  test(`${language} session: an ordinary guest exception does not invalidate the instance`, () => {
+    const workspace = new Workspace();
+    const session = createEmbeddedSession(module, archive, language, { workspace, cwd: "/workspace" });
+    session.execute({ code: varDef });
+    const failCode = language === "python" ? 'raise ValueError("boom")' : 'die "boom";';
+    const r = session.execute({ code: failCode });
+    assert.ok(r.error);
+    assert.equal(session.invalid, false);
+    const after = session.execute({ code: varUse });
+    assert.deepEqual(after.results, [{ text: "2" }]);
+  });
+}
+
+test("python session: `import lib` resolves modules from /workspace", () => {
+  const module = new WebAssembly.Module(readFileSync("packages/python/dist/engine.wasm"));
+  const archive = readFileSync("packages/python/dist/stdlib.bin");
+  const workspace = new Workspace();
+  const session = createEmbeddedSession(module, archive, "python", { workspace, cwd: "/workspace" });
+  session.execute({ code: 'open("/workspace/lib.py", "w").write("val = 7\\n")' });
+  const r = session.execute({ code: "import lib\nlib.val" });
+  assert.deepEqual(r.results, [{ text: "7" }]);
+});
+
 for (const [language, files] of Object.entries({
   python: ["hello.py", "stdlib.py"],
   perl: ["hello.pl", "regex.pl"],

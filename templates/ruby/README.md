@@ -27,6 +27,10 @@ Call `env.SANDBOX.fetch()` with a JSON POST to `https://sandbox.internal/execute
 
 Public and preview URLs are disabled. Deploying the runtime does not deploy the Playground or create the caller's Service Binding.
 
+## Sessions
+
+Sessions (durable, stateful REPLs backed by a Durable Object) are not supported for Ruby: its initial memory and `RubyVM`'s host-side state rule out the memory-snapshot mechanism the other languages use. This template only serves the stateless `POST /execute`. See [the sessions guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md).
+
 ## Licenses
 
 Review this project's `LICENSE`, the generated `runtime/LICENSE`, and `runtime/THIRD_PARTY_NOTICES.md` before use or redistribution. Bundled interpreters retain their upstream licenses, included in `runtime/licenses/`; the MIT license for sandbox-workers code does not replace them.

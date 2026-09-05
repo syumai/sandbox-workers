@@ -27,6 +27,10 @@ Python and Perl use goccy's protobuf ABI; Ruby uses the official RubyVM ABI. Thi
 
 Python and Perl's upstream ABI captures stdout until execution completes. Wasm memory and fuel bound that accumulation, and the host checks output limits afterward. Ruby output is limited as it is written. Result serialization and parsing also have size bounds.
 
+## Sessions
+
+`POST /execute` boots a fresh Wasm instance every call. A **session** (`POST /sessions/:id/execute` and the rest of `/sessions/:id/...`) is a durable, stateful REPL backed by a Durable Object instead: top-level variables, functions, and a writable `/workspace` persist across calls to the same session id, for as long as its Durable Object stays live in memory (surviving eviction is a later phase; see `docs/sessions-design.md`). Sessions are supported for JavaScript, Python, and Perl; Ruby answers every `/sessions/*` route with 400. See the [sessions guide](../website/content/guides/sessions.md) for the client API, the files API, and per-language REPL semantics.
+
 ## PHP evaluation
 
 The PHP 8.5 Emscripten build in `php-wasm@0.1.0` was evaluated. Its Wasm is approximately 17 MiB, but it requires 128 MiB of initial linear memory. The Workers isolate also needs memory for the JavaScript host and other overhead, so this build was not adopted. An adapter would also need to block Emscripten's host JavaScript evaluation, network access, and dynamic-library paths.

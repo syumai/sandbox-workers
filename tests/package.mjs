@@ -55,6 +55,18 @@ try {
   );
   assert.equal(config.workers_dev, false);
   assert.equal(config.preview_urls, false);
+  // JavaScript supports sessions (a Durable Object-backed REPL); see
+  // docs/sessions-design.md.
+  assert.deepEqual(config.durable_objects, {
+    bindings: [{ name: "SESSIONS", class_name: "SandboxSession" }],
+  });
+  assert.deepEqual(config.migrations, [
+    { tag: "v1", new_sqlite_classes: ["SandboxSession"] },
+  ]);
+  assert.match(
+    await readFile(join(worker, "index.js"), "utf8"),
+    /SandboxSession/,
+  );
   run(
     "npm",
     ["install", "--ignore-scripts", "--no-audit", "--no-fund", js],
@@ -74,7 +86,7 @@ try {
   assert.match(output, /Total Upload:/);
   console.log(output);
   // Use only exports from the installed client tarball, not workspace sources.
-  const clientTest = `import { createSandbox, SandboxTransportError } from '@sandbox-workers/core';
+  const clientTest = `import { createSandbox, SandboxTransportError, SandboxFileError } from '@sandbox-workers/core';
 import assert from 'node:assert/strict';
 let body;
 const client = createSandbox({ async fetch(request) { body = await request.json(); return Response.json({logs:{stdout:[],stderr:[]},results:[{text:'144'}]}); } });
@@ -83,6 +95,47 @@ assert.equal(body.language,'javascript');
 assert.equal(body.envVars.X,'12');
 const broken = createSandbox({ async fetch() { return new Response('down',{status:503}); } });
 await assert.rejects(broken.runCode('1'),SandboxTransportError);
+// Session client: id validation, execute/info/reset/destroy routing, and file errors.
+assert.throws(() => client.session('bad id!'), /Invalid session id/);
+const calls = [];
+const sessionBinding = createSandbox({
+  async fetch(request) {
+    const url = new URL(request.url);
+    calls.push(request.method + ' ' + url.pathname);
+    if (url.pathname.endsWith('/execute'))
+      return Response.json({logs:{stdout:[],stderr:[]},results:[{text:'1'}],session:{id:'demo',cwd:'/workspace',executions:1}});
+    if (request.method === 'DELETE' || url.pathname.endsWith('/reset'))
+      return Response.json({ok:true});
+    if (url.pathname.endsWith('/files')) {
+      const req = await request.json();
+      if (req.op === 'read')
+        return Response.json({error:{name:'FileError',code:'ENOENT',message:'no such file'}}, {status:404});
+      return Response.json({size:3});
+    }
+    return Response.json({id:'demo',language:'javascript',engine:'x',cwd:'/workspace',createdAt:0,lastUsed:0,executions:1,workspace:{files:0,bytes:0},snapshot:null});
+  },
+}, 'javascript').session('demo');
+const executed = await sessionBinding.runCode('1', { cwd: '/workspace' });
+assert.equal(executed.session.executions, 1);
+const info = await sessionBinding.info();
+assert.equal(info.id, 'demo');
+await sessionBinding.reset();
+await sessionBinding.destroy();
+assert.deepEqual(await sessionBinding.writeFile('/workspace/a.txt', 'hi'), { size: 3 });
+await assert.rejects(sessionBinding.readFile('/workspace/missing.txt'), (error) => {
+  assert.ok(error instanceof SandboxFileError);
+  assert.equal(error.code, 'ENOENT');
+  assert.equal(error.status, 404);
+  return true;
+});
+assert.deepEqual(calls, [
+  'POST /sessions/demo/execute',
+  'GET /sessions/demo',
+  'POST /sessions/demo/reset',
+  'DELETE /sessions/demo',
+  'POST /sessions/demo/files',
+  'POST /sessions/demo/files',
+]);
 `;
   await writeFile(join(dir, "client-test.mjs"), clientTest);
   run(process.execPath, ["client-test.mjs"]);

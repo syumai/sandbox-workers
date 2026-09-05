@@ -56,3 +56,19 @@ In local development, run the target Workers too. The repository's `pnpm dev` st
 ## Public callers
 
 Keep runtime URLs disabled. If your caller accepts user-supplied code, apply authentication, rate limiting, and application-specific input validation at that boundary. A private engine does not secure an unrestricted public caller automatically.
+
+## Sessions and Durable Objects
+
+`runCode` above is stateless — every call boots a fresh Wasm instance. [Sessions](/guides/sessions) add a durable, stateful REPL through `sandbox.session(id)`, backed by a Durable Object exported by the runtime Worker (JavaScript, Python, and Perl; not Ruby). The Durable Object binding and its `new_sqlite_classes` migration belong to the **runtime Worker's own** `wrangler.jsonc`, not the caller's:
+
+```jsonc
+// Runtime Worker's wrangler.jsonc, not the caller's
+{
+  "durable_objects": {
+    "bindings": [{ "name": "SESSIONS", "class_name": "SandboxSession" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SandboxSession"] }],
+}
+```
+
+The CLI initializer and the deploy-to-Cloudflare templates already configure this for the three supported languages. The calling application still only needs the plain Service Binding shown above — no Durable Object binding is required there, because the client talks to the runtime Worker's `/sessions/:id` routes over the same binding used for `/execute`.

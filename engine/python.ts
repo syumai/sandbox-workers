@@ -1,1 +1,1 @@
-export { default } from "@sandbox-workers/python";
+export { default, SandboxSession } from "@sandbox-workers/python";

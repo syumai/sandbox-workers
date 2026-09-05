@@ -1,4 +1,6 @@
 export const MAX_REQUEST_BYTES = 96 * 1024;
+/** Session file operations carry up to a 1 MiB file as base64, so they get a larger cap. */
+export const MAX_FILES_REQUEST_BYTES = 2 * 1024 * 1024;
 export const MAX_CODE_BYTES = 64 * 1024;
 const ENV_VAR_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -135,6 +137,43 @@ export class ApiError extends Error {
   ) {
     super(message);
   }
+}
+/**
+ * Reads a request body up to `maxBytes`, without validating its shape. Used
+ * by callers that forward a JSON body unchanged (the gateway's session
+ * routes) rather than parsing an `ExecutionRequest` (see `readExecution`).
+ */
+export async function readBody(
+  request: Request,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  if (Number(request.headers.get("content-length")) > maxBytes)
+    throw new ApiError(413, "Request too large");
+  const reader = request.body?.getReader();
+  if (!reader) return new Uint8Array(0);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel();
+        throw new ApiError(413, "Request too large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const data = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return data;
 }
 export function errorResponse(error: unknown): Response {
   return Response.json(

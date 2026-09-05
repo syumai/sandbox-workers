@@ -1,7 +1,15 @@
 import { createWasi, ExecutionLimitError } from "./wasi.mjs";
 import { invoke } from "./protobuf.mjs";
-import { javascriptPrelude } from "./javascript-prelude.mjs";
-import { transformForAsyncExecution } from "../packages/javascript/src/transform.mjs";
+import {
+  javascriptPrelude,
+  javascriptSessionPrelude,
+  javascriptFsFacade,
+} from "./javascript-prelude.mjs";
+import {
+  transformForAsyncExecution,
+  transformForRepl,
+} from "../packages/javascript/src/transform.mjs";
+import { WorkspaceError } from "./workspace.mjs";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -14,6 +22,8 @@ const NATIVE_STACK_QUOTA_BYTES = 1 * 1024 * 1024;
 // Method ids are alphabetical over js.h's exported names (see engine/README notes).
 const JS_NEW = "w_0_24";
 const JS_EVAL = "w_0_14";
+const JS_GLOBAL = "w_0_20";
+const JS_DEFINE_FUNCTION = "w_0_12";
 const JS_INTERRUPT_ADDR = "w_0_21";
 const JS_INTERRUPT_BITS_ADDR = "w_0_22";
 const JS_INTERRUPT_BITS_VALUE = "w_0_23";
@@ -30,6 +40,7 @@ const INTERRUPTED_ERROR = "JS execution interrupted";
 // covering the case where the interrupt is never observed (e.g. a long single
 // non-looping host call) so a request can never run forever.
 function createMeter(fuel) {
+  let limit = fuel;
   let remaining = fuel;
   let armed = null;
   let interrupted = false;
@@ -48,22 +59,263 @@ function createMeter(fuel) {
             true,
           );
       }
-      if (remaining <= -fuel)
+      if (remaining <= -limit)
         throw new ExecutionLimitError("Execution fuel exhausted");
     },
     arm(memory, addr, bitsAddr, bits) {
       armed = { memory, addr, bitsAddr, bits };
+    },
+    // Sessions reuse one instance across many executions: reset the budget
+    // (and clear any interrupt request left armed by a PRIOR execution) at
+    // the start of each one, so a fuel exhaustion in call N doesn't bleed
+    // into call N+1.
+    reset(newFuel) {
+      limit = newFuel;
+      remaining = newFuel;
+      interrupted = false;
+      if (armed) {
+        const view = new DataView(armed.memory.buffer);
+        view.setUint32(armed.addr, 0, true);
+        if (armed.bitsAddr !== 0)
+          view.setUint32(armed.bitsAddr, view.getUint32(armed.bitsAddr, true) & ~armed.bits, true);
+      }
     },
     interrupted() {
       return interrupted;
     },
     usage(memory) {
       return {
-        fuelConsumed: fuel - remaining,
-        fuelLimit: fuel,
+        fuelConsumed: limit - remaining,
+        fuelLimit: limit,
         memoryBytes: memory.buffer.byteLength,
       };
     },
+  };
+}
+
+function jsGlobal(instance, handle) {
+  return invoke(instance, JS_GLOBAL, [[1, handle]])[1];
+}
+
+function defineHostFunction(instance, handle, globalHandle, name, key, nargs) {
+  const nameBytes = encoder.encode(name);
+  const keyBytes = encoder.encode(key);
+  const raw = invoke(instance, JS_DEFINE_FUNCTION, [
+    [1, handle],
+    [2, globalHandle],
+    [3, name],
+    [4, nameBytes.length],
+    [5, key],
+    [6, keyBytes.length],
+    [7, nargs],
+  ])[1];
+  const envelope = JSON.parse(decoder.decode(raw));
+  if (!envelope.ok) throw new Error(`js_define_function(${name}) failed: ${envelope.error}`);
+}
+
+// Bridges the engine's env.go_host_call/env.go_host_result imports (see the
+// "Verified facts" notes in the session design doc) to a map of handler
+// functions keyed by the dispatch key each was registered under. A handler
+// receives the call's decoded arguments (plain strings/numbers/booleans —
+// this sandbox never needs an object/function handle argument) and returns
+// {tag, payload}: 'R' + a value-encoding-JSON payload is returned to the
+// guest, 'T' + one is thrown as that value (a plain object, never an Error
+// instance — the fs facade upgrades it to a real Error with .code), 'E' +
+// a raw message is thrown as a JS Error. The module loader's raw-bytes reply
+// is just another {tag: "R", payload: <raw source bytes>}.
+function makeHostBridge(getInstance, handlers) {
+  let pending = null;
+  function decodeArg(encoding) {
+    switch (encoding.k) {
+      case "string":
+      case "number":
+      case "bool":
+        return encoding.v;
+      case "undefined":
+        return undefined;
+      case "null":
+        return null;
+      default:
+        throw new Error(`Unsupported host-call argument kind: ${encoding.k}`);
+    }
+  }
+  return {
+    go_host_call(keyPtr, keyLen, argsPtr, argsLen, thisId, outPtr, outCap) {
+      const instance = getInstance();
+      const mem = new Uint8Array(instance.exports.memory.buffer);
+      const key = decoder.decode(mem.subarray(keyPtr, keyPtr + keyLen));
+      const handler = handlers.get(key);
+      if (!handler) return 0;
+      let reply;
+      try {
+        const argsJson = decoder.decode(mem.subarray(argsPtr, argsPtr + argsLen));
+        const rawArgs = JSON.parse(argsJson);
+        // The reserved module-loader key is called by the engine itself with
+        // plain strings ([specifier, referrer]), not value-encoded args like
+        // every js_define_function-registered call (verified empirically:
+        // args arrive as `["lib.mjs", ""]`, not `[{"k":"string","v":...}]`).
+        const args = key === "\0module-load" ? rawArgs : rawArgs.map(decodeArg);
+        reply = handler(args, thisId);
+      } catch (error) {
+        reply = { tag: "E", payload: encoder.encode(String(error?.message ?? error)) };
+      }
+      const tagByte = reply.tag.charCodeAt(0);
+      const total = 1 + reply.payload.length;
+      if (total <= outCap) {
+        const view = new Uint8Array(getInstance().exports.memory.buffer);
+        view[outPtr] = tagByte;
+        view.set(reply.payload, outPtr + 1);
+        pending = null;
+      } else {
+        pending = new Uint8Array(total);
+        pending[0] = tagByte;
+        pending.set(reply.payload, 1);
+      }
+      return total;
+    },
+    go_host_result(outPtr) {
+      if (!pending) return;
+      new Uint8Array(getInstance().exports.memory.buffer).set(pending, outPtr);
+      pending = null;
+    },
+  };
+}
+
+const jsonReply = (tag, value) => ({
+  tag,
+  payload: encoder.encode(JSON.stringify({ k: "json", v: value })),
+});
+
+// fs/process host functions, all backed by the shared session Workspace.
+// `getCwd`/`setCwd` close over the session's mutable cwd (the single source
+// of truth; process.cwd() always reads it live, so it can never drift from
+// what fs paths resolve relative to).
+function makeSessionHandlers(workspace, getCwd, setCwd, onCwdChange) {
+  const wrap = (fn) => (args) => {
+    try {
+      return jsonReply("R", fn(args) ?? null);
+    } catch (error) {
+      const isWorkspaceError = error instanceof WorkspaceError;
+      return jsonReply("T", {
+        name: isWorkspaceError ? "Error" : String(error?.name ?? "Error"),
+        message: String(error?.message ?? error),
+        code: isWorkspaceError ? error.code : undefined,
+      });
+    }
+  };
+  return new Map([
+    [
+      "fs.readFileSync",
+      wrap(([path, encoding]) => {
+        const wantsText = encoding === "utf8" || encoding === "utf-8";
+        const result = workspace.read(path, getCwd(), {
+          encoding: wantsText ? "utf-8" : "base64",
+        });
+        return wantsText ? { text: result.content } : { bytesBase64: result.content };
+      }),
+    ],
+    [
+      "fs.writeFileSync",
+      wrap(([path, encoding, content]) => {
+        workspace.write(path, getCwd(), content, {
+          encoding: encoding === "utf8" ? "utf-8" : "base64",
+        });
+      }),
+    ],
+    [
+      "fs.readdirSync",
+      wrap(([path]) => {
+        const { entries } = workspace.list(path, getCwd());
+        return entries.map((entry) => ({ name: entry.path.split("/").at(-1), type: entry.type }));
+      }),
+    ],
+    [
+      "fs.mkdirSync",
+      wrap(([path, recursive]) => {
+        workspace.mkdir(path, getCwd(), { recursive: !!recursive });
+      }),
+    ],
+    [
+      "fs.rmSync",
+      wrap(([path, recursive, force]) => {
+        workspace.delete(path, getCwd(), { recursive: !!recursive, force: !!force });
+      }),
+    ],
+    [
+      "fs.renameSync",
+      wrap(([from, to]) => {
+        workspace.rename(from, to, getCwd());
+      }),
+    ],
+    ["fs.existsSync", wrap(([path]) => workspace.exists(path, getCwd()).exists)],
+    ["fs.statSync", wrap(([path]) => workspace.stat(path, getCwd()))],
+    ["process.cwd", wrap(() => getCwd())],
+    [
+      "process.chdir",
+      wrap(([path]) => {
+        const info = workspace.stat(path, getCwd());
+        if (info.type !== "directory") throw new WorkspaceError("ENOTDIR", `Not a directory: ${path}`);
+        const { absolute } = workspace.normalize(path, getCwd());
+        setCwd(absolute);
+        onCwdChange?.(absolute);
+      }),
+    ],
+    [
+      "\0module-load",
+      ([specifier, referrer]) => {
+        const result = workspace.moduleSource(specifier, referrer);
+        if (!result.ok)
+          return { tag: "E", payload: encoder.encode(`module not registered: ${specifier}`) };
+        return { tag: "R", payload: result.source };
+      },
+    ],
+  ]);
+}
+
+const HOST_FUNCTIONS = [
+  ["__sandbox_fs_readFileSync", "fs.readFileSync", 2],
+  ["__sandbox_fs_writeFileSync", "fs.writeFileSync", 3],
+  ["__sandbox_fs_readdirSync", "fs.readdirSync", 1],
+  ["__sandbox_fs_mkdirSync", "fs.mkdirSync", 2],
+  ["__sandbox_fs_rmSync", "fs.rmSync", 3],
+  ["__sandbox_fs_renameSync", "fs.renameSync", 2],
+  ["__sandbox_fs_existsSync", "fs.existsSync", 1],
+  ["__sandbox_fs_statSync", "fs.statSync", 1],
+  ["__sandbox_process_cwd", "process.cwd", 0],
+  ["__sandbox_process_chdir", "process.chdir", 1],
+];
+
+// Parses the raw js_eval envelope error text ("TypeError: msg\n@<eval>:1:5\n
+// ...", or just a bare message for a non-Error thrown value with no stack)
+// into the {name, message, traceback} shape used everywhere else. Only
+// needed for REPL mode: user code is handed to js_eval directly (not through
+// __sandbox.execute()'s own try/catch), so a synchronous throw surfaces
+// through js_eval's own ok/error fields instead of our JSON envelope.
+function parseEngineError(text) {
+  const lines = String(text).split("\n");
+  const first = lines[0] ?? String(text);
+  const match = /^(\S+): ([\s\S]*)$/.exec(first);
+  return {
+    name: match ? match[1] : "Error",
+    message: match ? match[2] : first,
+    traceback: lines.slice(1),
+  };
+}
+
+function randomGetOverride(getInstance) {
+  // See the comment on this override in runJavaScript: memory is shared, so
+  // crypto.getRandomValues() must fill a plain scratch buffer and be copied
+  // in, rather than being handed a shared-memory view directly.
+  return (ptr, len) => {
+    const memory = new Uint8Array(getInstance().exports.memory.buffer);
+    for (let offset = 0; offset < len; ) {
+      const chunk = Math.min(65536, len - offset);
+      const tmp = new Uint8Array(chunk);
+      crypto.getRandomValues(tmp);
+      memory.set(tmp, ptr + offset);
+      offset += chunk;
+    }
+    return 0;
   };
 }
 
@@ -85,6 +337,13 @@ function decodeValueEncoding(field) {
   if (encoding.k === "undefined") return undefined;
   if (encoding.k === "string") return encoding.v;
   throw new Error(`Unexpected __sandbox value encoding: ${encoding.k}`);
+}
+
+function checkInterrupted(envelope) {
+  if (envelope.ok) return;
+  if (envelope.error === INTERRUPTED_ERROR)
+    throw new ExecutionLimitError("Execution fuel exhausted");
+  throw new Error(`JavaScript engine error: ${envelope.error}`);
 }
 
 export function runJavaScript(module, payload) {
@@ -145,13 +404,6 @@ export function runJavaScript(module, payload) {
   if (!boot.ok)
     throw new Error(`JavaScript sandbox initialization failed: ${boot.error}`);
 
-  const checkInterrupted = (envelope) => {
-    if (envelope.ok) return;
-    if (envelope.error === INTERRUPTED_ERROR)
-      throw new ExecutionLimitError("Execution fuel exhausted");
-    throw new Error(`JavaScript engine error: ${envelope.error}`);
-  };
-
   // The host-side transform turns the script into an async IIFE whose value is
   // the last top-level expression (or a guest SyntaxError for a top-level
   // `return`); the guest evaluates that IIFE text directly instead of building
@@ -191,6 +443,135 @@ export function runJavaScript(module, payload) {
     results: final.results,
     ...(final.error ? { error: final.error } : {}),
     usage: meter.usage(instance.exports.memory),
+  };
+}
+
+// A durable session: one JS engine instance kept alive in memory across many
+// execute() calls (no memory snapshotting yet — phase 2). Declarations made
+// by one execute() persist to the next because user code is handed to
+// js_eval directly (see transformForRepl); fs/process are host functions
+// backed by the shared `workspace`; import() is served from it too.
+export function createJavaScriptSession(module, options = {}) {
+  const workspace = options.workspace ?? null;
+  let cwd = options.cwd ?? "/workspace";
+  const onCwdChange = options.onCwdChange;
+  const fuel = 50_000_000;
+  const meter = createMeter(fuel);
+  const host = createWasi(module, null, meter, {}, workspace?.root ?? null);
+
+  (host.imports.wasi ??= {})["thread-spawn"] = () => -1;
+
+  let instance;
+  const getInstance = () => instance;
+  const handlers = makeSessionHandlers(
+    workspace,
+    () => cwd,
+    (next) => {
+      cwd = next;
+    },
+    onCwdChange,
+  );
+  const bridge = makeHostBridge(getInstance, handlers);
+  Object.assign((host.imports.env ??= {}), {
+    go_host_call: (...args) => bridge.go_host_call(...args),
+    go_host_result: (...args) => bridge.go_host_result(...args),
+  });
+  host.imports.wasi_snapshot_preview1.random_get = randomGetOverride(getInstance);
+
+  instance = new WebAssembly.Instance(module, host.imports);
+  host.wasi.initialize(instance);
+  instance.exports.wasm_init();
+
+  const handle = invoke(instance, JS_NEW, [
+    [1, MAX_HEAP_BYTES],
+    [2, NATIVE_STACK_QUOTA_BYTES],
+  ])[1];
+  if (!handle) throw new Error("JavaScript engine initialization failed");
+
+  const addr = Number(invoke(instance, JS_INTERRUPT_ADDR, [[1, handle]])[1]);
+  const bitsAddr = Number(invoke(instance, JS_INTERRUPT_BITS_ADDR, [[1, handle]])[1]);
+  const bits = Number(invoke(instance, JS_INTERRUPT_BITS_VALUE, [[1, handle]])[1]);
+  meter.arm(instance.exports.memory, addr, bitsAddr, bits);
+
+  const boot = jsEval(instance, handle, javascriptPrelude);
+  if (!boot.ok)
+    throw new Error(`JavaScript session initialization failed: ${boot.error}`);
+  const bootSession = jsEval(instance, handle, javascriptSessionPrelude);
+  if (!bootSession.ok)
+    throw new Error(`JavaScript session initialization failed: ${bootSession.error}`);
+
+  if (workspace) {
+    const globalHandle = jsGlobal(instance, handle);
+    for (const [name, key, nargs] of HOST_FUNCTIONS)
+      defineHostFunction(instance, handle, globalHandle, name, key, nargs);
+    const facade = jsEval(instance, handle, javascriptFsFacade);
+    if (!facade.ok)
+      throw new Error(`JavaScript session initialization failed: ${facade.error}`);
+  }
+
+  let closed = false;
+
+  return {
+    get cwd() {
+      return cwd;
+    },
+    close() {
+      closed = true;
+    },
+    execute(payload) {
+      if (closed) throw new Error("This session instance has been closed");
+      meter.reset(fuel);
+
+      if (payload.cwd !== undefined && workspace) {
+        try {
+          const info = workspace.stat(payload.cwd, cwd);
+          if (info.type === "directory") {
+            cwd = workspace.normalize(payload.cwd, cwd).absolute;
+            onCwdChange?.(cwd);
+          }
+        } catch {
+          // Invalid/missing cwd: keep the session's current cwd, matching
+          // the WASI-language sessions' "reset to /workspace" leniency.
+        }
+      }
+
+      const resetEnvelope = jsEval(
+        instance,
+        handle,
+        `__sandboxSession.reset(${JSON.stringify(JSON.stringify(payload.envVars ?? {}))});`,
+      );
+      checkInterrupted(resetEnvelope);
+
+      const transform = transformForRepl(payload.code);
+      const runEnvelope = jsEval(instance, handle, transform.code);
+      if (!runEnvelope.ok) {
+        if (runEnvelope.error === INTERRUPTED_ERROR)
+          throw new ExecutionLimitError("Execution fuel exhausted");
+        return {
+          logs: { stdout: [], stderr: [] },
+          results: [],
+          error: parseEngineError(runEnvelope.error),
+          session: { cwd },
+          usage: meter.usage(instance.exports.memory),
+        };
+      }
+
+      const endEnvelope = jsEval(
+        instance,
+        handle,
+        `__sandboxSession.end(${transform.mode === "hoist" ? "true" : "false"});`,
+      );
+      checkInterrupted(endEnvelope);
+      const decoded = decodeValueEncoding(endEnvelope.result);
+      const final = JSON.parse(decoded);
+      return {
+        logs: final.logs,
+        results: final.results,
+        ...(final.error ? { error: final.error } : {}),
+        session: { cwd },
+        usage: meter.usage(instance.exports.memory),
+      };
+    },
   };
 }
 
