@@ -61,7 +61,7 @@ curl http://localhost:8787/execute \
 }
 ```
 
-Metric values above are illustrative. Code is a **script**: the value of the last top-level expression is the result, and an explicit top-level `return` (as well as `await`) also works. Data is passed with `envVars` and read as `process.env.NAME`; nothing from the host environment leaks in. An `undefined` result produces an empty `results` array. Containers (objects/arrays) are returned as `{ json }`; everything else is returned as `{ text }` using a `util.inspect`-like representation (strings single-quoted, BigInt values rendered as `123n`). Circular references in a JSON-serialized result fail. ES module `import`/`export`, npm resolution, and a Node.js environment are not provided.
+Metric values above are illustrative. Code is a **script**: the value of the last top-level expression is the result (`await` also works, but a top-level `return` is not supported and surfaces as a guest `SyntaxError`). Data is passed with `envVars` and read as `process.env.NAME`; nothing from the host environment leaks in. An `undefined` result produces an empty `results` array. Containers (objects/arrays) are returned as `{ json }`; everything else is returned as `{ text }` using a `util.inspect`-like representation (strings single-quoted, BigInt values rendered as `123n`). Circular references in a JSON-serialized result fail. ES module `import`/`export`, npm resolution, and a Node.js environment are not provided.
 
 `GET /languages` lists supported languages, execution modes, capabilities, and limits.
 

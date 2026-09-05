@@ -16,7 +16,7 @@ Sizes were measured with Wrangler dry-run on September 5, 2026. The gateway is a
 
 Send `{ language, code, envVars }` to `POST /execute`. Supported language IDs are `javascript`, `python`, `perl`, and `ruby`. Omitting the language selects JavaScript at the gateway, or the individual runtime's language when calling a runtime Worker directly.
 
-Code is a **script**: the value of the last top-level expression is the result. JavaScript, Perl, and Ruby also support an explicit top-level `return`; in Python that is a SyntaxError. Data is passed with `envVars` (string values only) and read as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby).
+Code is a **script**: the value of the last top-level expression is the result; a top-level `return` is not part of the supported contract in any language. Data is passed with `envVars` (string values only) and read as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby).
 
 Code is limited to 64 KiB and the request to 96 KiB. Python, Perl, and Ruby stdout/stderr is limited to 32 KiB and 200 log chunks combined; JavaScript console capture uses the same limits. The serialized result is capped at 64 KiB. Every execution — success, guest error, or a fuel/output/result limit — returns HTTP 200 with `{ code, language, engine, durationMs, logs: { stdout, stderr }, results, error?, usage? }`; check the `error` field through the shared client. Only request/transport failures (bad JSON, unsupported language, invalid `envVars`, an `input` key, wrong method, oversized payload, wrong content type, or a gateway failure) use non-200 statuses with `{ error: { name: "ApiError", message } }`.
 

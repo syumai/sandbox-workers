@@ -83,7 +83,7 @@ one `wrangler dev` command.
 ## Execution contract and limits
 
 Code is a **script**: the value of the last top-level expression is the
-result. An explicit top-level `return` and `await` also work. Data is passed
+result. `await` also works; a top-level `return` is a SyntaxError. Data is passed
 with `envVars` (string values only) and read as `process.env.NAME`. Console
 logs (split into `stdout`/`stderr`), the result, duration, and fuel/memory
 metrics are returned. BigInt becomes a string ending in `n`; an `undefined`

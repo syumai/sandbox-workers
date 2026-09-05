@@ -14,7 +14,6 @@ const cases = {
   },
   perl: {
     normal: 'print "hello"; +{ name => $ENV{NAME}, sum => 45 };',
-    explicitReturn: 'print "hello"; return { name => $ENV{NAME}, sum => 45 };',
     loop: "while(1) {}",
     failure: 'die "broken";',
     host: "$ENV{HOME};",
@@ -22,7 +21,6 @@ const cases = {
   },
   ruby: {
     normal: 'puts "hello"\n{name: ENV["NAME"], sum: (0...10).sum}',
-    explicitReturn: 'return {name: ENV["NAME"], sum: (0...10).sum}',
     loop: "loop {}",
     failure: 'raise "broken"',
     host: 'ENV["HOME"]',
@@ -73,13 +71,38 @@ for (const [language, samples] of Object.entries(cases)) {
     assert.deepEqual(r.logs.stdout, ["a", "b"]);
     assert.deepEqual(r.logs.stderr, []);
   });
-  if (language === "ruby")
+  if (language === "ruby") {
     test("Ruby: JavaScript bridge is denied", async () => {
       await assert.rejects(
         run('require "js"; JS.global[:process].to_s'),
         /disabled/,
       );
     });
+    test("Ruby: a syntax error is reported in error, with logs preserved", async () => {
+      const r = await run('puts "before"\n1 +');
+      assert.equal(r.error.name, "SyntaxError");
+      assert.deepEqual(r.results, []);
+      // A genuine syntax error fails to compile before anything runs, so
+      // there is nothing to print here — this asserts the accumulated log
+      // buffer (empty in this case) is still returned rather than dropped.
+      assert.deepEqual(r.logs.stdout, []);
+    });
+    test("Ruby: logs printed before a runtime error are preserved", async () => {
+      const r = await run('puts "before"\nraise "boom"');
+      assert.equal(r.error.name, "RuntimeError");
+      assert.deepEqual(r.logs.stdout, ["before"]);
+      assert.deepEqual(r.results, []);
+    });
+    test("Ruby: top-level return is reported in error, not thrown", async () => {
+      const r = await run('puts "before"\nreturn 1');
+      assert.equal(r.error.name, "LocalJumpError");
+      assert.deepEqual(r.logs.stdout, ["before"]);
+      assert.deepEqual(r.results, []);
+      // the engine keeps working for the next call
+      const next = await run("1 + 1");
+      assert.deepEqual(next.results, [{ text: "2" }]);
+    });
+  }
   if (language === "perl")
     test("Perl: unicode env values and literals print without warnings or double encoding", async () => {
       const r = await run(

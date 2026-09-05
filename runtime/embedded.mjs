@@ -103,9 +103,9 @@ my %__sandbox_env = %ENV;
 for my $__sandbox_key (keys %__sandbox_env) { utf8::decode($__sandbox_env{$__sandbox_key}); }
 *ENV = \\%__sandbox_env;
 use JSON::PP;
-my $__sandbox_value = eval { (sub {
+my $__sandbox_value = eval { do {
 ${payload.code}
-})->() };
+} };
 my $__sandbox_err = $@;
 my $__sandbox_envelope;
 if ($__sandbox_err) {

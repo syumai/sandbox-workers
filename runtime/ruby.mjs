@@ -1,5 +1,11 @@
 import { RubyVM } from "@ruby/wasm-wasi";
 import { createWasi, budget, ExecutionLimitError } from "./wasi.mjs";
+const encoder = new TextEncoder();
+// Hex-encodes the code so it can be embedded as a Ruby string literal
+// without worrying about quoting/escaping; the driver script decodes it
+// with `["<hex>"].pack("H*")` before handing it to `eval`.
+const hex = (value) =>
+  Array.from(encoder.encode(value), (b) => b.toString(16).padStart(2, "0")).join("");
 // RubyVM initialization is asynchronous; serialize it so two guest memories
 // cannot be live concurrently within one Worker isolate.
 let pending = Promise.resolve();
@@ -34,9 +40,8 @@ ENV.each { |k, v| __sandbox_env[k] = v.dup.force_encoding("UTF-8") }
 Object.send(:remove_const, :ENV)
 ENV = __sandbox_env
 begin
-  __sandbox_value = -> {
-${payload.code}
-  }.call
+  __sandbox_source = ["${hex(payload.code)}"].pack("H*").force_encoding("UTF-8")
+  __sandbox_value = eval(__sandbox_source, TOPLEVEL_BINDING.dup, "(sandbox)", 1)
   if __sandbox_value.nil?
     __sandbox_results = []
   elsif __sandbox_value.is_a?(Hash) || __sandbox_value.is_a?(Array)
@@ -54,7 +59,30 @@ rescue Exception => __sandbox_error
   __sandbox_envelope = { results: [], error: { name: __sandbox_error.class.name, message: __sandbox_error.message, traceback: __sandbox_error.backtrace || [] } }
 end
 JSON.generate(__sandbox_envelope)`;
-  const raw = vm.eval(script).toString();
+  let raw;
+  try {
+    raw = vm.eval(script).toString();
+  } catch (error) {
+    // A jump (`return`, `break`, `next`, ...) that escapes past the top of
+    // this `vm.eval()` call is a raw VM tag-unwind, not a Ruby exception, so
+    // it is never seen by the script's own `rescue Exception` no matter how
+    // deeply the user's `return` is nested inside it. Real MRI converts an
+    // escaping return into a rescuable LocalJumpError at the top of a script
+    // or method call; ruby.wasm's `eval` binding does not, so do the
+    // equivalent conversion here instead of letting the request crash.
+    // Anything else (fuel exhaustion, the disabled-JS-bridge guard, a
+    // genuine engine crash) is not this specific, well-understood case, so
+    // it keeps propagating exactly as before.
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/^unexpected (return|break|next|redo|retry)\b/.test(message))
+      throw error;
+    return {
+      logs: host.logs,
+      results: [],
+      error: { name: "LocalJumpError", message, traceback: [] },
+      usage: meter.usage(instance.exports.memory),
+    };
+  }
   if (new TextEncoder().encode(raw).length > 65536)
     throw new ExecutionLimitError("Result limit exceeded");
   const envelope = JSON.parse(raw);

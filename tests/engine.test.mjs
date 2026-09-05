@@ -24,8 +24,17 @@ test("last top-level expression becomes the result", () => {
   assert.deepEqual(run("undefined").results, []);
 });
 
-test("explicit return at top level still works", () => {
-  assert.deepEqual(run("return 5;").results, [{ text: "5" }]);
+test("top-level return is rejected like the Cloudflare Sandbox SDK", () => {
+  const result = run("return 1");
+  assert.equal(result.error.name, "SyntaxError");
+  assert.deepEqual(result.results, []);
+});
+
+test("return inside a nested function still works", () => {
+  assert.equal(
+    run("function f() { return 2 } f()").results[0].text,
+    "2",
+  );
 });
 
 test("actual Wasm supports async, BigInt, private fields and console", () => {
@@ -137,11 +146,40 @@ test("transformForAsyncExecution rewrites the last expression into a return", ()
     "(async () => {\nreturn (1 + 1)\n})()",
   );
   assert.equal(
-    transformForAsyncExecution("console.log('x'); return 5;"),
-    "(async () => {\nconsole.log('x'); return 5;\n})()",
-  );
-  assert.equal(
     transformForAsyncExecution("return (;"),
     "(async () => {\nreturn (;\n})()",
+  );
+});
+
+test("transformForAsyncExecution rejects a top-level return", () => {
+  const illegalReturn =
+    '(async () => { throw new SyntaxError("Illegal return statement"); })()';
+  assert.equal(transformForAsyncExecution("return 1"), illegalReturn);
+  assert.equal(
+    transformForAsyncExecution("console.log('x'); return 5;"),
+    illegalReturn,
+  );
+  assert.equal(
+    transformForAsyncExecution("if (true) { return 1 }"),
+    illegalReturn,
+  );
+  assert.equal(
+    transformForAsyncExecution("for (;;) { return 1 }"),
+    illegalReturn,
+  );
+  assert.equal(
+    transformForAsyncExecution("try { return 1 } catch (e) {}"),
+    illegalReturn,
+  );
+});
+
+test("transformForAsyncExecution leaves nested returns alone", () => {
+  assert.equal(
+    transformForAsyncExecution("function f() { return 2 } f()"),
+    "(async () => {\nfunction f() { return 2 } return (f())\n})()",
+  );
+  assert.equal(
+    transformForAsyncExecution("(() => { return 3 })()"),
+    "(async () => {\nreturn ((() => { return 3 })())\n})()",
   );
 });

@@ -106,7 +106,7 @@ pnpm run dry-run        # Rebuild and inspect all five Workers without deploying
 
 Python and Perl release downloads are verified against pinned SHA-256 digests. Ruby uses a pinned npm distribution. Consumers of published packages do not run these build steps.
 
-Code is a **script**: the value of the last top-level expression is the result. JavaScript, Perl, and Ruby also support an explicit top-level `return`; in Python that is a SyntaxError. Data is passed with `envVars` (string values only) and read as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby). No context persists between calls — every call boots a fresh Wasm instance. ES module imports, Node/npm resolution, and external networking are unsupported. The editor includes language-specific examples, syntax highlighting, output tabs, local draft storage, and Cmd/Ctrl+Enter execution.
+Code is a **script**: the value of the last top-level expression is the result; a top-level `return` is not part of the supported contract. Data is passed with `envVars` (string values only) and read as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby). No context persists between calls — every call boots a fresh Wasm instance. ES module imports, Node/npm resolution, and external networking are unsupported. The editor includes language-specific examples, syntax highlighting, output tabs, local draft storage, and Cmd/Ctrl+Enter execution.
 
 Use a Paid plan for runtime performance evaluation. The 64 MiB upload limit is separate from CPU and runtime memory limits. Validation so far covers local workerd and dry-run builds; production CPU time and concurrent workloads have not been measured.
 

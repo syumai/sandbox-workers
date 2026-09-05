@@ -118,4 +118,3 @@ This protocol mirrors the shape of the Cloudflare Sandbox SDK's code interpreter
 - **No persistent context.** Every call boots a fresh Wasm instance; there is no `createCodeContext`/`context` concept and no state carries over between calls.
 - **No `exec`/files.** There is no shell execution or filesystem access from guest code.
 - **`envVars` values must be strings.** Pass complex data as a JSON string and parse it in guest code if needed.
-- **JavaScript top-level `return` also works**, in addition to the last-expression form the SDK uses.
