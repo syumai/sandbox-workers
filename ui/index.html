@@ -91,6 +91,24 @@
             ><select id="language">
               <option value="javascript">JavaScript</option>
             </select>
+            <div class="section-label mode-label">MODE</div>
+            <div id="mode-toggle" class="mode-toggle" role="group" aria-label="Execution mode">
+              <button
+                id="mode-script"
+                type="button"
+                aria-pressed="true"
+                title="Every run boots a fresh, stateless instance"
+              >
+                Script</button
+              ><button
+                id="mode-session"
+                type="button"
+                aria-pressed="false"
+                title="Run code in a durable, per-browser session"
+              >
+                Session
+              </button>
+            </div>
             <div class="section-label examples-label">
               EXAMPLES <span id="example-count">04</span>
             </div>
@@ -137,6 +155,19 @@
               <span>OUTPUT</span
               ><span id="status" role="status" aria-live="polite">Ready</span>
             </div>
+            <div id="session-bar" class="session-bar" hidden>
+              <span>Session <code id="session-id"></code></span>
+              <div>
+                <button id="session-new" class="quiet">New session</button
+                ><button id="session-reset" class="quiet">Reset</button>
+              </div>
+            </div>
+            <div id="session-strip" class="session-strip" hidden>
+              <span><strong id="session-executions">0</strong> executions</span
+              ><span id="session-cwd">/workspace</span
+              ><span id="session-snapshot">no snapshot yet</span
+              ><span id="session-expires"></span>
+            </div>
             <div class="result-tabs" role="tablist" aria-label="Output views">
               <button id="result-tab" role="tab" aria-selected="true">
                 Result</button
@@ -144,10 +175,13 @@
                 Console <span id="log-count">0</span></button
               ><button id="raw-tab" role="tab" aria-selected="false">
                 JSON</button
+              ><button id="workspace-tab" role="tab" aria-selected="false" hidden>
+                Workspace</button
               ><button id="copy" title="Copy output" aria-label="Copy output">
                 ⧉
               </button>
             </div>
+            <div id="transcript" class="transcript" hidden></div>
             <div id="output" role="tabpanel">
               <div class="empty">
                 <div>↗</div>

@@ -5,8 +5,10 @@ import { ruby } from "@codemirror/legacy-modes/mode/ruby";
 import { perl } from "@codemirror/legacy-modes/mode/perl";
 import pyHello from "../examples/python/hello.py?raw";
 import pyStdlib from "../examples/python/stdlib.py?raw";
+import pySession from "../examples/python/session.py?raw";
 import plHello from "../examples/perl/hello.pl?raw";
 import plRegex from "../examples/perl/regex.pl?raw";
+import plSession from "../examples/perl/session.pl?raw";
 import rbHello from "../examples/ruby/hello.rb?raw";
 import rbEnumerable from "../examples/ruby/enumerable.rb?raw";
 import { EditorView, basicSetup } from "codemirror";
@@ -18,8 +20,12 @@ import modern from "../examples/modern-javascript.js?raw";
 import transform from "../examples/data-transform.js?raw";
 import intl from "../examples/intl.js?raw";
 import typescript from "../examples/typescript.ts?raw";
+import session from "../examples/session.js?raw";
 import "./style.css";
 const $ = (id) => document.getElementById(id);
+const STORAGE_KEY = "sandbox-workers-playground-v2";
+const MAX_TRANSCRIPT = 20;
+const TABS = ["result", "console", "raw", "workspace"];
 const javascriptExamples = [
   { name: "Hello, sandbox", code: hello, envVars: { NAME: "world" } },
   { name: "Modern JavaScript", code: modern, envVars: {} },
@@ -30,6 +36,7 @@ const javascriptExamples = [
   },
   { name: "Intl formatting", code: intl, envVars: {} },
   { name: "TypeScript", code: typescript, envVars: { NAME: "world" } },
+  { name: "Session demo", code: session, envVars: {} },
 ];
 const library = {
   javascript: javascriptExamples,
@@ -40,6 +47,7 @@ const library = {
       code: pyStdlib,
       envVars: { WORDS: "hello,world,hello" },
     },
+    { name: "Session demo", code: pySession, envVars: {} },
   ],
   perl: [
     { name: "Hello, Perl", code: plHello, envVars: { NAME: "world" } },
@@ -48,6 +56,7 @@ const library = {
       code: plRegex,
       envVars: { WORDS: "hello,world,hello,perl" },
     },
+    { name: "Session demo", code: plSession, envVars: {} },
   ],
   ruby: [
     { name: "Hello, Ruby", code: rbHello, envVars: { NAME: "world" } },
@@ -88,10 +97,36 @@ const param = new URLSearchParams(location.search).get("language");
 if (library[param]) requestedLanguage = param;
 let saved;
 try {
-  saved = JSON.parse(
-    localStorage.getItem("sandbox-workers-playground-v2") ?? "null",
-  );
+  saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
 } catch {}
+// Session mode (see website/content/guides/playground.md "Session mode").
+// `userMode` is the mode the user picked; Ruby has no session mode, so the
+// *effective* mode (effectiveMode()) forces "script" there without losing
+// the user's preference for the other languages. `sessionIds` maps each
+// language to one Playground-generated session id, persisted so the same
+// browser reuses it across visits. `transcripts` (in-memory only, cleared on
+// New session / Reset) maps a session id to its last MAX_TRANSCRIPT
+// {code, text, isError} entries.
+let userMode = saved?.mode === "session" ? "session" : "script";
+let sessionIds =
+  saved?.sessionIds && typeof saved.sessionIds === "object" && !Array.isArray(saved.sessionIds)
+    ? { ...saved.sessionIds }
+    : {};
+let transcripts = {};
+let workspaceOpenPath = null;
+function effectiveMode() {
+  return language === "ruby" ? "script" : userMode;
+}
+function newSessionId() {
+  return `pg-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+function sessionIdFor(lang) {
+  if (!sessionIds[lang]) {
+    sessionIds[lang] = newSessionId();
+    persist();
+  }
+  return sessionIds[lang];
+}
 const editor = new EditorView({
   doc: typeof saved?.code === "string" ? saved.code : hello,
   extensions: [
@@ -121,11 +156,13 @@ if (typeof saved?.envVars === "string") $("env-vars").value = saved.envVars;
 function persist() {
   try {
     localStorage.setItem(
-      "sandbox-workers-playground-v2",
+      STORAGE_KEY,
       JSON.stringify({
         language,
         code: editor.state.doc.toString(),
         envVars: $("env-vars").value,
+        mode: userMode,
+        sessionIds,
       }),
     );
   } catch {}
@@ -169,7 +206,6 @@ function switchLanguage(next, restore = false) {
   }
   $("filename").textContent =
     `experiment.${{ javascript: "js", python: "py", perl: "pl", ruby: "rb" }[next]}`;
-  $("editor-mode").textContent = `${next} · script`;
   $("env-name").textContent = envNames[next];
   $("editor").setAttribute("aria-label", `${next} code editor`);
   $("install-command").textContent =
@@ -186,9 +222,12 @@ function switchLanguage(next, restore = false) {
   $("status").textContent = "Ready";
   $("log-count").textContent = "0";
   persist();
+  syncSessionUI();
 }
 renderExamples();
 $("language").onchange = () => switchLanguage($("language").value);
+$("mode-script").onclick = () => setMode("script");
+$("mode-session").onclick = () => setMode("session");
 for (const item of document.querySelectorAll(".runtime-item[data-language]")) {
   item.addEventListener("click", () => {
     const next = item.dataset.language;
@@ -214,8 +253,15 @@ function logRow(label, text, isError) {
   return row;
 }
 function display() {
-  if (!response) return;
+  if (tab === "workspace") {
+    renderWorkspacePanel($("output"));
+    return;
+  }
   const out = $("output");
+  if (!response) {
+    out.textContent = "Run your code to see the result.";
+    return;
+  }
   out.replaceChildren();
   const pre = document.createElement("pre");
   if (tab === "console") {
@@ -251,11 +297,11 @@ function display() {
     out.append(pre);
   }
 }
-for (const name of ["result", "console", "raw"])
+for (const name of TABS)
   $(name + "-tab").onclick = () => {
+    if ($(name + "-tab").hidden) return;
     tab = name;
-    for (const t of ["result", "console", "raw"])
-      $(t + "-tab").setAttribute("aria-selected", String(t === tab));
+    for (const t of TABS) $(t + "-tab").setAttribute("aria-selected", String(t === tab));
     display();
   };
 $("copy").onclick = async () => {
@@ -288,14 +334,16 @@ async function run() {
   busy = true;
   $("run").disabled = true;
   $("status").textContent = "Running…";
+  const sessionMode = effectiveMode() === "session";
+  const code = editor.state.doc.toString();
+  const url = sessionMode
+    ? `/languages/${$("language").value}/sessions/${sessionIdFor(language)}/execute`
+    : `/execute/${$("language").value}`;
   try {
-    const res = await fetch(`/execute/${$("language").value}`, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        code: editor.state.doc.toString(),
-        envVars,
-      }),
+      body: JSON.stringify({ code, envVars }),
       signal: AbortSignal.timeout(15000),
     });
     if (!res.headers.get("content-type")?.includes("application/json"))
@@ -324,7 +372,325 @@ async function run() {
   $("metrics").children[1].textContent = response.usage
     ? `${response.usage.fuelConsumed.toLocaleString()} / ${response.usage.fuelLimit.toLocaleString()} fuel`
     : "— fuel";
+  if (sessionMode) {
+    addTranscriptEntry(code, response);
+    await refreshSessionInfo();
+  }
   display();
+}
+
+// ---- Session mode ---------------------------------------------------------
+// See website/content/guides/playground.md "Session mode" and
+// website/content/guides/sessions.md for the underlying HTTP contract.
+
+function setMode(next) {
+  if ($("mode-session").disabled) next = "script";
+  userMode = next;
+  persist();
+  syncSessionUI();
+}
+
+// Reconciles every session-mode-dependent bit of the UI with the current
+// language + userMode. Called after switchLanguage() and setMode().
+function syncSessionUI() {
+  const isRuby = language === "ruby";
+  const isSession = effectiveMode() === "session";
+  $("mode-script").setAttribute("aria-pressed", String(!isSession));
+  $("mode-session").setAttribute("aria-pressed", String(isSession));
+  $("mode-session").disabled = isRuby;
+  $("mode-session").title = isRuby
+    ? "Sessions are not available for Ruby"
+    : "Run code in a durable, per-browser session";
+  $("session-bar").hidden = !isSession;
+  $("session-strip").hidden = !isSession;
+  $("transcript").hidden = !isSession;
+  $("workspace-tab").hidden = !isSession;
+  $("editor-mode").textContent = `${language} · ${isSession ? "session" : "script"}`;
+  if (!isSession && tab === "workspace") {
+    tab = "result";
+    for (const t of TABS) $(t + "-tab").setAttribute("aria-selected", String(t === tab));
+  }
+  if (isSession) {
+    $("session-id").textContent = sessionIdFor(language);
+    renderTranscript();
+    renderSessionStrip(null);
+    refreshSessionInfo();
+  }
+  display();
+}
+
+function sessionBaseUrl() {
+  return `/languages/${language}/sessions/${sessionIdFor(language)}`;
+}
+
+async function refreshSessionInfo() {
+  if (effectiveMode() !== "session") return;
+  try {
+    const res = await fetch(sessionBaseUrl());
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderSessionStrip(await res.json());
+  } catch {
+    renderSessionStrip(null);
+  }
+  if (tab === "workspace") loadWorkspace();
+}
+
+function relativeTime(ts) {
+  const diffMs = ts - Date.now();
+  if (diffMs <= 0) return "momentarily";
+  const minutes = Math.round(diffMs / 60000);
+  if (minutes < 1) return "in under a minute";
+  if (minutes < 60) return `in ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `in ${hours} h`;
+  return `in ${Math.round(hours / 24)} d`;
+}
+
+function renderSessionStrip(info) {
+  $("session-id").textContent = sessionIdFor(language);
+  if (!info) {
+    $("session-executions").textContent = "0";
+    $("session-cwd").textContent = "/workspace";
+    $("session-snapshot").textContent = "no snapshot yet";
+    $("session-expires").textContent = "";
+    return;
+  }
+  $("session-executions").textContent = String(info.executions ?? 0);
+  $("session-cwd").textContent = info.cwd || "/workspace";
+  $("session-snapshot").textContent = info.snapshot
+    ? `${info.snapshot.pages} snapshot page(s)${info.snapshot.stale ? " (stale)" : ""}`
+    : "no snapshot yet";
+  $("session-expires").textContent =
+    typeof info.expiresAt === "number" ? `expires ${relativeTime(info.expiresAt)}` : "";
+}
+
+function resultText(response) {
+  if (response.error) return `${response.error.name}: ${response.error.message}`;
+  const result = response.results?.[0];
+  if (!result) return "(no result)";
+  return result.json !== undefined ? JSON.stringify(result.json) : result.text;
+}
+
+function addTranscriptEntry(code, response) {
+  const id = sessionIdFor(language);
+  const list = transcripts[id] ?? (transcripts[id] = []);
+  list.push({ code, text: resultText(response), isError: !!response.error });
+  while (list.length > MAX_TRANSCRIPT) list.shift();
+  renderTranscript();
+}
+
+function renderTranscript() {
+  const list = transcripts[sessionIdFor(language)] ?? [];
+  const container = $("transcript");
+  container.replaceChildren();
+  list.forEach((entry, i) => {
+    const details = document.createElement("details");
+    details.className = `transcript-entry${entry.isError ? " error" : ""}`;
+    const summary = document.createElement("summary");
+    summary.textContent = `#${i + 1}  ${entry.code.split("\n")[0].slice(0, 60)}`;
+    const codePre = document.createElement("pre");
+    codePre.textContent = entry.code;
+    const resultPre = document.createElement("pre");
+    resultPre.className = entry.isError ? "error" : "muted";
+    resultPre.textContent = entry.text;
+    details.append(summary, codePre, resultPre);
+    container.append(details);
+  });
+}
+
+$("session-new").onclick = async () => {
+  const old = sessionIds[language];
+  if (old) {
+    try {
+      await fetch(`/languages/${language}/sessions/${old}`, { method: "DELETE" });
+    } catch {}
+    delete transcripts[old];
+  }
+  sessionIds[language] = newSessionId();
+  persist();
+  workspaceOpenPath = null;
+  $("status").textContent = "New session started";
+  renderTranscript();
+  renderSessionStrip(null);
+  await refreshSessionInfo();
+};
+
+$("session-reset").onclick = async () => {
+  const id = sessionIdFor(language);
+  try {
+    await fetch(`${sessionBaseUrl()}/reset`, { method: "POST" });
+  } catch {}
+  transcripts[id] = [];
+  workspaceOpenPath = null;
+  $("status").textContent = "Session reset";
+  renderTranscript();
+  await refreshSessionInfo();
+};
+
+// ---- Workspace tab ----------------------------------------------------
+
+async function sessionFilesOp(body) {
+  const res = await fetch(`${sessionBaseUrl()}/files`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(json?.error?.message ?? `HTTP ${res.status}`);
+  return json;
+}
+
+function renderWorkspacePanel(out) {
+  if (!out.querySelector(".workspace-panel")) {
+    out.replaceChildren();
+    const panel = document.createElement("div");
+    panel.className = "workspace-panel";
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "workspace-toolbar";
+    const label = document.createElement("span");
+    label.className = "section-label";
+    label.textContent = "/workspace";
+    const refreshBtn = document.createElement("button");
+    refreshBtn.id = "workspace-refresh";
+    refreshBtn.className = "quiet";
+    refreshBtn.textContent = "Refresh";
+    refreshBtn.onclick = () => loadWorkspace();
+    toolbar.append(label, refreshBtn);
+
+    const list = document.createElement("div");
+    list.id = "workspace-list";
+    list.className = "workspace-list";
+
+    const newFile = document.createElement("div");
+    newFile.className = "workspace-new";
+    const newLabel = document.createElement("span");
+    newLabel.className = "section-label";
+    newLabel.textContent = "New / overwrite file";
+    const nameInput = document.createElement("input");
+    nameInput.id = "workspace-new-name";
+    nameInput.type = "text";
+    nameInput.placeholder = "/workspace/notes.txt";
+    const contentArea = document.createElement("textarea");
+    contentArea.id = "workspace-new-content";
+    contentArea.placeholder = "File contents…";
+    const saveBtn = document.createElement("button");
+    saveBtn.id = "workspace-new-save";
+    saveBtn.className = "quiet";
+    saveBtn.textContent = "Create / overwrite";
+    saveBtn.onclick = () => writeWorkspaceFile(nameInput.value.trim(), contentArea.value);
+    newFile.append(newLabel, nameInput, contentArea, saveBtn);
+
+    const view = document.createElement("div");
+    view.id = "workspace-file-view";
+    view.className = "workspace-file-view";
+    view.hidden = true;
+
+    panel.append(toolbar, list, newFile, view);
+    out.append(panel);
+  }
+  loadWorkspace();
+}
+
+async function loadWorkspace() {
+  const list = $("workspace-list");
+  if (!list) return;
+  list.textContent = "Loading…";
+  try {
+    const result = await sessionFilesOp({ op: "list", path: "/workspace", recursive: true });
+    renderWorkspaceList(result.entries ?? []);
+  } catch (error) {
+    list.textContent = `Could not load workspace: ${error.message}`;
+  }
+}
+
+function renderWorkspaceList(entries) {
+  const list = $("workspace-list");
+  list.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "No files yet.";
+    list.append(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "workspace-entry";
+    const name = document.createElement("button");
+    name.className = "workspace-entry-name";
+    name.textContent = entry.path + (entry.type === "directory" ? "/" : "");
+    if (entry.type === "file") name.onclick = () => openWorkspaceFile(entry.path);
+    else name.disabled = true;
+    const size = document.createElement("span");
+    size.className = "workspace-entry-size";
+    size.textContent = entry.type === "file" ? `${entry.size}B` : "";
+    row.append(name, size);
+    list.append(row);
+  }
+}
+
+async function openWorkspaceFile(path) {
+  try {
+    const result = await sessionFilesOp({ op: "read", path });
+    workspaceOpenPath = path;
+    const view = $("workspace-file-view");
+    view.hidden = false;
+    view.replaceChildren();
+    const heading = document.createElement("div");
+    heading.id = "workspace-file-name";
+    heading.className = "section-label";
+    heading.textContent = path;
+    const textarea = document.createElement("textarea");
+    textarea.id = "workspace-file-content";
+    textarea.value = result.isBinary ? "(binary file — editing unsupported)" : result.content;
+    textarea.disabled = result.isBinary;
+    const actions = document.createElement("div");
+    actions.className = "workspace-file-actions";
+    const saveBtn = document.createElement("button");
+    saveBtn.id = "workspace-file-save";
+    saveBtn.className = "quiet";
+    saveBtn.textContent = "Save";
+    saveBtn.disabled = result.isBinary;
+    saveBtn.onclick = () => writeWorkspaceFile(path, textarea.value);
+    const deleteBtn = document.createElement("button");
+    deleteBtn.id = "workspace-file-delete";
+    deleteBtn.className = "quiet";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.onclick = () => deleteWorkspaceFile(path);
+    actions.append(saveBtn, deleteBtn);
+    view.append(heading, textarea, actions);
+  } catch (error) {
+    $("status").textContent = `Could not open ${path}: ${error.message}`;
+  }
+}
+
+async function writeWorkspaceFile(path, content) {
+  if (!path) {
+    $("status").textContent = "File name is required";
+    return;
+  }
+  try {
+    await sessionFilesOp({ op: "write", path, content });
+    $("status").textContent = `Saved ${path}`;
+    await loadWorkspace();
+  } catch (error) {
+    $("status").textContent = `Could not save ${path}: ${error.message}`;
+  }
+}
+
+async function deleteWorkspaceFile(path) {
+  try {
+    await sessionFilesOp({ op: "delete", path });
+    if (workspaceOpenPath === path) {
+      workspaceOpenPath = null;
+      $("workspace-file-view").hidden = true;
+    }
+    $("status").textContent = `Deleted ${path}`;
+    await loadWorkspace();
+  } catch (error) {
+    $("status").textContent = `Could not delete ${path}: ${error.message}`;
+  }
 }
 
 fetch("/languages")

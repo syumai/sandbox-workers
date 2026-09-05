@@ -16,6 +16,10 @@
       "fallthrough": true
     }
   ],
+  // Session idle expiry (docs/sessions-design.md, website/content/guides/sessions.md):
+  // a Durable Object alarm deletes a session after this many idle milliseconds.
+  // "0" disables expiry. Short here so the public Playground reclaims sessions quickly.
+  "vars": { "SESSION_IDLE_TTL_MS": "3600000" },
   "durable_objects": { "bindings": [{ "name": "SESSIONS", "class_name": "SandboxSession" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SandboxSession"] }]
 }

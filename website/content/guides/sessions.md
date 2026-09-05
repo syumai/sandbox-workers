@@ -21,6 +21,20 @@ A few things follow from how this works:
 
 An execution that actually wrote a snapshot reports how long that took in `session.snapshotMs` (milliseconds) — useful for measuring the cost of a particular session's workload, not something callers need to act on.
 
+## Idle expiry
+
+A session is deleted automatically after it goes unused for a while: every request that touches it — `execute`, `GET`, `reset`, or a file operation — (re)arms a Durable Object alarm, and when that alarm fires without another touching request in the meantime, the session is deleted exactly the way `DELETE /sessions/:id` deletes it (storage wiped, live interpreter dropped).
+
+The timeout is the runtime Worker's own `SESSION_IDLE_TTL_MS` env var (a string, since Wrangler `vars` are strings): unset or invalid falls back to 24 hours, and `"0"` disables expiry entirely (no alarm is ever armed). Set it under `vars` in the runtime Worker's `wrangler.jsonc`:
+
+```jsonc
+{
+  "vars": { "SESSION_IDLE_TTL_MS": "3600000" }, // 1 hour; "0" disables expiry
+}
+```
+
+`GET /sessions/:id` reports the current deadline as `expiresAt` (epoch milliseconds, or `null` when expiry is disabled), and a successful `POST /sessions/:id/execute` reports the same value in `session.expiresAt` — both reflect the alarm that request itself just (re)armed, so a caller can show "time remaining" without a separate `GET`.
+
 ## Enable sessions in your Worker
 
 A runtime Worker that supports sessions exports a `SandboxSession` Durable Object class next to its default export. Deploying one requires a Durable Object binding and a SQLite-backed migration in the runtime Worker's own `wrangler.jsonc` — **not** in the calling application, which keeps using a plain Service Binding:
@@ -72,13 +86,13 @@ Every route is under `/sessions/:id` on the runtime Worker (or `/languages/:lang
 
 | Method and path | Body | Response |
 | --- | --- | --- |
-| `POST /sessions/:id/execute` | `{code, envVars?, cwd?}` | The `/execute` result plus `session: {id, cwd, executions, snapshotMs?}`; always 200 |
-| `GET /sessions/:id` | | `{id, language, engine, cwd, createdAt, lastUsed, executions, workspace: {files, bytes}, snapshot}` |
+| `POST /sessions/:id/execute` | `{code, envVars?, cwd?}` | The `/execute` result plus `session: {id, cwd, executions, snapshotMs?, expiresAt?}`; always 200 |
+| `GET /sessions/:id` | | `{id, language, engine, cwd, createdAt, lastUsed, executions, workspace: {files, bytes}, snapshot, expiresAt}` |
 | `DELETE /sessions/:id` | | `{ok: true}` — deletes storage and drops the instance |
 | `POST /sessions/:id/reset` | | `{ok: true}` — drops the live instance and the stored snapshot, keeps files and `cwd` |
 | `POST /sessions/:id/files` | `{op, path, newPath?, content?, encoding?, recursive?, force?}` | Per operation, below |
 
-`snapshot` is `{build, pages, bytes, takenAt, stale}` once the session has snapshotted at least once (`pages`/`bytes` describe the stored linear-memory pages, `takenAt` is a timestamp, `stale` is `true` when the most recent execution couldn't be snapshotted — see "Memory snapshots" above), or `null` before the first snapshot or right after `reset`. `session.snapshotMs` (on the execute response) is present only on an execution that actually wrote a snapshot.
+`snapshot` is `{build, pages, bytes, takenAt, stale}` once the session has snapshotted at least once (`pages`/`bytes` describe the stored linear-memory pages, `takenAt` is a timestamp, `stale` is `true` when the most recent execution couldn't be snapshotted — see "Memory snapshots" above), or `null` before the first snapshot or right after `reset`. `session.snapshotMs` (on the execute response) is present only on an execution that actually wrote a snapshot. `expiresAt` is the epoch-millisecond deadline of the session's idle-expiry Durable Object alarm (see "Idle expiry" above), or `null` when expiry is disabled; the execute response's `session.expiresAt` is omitted the same way.
 
 ### The files API
 

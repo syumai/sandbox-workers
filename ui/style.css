@@ -15,6 +15,9 @@
 body {
   margin: 0;
 }
+[hidden] {
+  display: none !important;
+}
 button,
 a,
 select,
@@ -201,6 +204,35 @@ select {
   border-radius: 5px;
   font-size: 11px;
 }
+.mode-label {
+  margin: 20px 0 8px;
+}
+.mode-toggle {
+  display: flex;
+  border: 1px solid #373f49;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.mode-toggle button {
+  flex: 1;
+  background: #20262d;
+  border: 0;
+  color: #a7b0bc;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 8px 0;
+}
+.mode-toggle button + button {
+  border-left: 1px solid #373f49;
+}
+.mode-toggle button[aria-pressed="true"] {
+  background: #dcf99212;
+  color: var(--lime);
+}
+.mode-toggle button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 .examples-label {
   margin: 28px 0 13px;
   display: flex;
@@ -378,6 +410,50 @@ kbd {
   letter-spacing: 0;
   color: var(--lime);
 }
+.session-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 17px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  color: #9aa4b1;
+  flex-wrap: wrap;
+}
+.session-bar code {
+  color: var(--lime);
+  font-size: 10px;
+}
+.session-bar > div {
+  display: flex;
+  gap: 8px;
+}
+.session-bar button {
+  background: #20262d;
+  border: 1px solid #373f49;
+  border-radius: 4px;
+  color: #c3cbd6;
+  font-size: 9px;
+  padding: 5px 9px;
+}
+.session-bar button:hover {
+  border-color: #5a6a2e;
+  color: var(--lime);
+}
+.session-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  padding: 8px 17px;
+  border-bottom: 1px solid var(--border);
+  font-size: 9px;
+  color: #7c8794;
+  background: #12161b;
+}
+.session-strip strong {
+  color: #d1dbe7;
+}
 .result-tabs {
   display: flex;
   gap: 20px;
@@ -409,10 +485,137 @@ kbd {
   margin-left: auto;
   font-size: 18px;
 }
+.transcript {
+  max-height: 160px;
+  overflow: auto;
+  border-bottom: 1px solid var(--border);
+  padding: 6px 17px;
+  flex-shrink: 0;
+}
+.transcript-entry {
+  padding: 6px 0;
+  border-bottom: 1px solid #1c2129;
+}
+.transcript-entry:last-child {
+  border-bottom: 0;
+}
+.transcript-entry summary {
+  cursor: pointer;
+  font-size: 10px;
+  color: #9aa4b1;
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+.transcript-entry.error summary {
+  color: #d78888;
+}
+.transcript-entry pre {
+  font-size: 10px;
+  margin-top: 6px;
+}
 #output {
   height: 422px;
   overflow: auto;
   padding: 18px;
+}
+.workspace-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: 100%;
+}
+.workspace-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.workspace-toolbar .section-label,
+.workspace-new .section-label {
+  margin-bottom: 0;
+}
+.workspace-toolbar button {
+  background: #20262d;
+  border: 1px solid #373f49;
+  border-radius: 4px;
+  color: #c3cbd6;
+  font-size: 9px;
+  padding: 5px 9px;
+}
+.workspace-list {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 160px;
+  overflow: auto;
+}
+.workspace-entry {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.workspace-entry:last-child {
+  border-bottom: 0;
+}
+.workspace-entry-name {
+  flex: 1;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: #c3cbd6;
+  font: 10px/1.6 "SFMono-Regular", Consolas, monospace;
+  padding: 8px 12px;
+  overflow-wrap: anywhere;
+}
+.workspace-entry-name:not(:disabled):hover {
+  color: var(--lime);
+}
+.workspace-entry-name:disabled {
+  color: #7c8794;
+  cursor: default;
+}
+.workspace-entry-size {
+  font-size: 9px;
+  color: #7c8794;
+  padding-right: 12px;
+  white-space: nowrap;
+}
+.workspace-new,
+.workspace-file-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.workspace-new input,
+.workspace-file-view textarea,
+.workspace-new textarea {
+  background: #12161b;
+  border: 1px solid #373f49;
+  border-radius: 4px;
+  color: #bfc9d6;
+  font: 11px/1.5 monospace;
+  padding: 8px 10px;
+}
+.workspace-new textarea,
+.workspace-file-view textarea {
+  min-height: 90px;
+  resize: vertical;
+}
+.workspace-new button,
+.workspace-file-actions button {
+  align-self: flex-start;
+  background: #20262d;
+  border: 1px solid #373f49;
+  border-radius: 4px;
+  color: #c3cbd6;
+  font-size: 10px;
+  padding: 7px 12px;
+}
+.workspace-file-actions {
+  display: flex;
+  gap: 8px;
+}
+#workspace-file-name {
+  color: var(--lime);
+  word-break: break-all;
 }
 pre {
   font:

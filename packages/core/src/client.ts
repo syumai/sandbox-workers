@@ -39,8 +39,11 @@ export interface SessionExecutionResult extends ExecutionResult {
   // hashing/diffing/persisting pages, useful for measurement. Absent when
   // the session's engine doesn't support snapshots yet, when the guest held
   // an open file descriptor (see SessionInfo.snapshot.stale below), or right
-  // after a trap dropped the live instance.
-  session: { id: string; cwd: string; executions: number; snapshotMs?: number };
+  // after a trap dropped the live instance. `expiresAt` (epoch ms) is the
+  // Durable Object alarm armed by this request for idle expiry (see
+  // docs/sessions-design.md, `SESSION_IDLE_TTL_MS`); absent when the runtime
+  // Worker has idle expiry disabled (`SESSION_IDLE_TTL_MS` set to `"0"`).
+  session: { id: string; cwd: string; executions: number; snapshotMs?: number; expiresAt?: number };
 }
 export interface SessionInfo {
   id: string;
@@ -56,6 +59,10 @@ export interface SessionInfo {
   // this snapshot predates that execution's globals -- see the sessions
   // guide's "Memory snapshots" section.
   snapshot: { build: string; pages: number; bytes: number; takenAt: number; stale: boolean } | null;
+  // Epoch ms when this session's Durable Object alarm will delete it absent
+  // another touching request; `null` when idle expiry is disabled
+  // (`SESSION_IDLE_TTL_MS` set to `"0"` on the runtime Worker).
+  expiresAt: number | null;
 }
 export type FileEncoding = "utf-8" | "base64";
 export interface FileEntry {

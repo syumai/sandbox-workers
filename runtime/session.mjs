@@ -7,7 +7,10 @@
 // `build` hasn't changed) — see docs/sessions-design.md "Durable Object" and
 // "Snapshot rules". `engine` additionally provides `build` (a sha256 of the
 // metered engine.wasm, used to guard restores) and `restore(workspace, cwd,
-// onCwdChange, snapshot)`.
+// onCwdChange, snapshot)`. Phase 3 adds idle expiry: a Durable Object alarm
+// is (re)armed after every request that touches the session and, when it
+// fires, deletes the session the same way `DELETE` does — see
+// `_touchAlarm`/`_destroy`/`alarm` below.
 import { DurableObject } from "cloudflare:workers";
 import {
   ApiError,
@@ -25,6 +28,16 @@ const ENV_VAR_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // keeps the DO's own routes (below) independent of how the id is spelled in
 // the public URL.
 const SESSION_ID_HEADER = "x-sandbox-session-id";
+
+// Session idle expiry (phase 3, see docs/sessions-design.md). A Durable
+// Object alarm is (re)armed after every request that touches a session; when
+// it fires (no touching request arrived in the meantime), the whole session
+// is deleted the same way `DELETE /sessions/:id` does. The TTL comes from
+// the runtime Worker's own `SESSION_IDLE_TTL_MS` env var (a string, because
+// Wrangler `vars` are strings): unset/invalid falls back to 24 hours, and
+// `"0"` disables expiry entirely (no alarm is ever armed, and an existing
+// one is cleared).
+const DEFAULT_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function json(body, init = {}) {
   return Response.json(body, { headers: { "cache-control": "no-store" }, ...init });
@@ -112,6 +125,7 @@ export function createSessionClass(engine) {
     constructor(ctx, env) {
       super(ctx, env);
       this.ctx = ctx;
+      this.env = env;
       this.instance = null;
       this.workspace = null;
       this.changesSince = undefined;
@@ -199,6 +213,53 @@ export function createSessionClass(engine) {
         this.ctx.storage.sql.exec("DELETE FROM pages");
         this.ctx.storage.sql.exec("DELETE FROM meta WHERE key = 'snapshot'");
       });
+    }
+
+    // --- idle expiry ----------------------------------------------------
+
+    _idleTtlMs() {
+      const raw = this.env?.SESSION_IDLE_TTL_MS;
+      if (raw === undefined || raw === null || raw === "") return DEFAULT_IDLE_TTL_MS;
+      const ms = Number(raw);
+      return Number.isFinite(ms) && ms >= 0 ? ms : DEFAULT_IDLE_TTL_MS;
+    }
+
+    // Called after every request that touches this session (GET, execute,
+    // files, reset — not DELETE, which has nothing left to expire). Returns
+    // the new `expiresAt` timestamp, or null when expiry is disabled
+    // (`SESSION_IDLE_TTL_MS` is `"0"`), in which case any previously armed
+    // alarm is cleared.
+    async _touchAlarm() {
+      const ttl = this._idleTtlMs();
+      if (ttl === 0) {
+        await this.ctx.storage.deleteAlarm();
+        return null;
+      }
+      const expiresAt = Date.now() + ttl;
+      await this.ctx.storage.setAlarm(expiresAt);
+      return expiresAt;
+    }
+
+    // Shared by DELETE /sessions/:id and the alarm handler below: wipe all
+    // Durable Object storage (files, meta, pages) and drop the in-memory
+    // instance/workspace so a later request starts completely fresh.
+    async _destroy() {
+      await this.ctx.storage.deleteAll();
+      await this.ctx.storage.deleteAlarm();
+      this._createTables();
+      this.instance?.close?.();
+      this.instance = null;
+      this.workspace = null;
+      this.changesSince = undefined;
+      this.prevPageHashes = new Map();
+    }
+
+    // Durable Object alarm handler: fires when no request has touched this
+    // session since the last `_touchAlarm()` call, i.e. the session has been
+    // idle for at least `SESSION_IDLE_TTL_MS`. Expiry deletes the whole
+    // session — same effect as a caller's `DELETE /sessions/:id`.
+    async alarm() {
+      await this._destroy();
     }
 
     _ensureInstance(meta) {
@@ -309,13 +370,7 @@ export function createSessionClass(engine) {
         const path = new URL(request.url).pathname;
 
         if (request.method === "DELETE" && path === "/") {
-          await this.ctx.storage.deleteAll();
-          this._createTables();
-          this.instance?.close?.();
-          this.instance = null;
-          this.workspace = null;
-          this.changesSince = undefined;
-          this.prevPageHashes = new Map();
+          await this._destroy();
           return json({ ok: true });
         }
 
@@ -324,6 +379,7 @@ export function createSessionClass(engine) {
         if (request.method === "GET" && path === "/") {
           this._ensureWorkspace();
           const snapshotMeta = this._loadSnapshotMeta();
+          const expiresAt = await this._touchAlarm();
           return json({
             id: meta.id,
             language: meta.language,
@@ -334,6 +390,7 @@ export function createSessionClass(engine) {
             executions: meta.executions,
             workspace: this.workspace.stats(),
             snapshot: snapshotMeta ? snapshotInfo(snapshotMeta) : null,
+            expiresAt,
           });
         }
 
@@ -345,6 +402,7 @@ export function createSessionClass(engine) {
           this._dropStoredSnapshot();
           meta.lastUsed = Date.now();
           this._saveMeta(meta);
+          await this._touchAlarm();
           return json({ ok: true });
         }
 
@@ -454,6 +512,7 @@ export function createSessionClass(engine) {
         this._persist(meta, fileDiff, null, staleRecord);
       }
 
+      const expiresAt = await this._touchAlarm();
       return json({
         code,
         language: meta.language,
@@ -465,6 +524,7 @@ export function createSessionClass(engine) {
           cwd: meta.cwd,
           executions: meta.executions,
           ...(snapshotMs !== undefined ? { snapshotMs } : {}),
+          ...(expiresAt !== null ? { expiresAt } : {}),
         },
       });
     }
@@ -513,6 +573,7 @@ export function createSessionClass(engine) {
           this.changesSince = diff.snapshot;
           this._persist(meta, diff);
         }
+        await this._touchAlarm();
         return json(result);
       } catch (error) {
         if (error instanceof WorkspaceError) return fileErrorResponse(error);

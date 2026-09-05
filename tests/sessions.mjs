@@ -381,4 +381,26 @@ function uniqueId(prefix) {
   console.log("python: fuel exhaustion rebuilds the instance; session stays usable");
 }
 
+// ---- idle expiry (phase 3) ---------------------------------------------
+
+{
+  const id = uniqueId("js-expiry");
+  const before = Date.now();
+  const r = await execute("javascript", id, { code: "1 + 1" });
+  // The Playground's own engine/wrangler*.jsonc set a finite
+  // SESSION_IDLE_TTL_MS, but a caller could disable expiry (`"0"`), in which
+  // case expiresAt is omitted/null -- only assert the shape when present.
+  if (r.session.expiresAt !== undefined) {
+    assert.equal(typeof r.session.expiresAt, "number");
+    assert.ok(r.session.expiresAt > before, "execute response expiresAt should be in the future");
+  }
+  const after = await info("javascript", id);
+  assert.ok("expiresAt" in after, "GET info should include expiresAt");
+  if (after.expiresAt !== null) {
+    assert.equal(typeof after.expiresAt, "number");
+    assert.ok(after.expiresAt > before, "GET info expiresAt should be in the future");
+  }
+  console.log("javascript: session idle expiry (expiresAt) is present and in the future");
+}
+
 console.log(`${checks} session HTTP checks passed against ${base}`);
