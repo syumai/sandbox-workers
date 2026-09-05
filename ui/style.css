@@ -250,6 +250,9 @@ nav button {
   font-size: 11px;
   padding: 11px 8px;
   border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 nav button.active {
   background: #dcf99212;
@@ -339,21 +342,50 @@ kbd {
   height: 348px;
   font-size: 12px;
 }
+/*
+ * REPL prompt: a single fixed-height line, never taller — a multi-line doc
+ * (Shift+Enter, or an unfinished statement) scrolls inside the CodeMirror
+ * scroller instead of growing the box. This keeps .editor-pane's total
+ * height identical to Script mode's at every breakpoint: #repl-log below
+ * takes the rest of the space #editor would otherwise occupy (see
+ * .repl-log's max-height, which mirrors #editor's height here minus
+ * --repl-prompt-h at each breakpoint).
+ */
+.editor-pane.repl {
+  --repl-prompt-h: 44px;
+}
 .editor-pane.repl #editor {
   flex: 0 0 auto;
-  height: auto;
-  min-height: 46px;
-  max-height: 224px;
+  height: var(--repl-prompt-h);
+  position: relative;
+}
+.editor-pane.repl #editor::before {
+  content: "›";
+  position: absolute;
+  left: 10px;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  color: var(--lime);
+  font: 13px monospace;
+  pointer-events: none;
+  z-index: 1;
 }
 .editor-pane.repl .cm-editor {
-  height: auto !important;
+  height: 100% !important;
 }
 .editor-pane.repl .cm-scroller {
-  max-height: 224px;
   overflow-y: auto !important;
+}
+.editor-pane.repl .cm-gutters {
+  display: none !important;
 }
 .editor-pane.repl .cm-content {
   padding: 10px 0 !important;
+}
+.editor-pane.repl .cm-line {
+  padding-left: 24px !important;
 }
 .cm-editor {
   height: 100%;
@@ -503,7 +535,16 @@ kbd {
 }
 .repl-log {
   flex: 1 1 auto;
-  min-height: 0;
+  /*
+   * Pinned to exactly #editor's height at this breakpoint (348px) minus the
+   * prompt's fixed height — min and max are equal on purpose, so this never
+   * grows past it (30+ cells scroll instead of inflating .editor-pane) and
+   * never shrinks below it either (so .editor-pane's own natural height
+   * matches Script mode's even in layouts with no cross-pane stretch to
+   * fall back on, e.g. the stacked mobile layout).
+   */
+  min-height: calc(348px - var(--repl-prompt-h, 44px));
+  max-height: calc(348px - var(--repl-prompt-h, 44px));
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -861,6 +902,10 @@ footer > span:last-child {
   #editor {
     height: 408px;
   }
+  .repl-log {
+    min-height: calc(408px - var(--repl-prompt-h, 44px));
+    max-height: calc(408px - var(--repl-prompt-h, 44px));
+  }
   #output {
     height: 482px;
   }
@@ -878,9 +923,6 @@ footer > span:last-child {
   }
   #output {
     height: 280px;
-  }
-  .repl-log {
-    max-height: 280px;
   }
   .editor-pane {
     border-right: 0;

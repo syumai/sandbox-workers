@@ -5,10 +5,8 @@ import { ruby } from "@codemirror/legacy-modes/mode/ruby";
 import { perl } from "@codemirror/legacy-modes/mode/perl";
 import pyHello from "../examples/python/hello.py?raw";
 import pyStdlib from "../examples/python/stdlib.py?raw";
-import pySession from "../examples/python/session.py?raw";
 import plHello from "../examples/perl/hello.pl?raw";
 import plRegex from "../examples/perl/regex.pl?raw";
-import plSession from "../examples/perl/session.pl?raw";
 import rbHello from "../examples/ruby/hello.rb?raw";
 import rbEnumerable from "../examples/ruby/enumerable.rb?raw";
 import { EditorView, basicSetup } from "codemirror";
@@ -20,7 +18,6 @@ import modern from "../examples/modern-javascript.js?raw";
 import transform from "../examples/data-transform.js?raw";
 import intl from "../examples/intl.js?raw";
 import typescript from "../examples/typescript.ts?raw";
-import session from "../examples/session.js?raw";
 import "./style.css";
 const $ = (id) => document.getElementById(id);
 const STORAGE_KEY = "sandbox-workers-playground-v2";
@@ -36,7 +33,6 @@ const javascriptExamples = [
   },
   { name: "Intl formatting", code: intl, envVars: {} },
   { name: "TypeScript", code: typescript, envVars: { NAME: "world" } },
-  { name: "REPL demo", code: session, envVars: {} },
 ];
 const library = {
   javascript: javascriptExamples,
@@ -47,7 +43,6 @@ const library = {
       code: pyStdlib,
       envVars: { WORDS: "hello,world,hello" },
     },
-    { name: "REPL demo", code: pySession, envVars: {} },
   ],
   perl: [
     { name: "Hello, Perl", code: plHello, envVars: { NAME: "world" } },
@@ -56,7 +51,6 @@ const library = {
       code: plRegex,
       envVars: { WORDS: "hello,world,hello,perl" },
     },
-    { name: "REPL demo", code: plSession, envVars: {} },
   ],
   ruby: [
     { name: "Hello, Ruby", code: rbHello, envVars: { NAME: "world" } },
@@ -78,6 +72,41 @@ const clientSnippets = {
   python: 'import os\nx = int(os.environ["X"])\nx ** 2',
   perl: "my $x = $ENV{X};\n$x ** 2",
   ruby: 'x = ENV["X"].to_i\nx ** 2',
+};
+// REPL SNIPPETS: one-liners inserted into the prompt on click (never
+// auto-evaluated). The first entry in each list is the declaration
+// template that fills the prompt on REPL entry / runtime switch — see
+// fillReplPrompt(). Ruby has no REPL mode, so it has no snippet list.
+const snippetLibrary = {
+  javascript: [
+    "let count = 1",
+    "count += 1",
+    "count * 10",
+    "const greet = (name) => `Hello, ${name}!`",
+    'greet("REPL")',
+  ],
+  python: [
+    "count = 1",
+    "count += 1",
+    "count * 10",
+    'def greet(name): return "Hello, " + name + "!"',
+    'greet("REPL")',
+  ],
+  perl: [
+    "our $count = 1;",
+    "$count += 1;",
+    "$count * 10",
+    'sub greet { "Hello, $_[0]!" }',
+    'greet("REPL")',
+  ],
+};
+// Nudge shown in the empty REPL log before the first line is evaluated.
+const replEmptyHints = {
+  javascript:
+    "Press Enter to evaluate the line. Then try `count += 1` and `count`.",
+  python:
+    "Press Enter to evaluate the line. Then try `count += 1` and `count`.",
+  perl: "Press Enter to evaluate the line. Then try `$count += 1;` and `$count`.",
 };
 const syntax = new Compartment();
 // Mode-specific editor keymap (Enter / ArrowUp / ArrowDown), only active in
@@ -102,6 +131,13 @@ let saved;
 try {
   saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
 } catch {}
+// The Script-mode draft, kept separately from whatever the editor currently
+// displays. In REPL mode the editor shows the prompt (a snippet or the
+// user's in-progress line), never this draft; entering REPL saves the
+// editor's current content here, and leaving REPL restores it. The
+// persisted `code` field in local storage is always this draft (see
+// persist()), never the REPL prompt.
+let scriptDraft = typeof saved?.code === "string" ? saved.code : hello;
 // REPL mode (see website/content/guides/playground.md "REPL mode").
 // `userMode` is the mode the user picked ("script" or "repl"); Ruby has no
 // REPL mode, so the *effective* mode (effectiveMode()) forces "script" there
@@ -313,7 +349,11 @@ function persist() {
       STORAGE_KEY,
       JSON.stringify({
         language,
-        code: editor.state.doc.toString(),
+        // Always the Script draft — never the REPL prompt, see scriptDraft.
+        code:
+          effectiveMode() === "repl"
+            ? scriptDraft
+            : editor.state.doc.toString(),
         envVars: $("env-vars").value,
         mode: userMode,
         sessionIds,
@@ -336,29 +376,70 @@ function selectExample(index) {
     button.setAttribute("aria-current", String(i === index));
   }
 }
-function renderExamples() {
+// Fills the REPL prompt with `code` without evaluating it — used both for
+// the declaration template (fillReplPrompt) and for SNIPPETS clicks
+// (insertSnippet).
+function setPromptCode(code) {
+  editor.dispatch({
+    changes: { from: 0, to: editor.state.doc.length, insert: code },
+    selection: { anchor: code.length },
+  });
+}
+function fillReplPrompt(lang) {
+  setPromptCode(snippetLibrary[lang]?.[0] ?? "");
+}
+function insertSnippet(code) {
+  if (effectiveMode() !== "repl") return;
+  setPromptCode(code);
+  editor.focus();
+}
+function enterScriptDraft() {
+  editor.dispatch({
+    changes: { from: 0, to: editor.state.doc.length, insert: scriptDraft },
+  });
+  $("dirty").textContent = "";
+}
+// Renders the aside's per-mode list: EXAMPLES (Script, click loads the full
+// example) or SNIPPETS (REPL, click inserts the one-liner into the prompt
+// without evaluating it).
+function renderAsideList() {
+  const isRepl = effectiveMode() === "repl";
+  $("examples-label-text").textContent = isRepl ? "SNIPPETS" : "EXAMPLES";
+  const list = isRepl ? (snippetLibrary[language] ?? []) : examples;
   $("examples").replaceChildren();
-  examples.forEach((example, i) => {
+  list.forEach((item, i) => {
     const button = document.createElement("button");
-    button.textContent = `${String(i + 1).padStart(2, "0")}  ${example.name}`;
-    button.onclick = () => selectExample(i);
-    button.className = i === 0 ? "active" : "";
+    if (isRepl) {
+      button.textContent = `${String(i + 1).padStart(2, "0")}  ${item}`;
+      button.title = item;
+      button.className = "snippet";
+      button.onclick = () => insertSnippet(item);
+    } else {
+      button.textContent = `${String(i + 1).padStart(2, "0")}  ${item.name}`;
+      button.className = i === 0 ? "active" : "";
+      button.onclick = () => selectExample(i);
+    }
     $("examples").append(button);
   });
-  $("example-count").textContent = String(examples.length).padStart(2, "0");
+  $("example-count").textContent = String(list.length).padStart(2, "0");
 }
 function switchLanguage(next, restore = false) {
   generation++;
   language = next;
   examples = library[next];
   editor.dispatch({ effects: syntax.reconfigure(modes[next]) });
-  renderExamples();
-  selectExample(0);
-  if (restore && typeof saved?.code === "string") {
-    editor.dispatch({
-      changes: { from: 0, to: editor.state.doc.length, insert: saved.code },
-    });
-    if (typeof saved.envVars === "string") $("env-vars").value = saved.envVars;
+  renderAsideList();
+  if (effectiveMode() === "repl") {
+    fillReplPrompt(next);
+  } else {
+    selectExample(0);
+    if (restore && typeof saved?.code === "string") {
+      editor.dispatch({
+        changes: { from: 0, to: editor.state.doc.length, insert: saved.code },
+      });
+      if (typeof saved.envVars === "string")
+        $("env-vars").value = saved.envVars;
+    }
   }
   $("env-name").textContent = envNames[next];
   $("install-command").textContent =
@@ -379,7 +460,7 @@ function switchLanguage(next, restore = false) {
   persist();
   syncModeUI();
 }
-renderExamples();
+renderAsideList();
 $("language").onchange = () => switchLanguage($("language").value);
 $("mode-script").onclick = () => setMode("script");
 $("mode-session").onclick = () => setMode("repl");
@@ -563,7 +644,16 @@ async function runScript() {
 
 function setMode(next) {
   if ($("mode-session").disabled) next = "script";
+  const wasRepl = effectiveMode() === "repl";
   userMode = next;
+  const isRepl = effectiveMode() === "repl";
+  if (!wasRepl && isRepl) {
+    scriptDraft = editor.state.doc.toString();
+    fillReplPrompt(language);
+  } else if (wasRepl && !isRepl) {
+    enterScriptDraft();
+  }
+  renderAsideList();
   persist();
   syncModeUI();
 }
@@ -831,7 +921,8 @@ function renderReplLog(sid, scrollToEnd) {
   if (!list.length) {
     const empty = document.createElement("div");
     empty.className = "muted repl-empty";
-    empty.textContent = "Evaluate a line to start the REPL.";
+    empty.textContent =
+      replEmptyHints[language] ?? "Press Enter to evaluate the line.";
     container.append(empty);
   } else {
     for (const cell of list) container.append(buildCellElement(sid, cell));
