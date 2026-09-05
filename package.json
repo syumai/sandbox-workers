@@ -1,5 +1,5 @@
 {
-  "name": "@sandbox-workers/playground",
+  "name": "sandbox-workers",
   "private": true,
   "type": "module",
   "scripts": {

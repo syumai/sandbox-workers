@@ -8,7 +8,7 @@ Submit arbitrary JavaScript to `POST /execute` and execute it inside **SpiderMon
 Browser / API client
         │ POST /execute { language, code, input }
         ▼
-sandbox-playground                 src/index.ts
+sandbox-workers                     src/index.ts
   ├── Static Assets / CodeMirror   ui/
   └── language → Service Binding
         │ JAVASCRIPT
