@@ -5,6 +5,8 @@ description: Execute code with SpiderMonkey / Fastly 3.45.0 inside a dedicated W
 
 Package: `@sandbox-workers/javascript`. Code is a script: the value of the last expression is the result. Supports `await`, promises, modern JavaScript syntax, and selected Fastly Web builtins. ES modules, Node/npm resolution, timers, and networking are unavailable. BigInt results become strings ending in n.
 
+TypeScript is accepted automatically — no `language` option, no separate mode. Code is parsed as JavaScript first, so valid JavaScript never changes meaning; only code that fails to parse as JavaScript falls back to stripping TypeScript-only syntax (types, `interface`, generics, `as`/`satisfies`, `enum`, `namespace`, parameter properties). Types are stripped, not checked — a type error still runs like any other JavaScript mistake. `import`/`export` remain unsupported in both dialects.
+
 ## Deploy
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fsyumai%2Fsandbox-workers%2Ftree%2Fmain%2Ftemplates%2Fjavascript)

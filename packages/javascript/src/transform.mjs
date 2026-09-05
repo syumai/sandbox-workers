@@ -1,5 +1,12 @@
 // Runs in Workers V8 (the host), never inside the guest Wasm sandbox.
 import * as acorn from "acorn";
+// Import sucrase's core transform entry (its package "main"), not a
+// CLI-specific path, so only the TypeScript-stripping code path is
+// reachable from this module's import graph: sucrase's separate CLI
+// entry points (bin/sucrase, dist/cli.js) and their extra dependencies
+// (commander, mz, pirates, tinyglobby) are never referenced and so never
+// get bundled by esbuild.
+import { transform as sucraseTransform } from "sucrase";
 const EMPTY = "(async () => {})()";
 const ILLEGAL_RETURN =
   '(async () => { throw new SyntaxError("Illegal return statement"); })()';
@@ -7,26 +14,57 @@ const ILLEGAL_RETURN =
  * Turns a script into an async IIFE whose return value is the value of the
  * last top-level expression statement, so callers see "code is a script,
  * the last expression is the result" without any persistent context.
+ *
+ * JavaScript is always tried first with acorn: any code that is valid
+ * JavaScript keeps JavaScript semantics unchanged (e.g. `a < b > (c)` is
+ * never reinterpreted as a generic function call). Only code acorn rejects
+ * (and that isn't a top-level `return`) is given to sucrase to strip
+ * TypeScript-only syntax; sucrase performs no type checking, it only
+ * removes types, so a TypeScript type error still runs like any other
+ * dynamically-typed JavaScript mistake. `import`/`export` remain
+ * unsupported (there is no module system in the guest); `enum`, `namespace`,
+ * and parameter properties are rewritten by sucrase's transform.
  */
 export function transformForAsyncExecution(code) {
   if (!code || !code.trim()) return EMPTY;
-  let program;
+  const program = tryParseJavaScript(code);
+  if (program) return applyLastExpression(code, program);
+  // acorn rejected the code as JavaScript. A top-level `return` is a common
+  // cause (the SDK no longer allows it); detect that specifically by
+  // re-parsing with returns allowed and checking whether one appears at the
+  // top level, so we can report a clear guest-side SyntaxError instead of
+  // whatever unrelated parse error acorn produces without
+  // allowReturnOutsideFunction.
+  if (hasTopLevelReturn(code)) return ILLEGAL_RETURN;
+  let stripped;
   try {
-    program = acorn.parse(code, {
+    stripped = sucraseTransform(code, {
+      transforms: ["typescript"],
+      disableESTransforms: true,
+    }).code;
+  } catch {
+    // Not valid TypeScript either. Let SpiderMonkey report the real
+    // SyntaxError inside the guest, against the original code so the
+    // reported error matches what the caller submitted.
+    return `(async () => {\n${code}\n})()`;
+  }
+  const strippedProgram = tryParseJavaScript(stripped);
+  if (strippedProgram) return applyLastExpression(stripped, strippedProgram);
+  if (hasTopLevelReturn(stripped)) return ILLEGAL_RETURN;
+  return `(async () => {\n${stripped}\n})()`;
+}
+function tryParseJavaScript(code) {
+  try {
+    return acorn.parse(code, {
       ecmaVersion: "latest",
       sourceType: "script",
       allowAwaitOutsideFunction: true,
     });
   } catch {
-    // acorn rejected the code. A top-level `return` is a common cause (the
-    // SDK no longer allows it); detect that specifically by re-parsing with
-    // returns allowed and checking whether one appears at the top level, so
-    // we can report a clear guest-side SyntaxError instead of whatever
-    // unrelated parse error acorn produces without allowReturnOutsideFunction.
-    if (hasTopLevelReturn(code)) return ILLEGAL_RETURN;
-    // Otherwise let SpiderMonkey report the real SyntaxError inside the guest.
-    return `(async () => {\n${code}\n})()`;
+    return null;
   }
+}
+function applyLastExpression(code, program) {
   const body = program.body;
   const last = body.at(-1);
   let statements = code;

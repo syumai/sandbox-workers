@@ -104,6 +104,14 @@ test("all shipped examples execute without error", () => {
   }
 });
 
+test("the shipped TypeScript example executes without error", () => {
+  const result = run(
+    readFileSync(new URL("../examples/typescript.ts", import.meta.url), "utf8"),
+    { NAME: "world" },
+  );
+  assert.equal(result.error, undefined);
+});
+
 test("fuel interrupts unbounded JavaScript", () => {
   assert.throws(() => run("while (true) {}"), ExecutionLimitError);
 });
@@ -182,4 +190,72 @@ test("transformForAsyncExecution leaves nested returns alone", () => {
     transformForAsyncExecution("(() => { return 3 })()"),
     "(async () => {\nreturn ((() => { return 3 })())\n})()",
   );
+});
+
+test("transformForAsyncExecution strips TypeScript-only syntax and rewrites the result", () => {
+  assert.equal(
+    transformForAsyncExecution("const x: number = 1;\nx"),
+    "(async () => {\nconst x = 1;\nreturn (x)\n})()",
+  );
+  assert.equal(
+    transformForAsyncExecution("interface P { n: number }\nconst p: P = { n: 1 }; p"),
+    "(async () => {\n\nconst p = { n: 1 }; return (p)\n})()",
+  );
+});
+
+test("transformForAsyncExecution parses JavaScript first, so valid JS never changes meaning", () => {
+  // `a < b > (c)` is a valid (if useless) JavaScript comparison chain. It
+  // must never be reinterpreted as a generic function call `a<b>(c)`, which
+  // is what a TypeScript-first parser would do.
+  assert.equal(
+    transformForAsyncExecution("a < b > (c)"),
+    "(async () => {\nreturn (a < b > (c))\n})()",
+  );
+});
+
+test("transformForAsyncExecution falls through to a raw wrap on a TypeScript syntax error", () => {
+  // Not valid JavaScript and not valid TypeScript either: sucrase throws,
+  // so the ORIGINAL code is wrapped raw so SpiderMonkey reports the real
+  // SyntaxError against what the caller submitted.
+  assert.equal(
+    transformForAsyncExecution("const x: = 1"),
+    "(async () => {\nconst x: = 1\n})()",
+  );
+});
+
+test("transformForAsyncExecution rejects a top-level return in TypeScript code", () => {
+  const illegalReturn =
+    '(async () => { throw new SyntaxError("Illegal return statement"); })()';
+  assert.equal(
+    transformForAsyncExecution("interface P { n: number }\nreturn 1"),
+    illegalReturn,
+  );
+});
+
+test("the engine runs TypeScript by stripping types, with no type checking", () => {
+  assert.deepEqual(
+    run(
+      "interface P { n: number }\nconst p: P = { n: 2 }\nfunction sq<T extends number>(x: T): number { return x * x }\np.n = sq(p.n)\np",
+    ).results,
+    [{ json: { n: 4 } }],
+  );
+  assert.equal(
+    run("enum Color { Red, Green }\nColor.Green").results[0].text,
+    "1",
+  );
+  assert.equal(
+    run('const s = "x" satisfies string; s').results[0].text,
+    "'x'",
+  );
+  // Types are stripped, not checked: this is a type error, but it still
+  // runs like any other dynamically-typed JavaScript mistake.
+  assert.equal(
+    run('const n: number = "s"; n').results[0].text,
+    "'s'",
+  );
+});
+
+test("a TypeScript syntax error is reported as a guest-side SyntaxError", () => {
+  const result = run("const x: = 1");
+  assert.equal(result.error.name, "SyntaxError");
 });

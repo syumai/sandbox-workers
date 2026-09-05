@@ -2,7 +2,7 @@
 
 | Package                     | Engine                         | Uncompressed Worker size (approx.) | Wasm memory cap | Fuel        |
 | --------------------------- | ------------------------------ | ---------------------------------- | --------------- | ----------- |
-| @sandbox-workers/javascript | SpiderMonkey / Fastly 3.45.0   | 11.35 MiB                          | 64 MiB          | 5,000,000   |
+| @sandbox-workers/javascript | SpiderMonkey / Fastly 3.45.0   | 12.29 MiB                          | 64 MiB          | 5,000,000   |
 | @sandbox-workers/python     | CPython 3.14.6 / goccy v0.2.0  | 7.80 MiB                           | 64 MiB          | 100,000,000 |
 | @sandbox-workers/perl       | Perl 5.42.2 / goccy v0.2.1     | 14.04 MiB                          | 64 MiB          | 10,000,000  |
 | @sandbox-workers/ruby       | CRuby 4.0.0 / ruby.wasm 2.10.1 | 31.22 MiB                          | 96 MiB          | 30,000,000  |
@@ -14,6 +14,8 @@ Sizes were measured with Wrangler dry-run on September 5, 2026. The gateway is a
 Send `{ code, envVars }` to `POST /execute` on a runtime Worker; the Service Binding determines which runtime runs it. Only the Playground gateway chooses a runtime, and it does so from the URL path: `POST /execute/<language>`, where `<language>` is `javascript`, `python`, `perl`, or `ruby`. `POST /execute` on the gateway is an alias for `/execute/javascript`.
 
 Code is a **script**: the value of the last top-level expression is the result; a top-level `return` is not part of the supported contract in any language. Data is passed with `envVars` (string values only) and read as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby). No context persists between calls — every call boots a fresh Wasm instance.
+
+The JavaScript runtime also accepts TypeScript with no `language` option and no separate mode: the host parses code as JavaScript first (so valid JavaScript never changes meaning), and only falls back to stripping TypeScript-only syntax (types, `interface`, generics, `as`/`satisfies`, `enum`, `namespace`) when that parse fails. Types are stripped, not checked — a TypeScript type error still runs and produces a result, like any other JavaScript mistake. `import`/`export` remain unsupported in both dialects.
 
 Code is limited to 64 KiB and the request to 96 KiB. Python, Perl, and Ruby stdout/stderr is limited to 32 KiB and 200 log chunks combined; JavaScript console capture uses the same limits. The serialized result is capped at 64 KiB. Every execution — success, guest error, or a fuel/output/result limit — returns HTTP 200 with `{ code, language, engine, durationMs, logs: { stdout, stderr }, results, error?, usage? }`; check the `error` field through the shared client. Only request/transport failures (bad JSON, an unsupported gateway path, invalid `envVars`, an `input` or `language` key, wrong method, oversized payload, wrong content type, or a gateway failure) use non-200 statuses with `{ error: { name: "ApiError", message } }`.
 

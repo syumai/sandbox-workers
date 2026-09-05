@@ -11,6 +11,7 @@ export const javascriptRuntime = {
     "env-vars",
     "last-expression-result",
     "promises",
+    "typescript",
     "web-builtins",
   ],
   limits: {

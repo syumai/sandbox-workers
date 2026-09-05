@@ -17,6 +17,7 @@ import hello from "../examples/hello.js?raw";
 import modern from "../examples/modern-javascript.js?raw";
 import transform from "../examples/data-transform.js?raw";
 import web from "../examples/web-apis.js?raw";
+import typescript from "../examples/typescript.ts?raw";
 import "./style.css";
 const $ = (id) => document.getElementById(id);
 const javascriptExamples = [
@@ -28,6 +29,7 @@ const javascriptExamples = [
     envVars: { WORDS: "Books,Tools,Books,Books,Tools" },
   },
   { name: "Web primitives", code: web, envVars: {} },
+  { name: "TypeScript", code: typescript, envVars: { NAME: "world" } },
 ];
 const library = {
   javascript: javascriptExamples,
@@ -70,7 +72,7 @@ const clientSnippets = {
 };
 const syntax = new Compartment();
 const modes = {
-  javascript: javascript(),
+  javascript: javascript({ typescript: true }),
   python: python(),
   perl: StreamLanguage.define(perl),
   ruby: StreamLanguage.define(ruby),

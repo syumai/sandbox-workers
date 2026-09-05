@@ -118,3 +118,4 @@ This protocol mirrors the shape of the Cloudflare Sandbox SDK's code interpreter
 - **No persistent context.** Every call boots a fresh Wasm instance; there is no `createCodeContext`/`context` concept and no state carries over between calls.
 - **No `exec`/files.** There is no shell execution or filesystem access from guest code.
 - **`envVars` values must be strings.** Pass complex data as a JSON string and parse it in guest code if needed.
+- **TypeScript needs no `language` option.** The Cloudflare Sandbox SDK requires `language: "typescript"` to transpile TypeScript separately. The JavaScript runtime here strips types automatically: it always parses submitted code as JavaScript first, so valid JavaScript never changes meaning, and only falls back to stripping TypeScript-only syntax when that parse fails.

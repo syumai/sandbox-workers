@@ -13,6 +13,10 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
     platform: "neutral",
     target: "es2022",
     external: ["*.wasm", "*.bin"],
+    // "neutral" has no default mainFields, so plain CommonJS dependencies
+    // without an "exports" map (e.g. sucrase and its own dependencies)
+    // would otherwise fail to resolve.
+    mainFields: ["module", "main"],
   });
   await writeFile(
     `packages/${language}/dist/worker.d.ts`,

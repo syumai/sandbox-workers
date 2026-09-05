@@ -92,6 +92,17 @@ Node APIs, external networking and files are not provided. Pure promises and
 supported Fastly Web builtins work; timers and indefinitely pending promises
 are unsupported.
 
+TypeScript is also accepted automatically: there is no `language` option and
+no separate mode. Code is parsed as JavaScript first, so valid JavaScript
+never changes meaning (e.g. `a < b > (c)` stays a comparison, never a generic
+call); only code that fails to parse as JavaScript falls back to stripping
+TypeScript-only syntax (type annotations, `interface`, generics,
+`as`/`satisfies`, `enum`, `namespace`, parameter properties) before running.
+Types are stripped, not checked, so a type error still runs and returns a
+result, like any other JavaScript mistake; a real TypeScript syntax error is
+reported as a guest `SyntaxError`. ES-module `import`/`export` remain
+unsupported in both dialects.
+
 Every execution creates a fresh Wasm instance; no context persists between
 calls. Fuel bounds engine function/loop entries to 5,000,000; the linear
 memory maximum is 64 MiB. Code is limited to 64 KiB, request to 96 KiB and

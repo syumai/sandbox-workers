@@ -60,6 +60,8 @@ curl http://localhost:8787/execute \
 
 Metric values above are illustrative. Code is a **script**: the value of the last top-level expression is the result (`await` also works, but a top-level `return` is not supported and surfaces as a guest `SyntaxError`). Data is passed with `envVars` and read as `process.env.NAME`; nothing from the host environment leaks in. An `undefined` result produces an empty `results` array. Containers (objects/arrays) are returned as `{ json }`; everything else is returned as `{ text }` using a `util.inspect`-like representation (strings single-quoted, BigInt values rendered as `123n`). Circular references in a JSON-serialized result fail. ES module `import`/`export`, npm resolution, and a Node.js environment are not provided.
 
+The runtime also accepts TypeScript automatically: there is no `language` field and no separate mode. The host adapter (`packages/javascript/src/transform.mjs`, running in Workers V8, never inside the guest Wasm) parses the submitted code as JavaScript first with acorn; any code that parses as JavaScript is never touched further, so JavaScript semantics are always preserved (for example `a < b > (c)` is a comparison, never a generic call). Only code that fails to parse as JavaScript — and isn't a plain top-level `return` — is handed to sucrase (`transform(code, { transforms: ["typescript"], disableESTransforms: true })`) to strip TypeScript-only syntax: type annotations, `interface`, generics, `as`/`satisfies`, `enum`, `namespace`, and parameter properties. Sucrase performs no type checking, so a TypeScript type error still runs and produces a result, like any other dynamically-typed JavaScript mistake; only a genuine TypeScript *syntax* error is reported back as a guest `SyntaxError`. `import`/`export` remain unsupported in both dialects, since the guest has no module system.
+
 `GET /languages` lists supported languages, execution modes, capabilities, and limits.
 
 | JavaScript response                                                   | HTTP status         |
@@ -77,8 +79,8 @@ Validated on September 5, 2026 with Wrangler 4.129.0 and workerd 1.20260903.1.
 
 | Component                                        |                         Uncompressed size |
 | ------------------------------------------------ | ----------------------------------------: |
-| Fastly engine, guest, and fuel-instrumented Wasm | 11,891,318 bytes, approximately 11.34 MiB |
-| Complete JavaScript Worker, dry-run              |                   Approximately 11.35 MiB |
+| Fastly engine, guest, and fuel-instrumented Wasm | 12,187,286 bytes, approximately 11.62 MiB |
+| Complete JavaScript Worker, dry-run              |                   Approximately 12.29 MiB |
 | Gateway with all four runtime descriptors        |                       Approximately 6 KiB |
 
 UI files are served through Static Assets separately from Worker code. All runtime bundles fit within 64 MiB; see [language runtimes](languages.md) for other engines' sizes. Execution has been verified through local Service Bindings and the browser UI. Production uploads, cold starts, CPU/memory billing, and concurrent workloads have not been validated. Local `durationMs` measurements are not production performance guarantees.
