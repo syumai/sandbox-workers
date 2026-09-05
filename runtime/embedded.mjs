@@ -1,4 +1,5 @@
-import { createWasi, budget, ExecutionLimitError } from "./wasi.mjs";
+import { createWasi, budget, ExecutionLimitError, hasOpenGuestFds } from "./wasi.mjs";
+import { memoryPageCount, writePage } from "./snapshot.mjs";
 import { invoke } from "./protobuf.mjs";
 const encoder = new TextEncoder();
 const decode = (bytes) => new TextDecoder().decode(bytes);
@@ -188,48 +189,35 @@ function invokePerlRaw(instance, handle, code) {
   return { ...result, stdout, stderr };
 }
 
-// A durable session: one embedded interpreter kept alive across many
-// execute() calls (no memory snapshotting yet — phase 2). Unlike the JS
-// session, a fuel exhaustion or trap here throws a JS exception through the
-// interpreter's own C call stack — not a clean, resumable interrupt — so
-// `invalid` is set and the caller must boot a fresh session on the next call.
-export function createEmbeddedSession(module, archive, language, options = {}) {
-  const workspace = options.workspace ?? null;
-  let cwd = options.cwd ?? "/workspace";
-  const fuel = language === "perl" ? 10_000_000 : 100_000_000;
-  const meter = budget(fuel);
-  const host = createWasi(module, archive, meter, {}, workspace?.root ?? null);
-  const instance = new WebAssembly.Instance(module, host.imports);
-  host.wasi.initialize(instance);
-  instance.exports.wasm_init();
-  const handle = invoke(instance, language === "python" ? "w_0_5" : "w_0_16", [[1, "/stdlib"]])[1];
-  if (!handle) throw new Error("Interpreter initialization failed");
+// Raw `w_0_2` (Python eval) call, factored out of buildEmbeddedApi below so
+// restoreEmbeddedSession can also use it for the post-restore `random.seed()`
+// call before any session-level state (like buildEmbeddedApi's `cwd`) exists.
+function evaluatePythonRaw(instance, handle, host, code) {
+  const out = JSON.parse(
+    decode(
+      invoke(instance, "w_0_2", [
+        [1, handle],
+        [2, code],
+      ])[1],
+    ),
+  );
+  if (out.stdout) host.capture("log", out.stdout);
+  if (out.stderr) host.capture("error", out.stderr);
+  if (!out.ok) throw new Error(out.error || "Python execution failed");
+  return out.repr;
+}
 
+// The session object returned by both createEmbeddedSession and
+// restoreEmbeddedSession, once each has finished setting up its own
+// `instance`/`handle`. Unlike the JS session, a fuel exhaustion or trap here
+// throws a JS exception through the interpreter's own C call stack — not a
+// clean, resumable interrupt — so `invalid` is set and the caller must boot
+// (or restore) a fresh session on the next call.
+function buildEmbeddedApi({ instance, handle, host, meter, fuel, workspace, language, cwd: initialCwd }) {
+  let cwd = initialCwd;
   let invalid = false;
 
-  const evaluatePython = (code) => {
-    const out = JSON.parse(
-      decode(
-        invoke(instance, "w_0_2", [
-          [1, handle],
-          [2, code],
-        ])[1],
-      ),
-    );
-    if (out.stdout) host.capture("log", out.stdout);
-    if (out.stderr) host.capture("error", out.stderr);
-    if (!out.ok) throw new Error(out.error || "Python execution failed");
-    return out.repr;
-  };
-
-  if (language === "python") {
-    evaluatePython(PYTHON_SESSION_BOOT);
-  } else {
-    const boot = invokePerlRaw(instance, handle, PERL_SESSION_BOOT);
-    if (boot.stdout) host.capture("log", boot.stdout);
-    if (boot.stderr) host.capture("error", boot.stderr);
-    if (!boot.ok) throw new Error(boot.error || "Perl session initialization failed");
-  }
+  const evaluatePython = (code) => evaluatePythonRaw(instance, handle, host, code);
 
   return {
     get cwd() {
@@ -240,6 +228,22 @@ export function createEmbeddedSession(module, archive, language, options = {}) {
     },
     close() {
       invalid = true;
+    },
+    // Snapshot rules (docs/sessions-design.md): a trap here always sets
+    // `invalid` below (in execute()'s catch) before returning, so
+    // "!invalid" already means "no trap since the last successful call" —
+    // unlike the JS session, execute() here never throws. Also false while
+    // the guest holds an open file descriptor beyond the preopens (a real
+    // `open()` through WASI, unlike JS's host-function fs facade).
+    canSnapshot() {
+      return !invalid && !hasOpenGuestFds(host);
+    },
+    // { handle, extra, memory }: Python/Perl carry no extra restore state
+    // beyond the interpreter handle (no interrupt addresses like JS), so
+    // `extra` is empty; kept for shape parity with the JS session's
+    // .snapshot() and with restoreEmbeddedSession's `options.snapshot`.
+    snapshot() {
+      return { handle, extra: {}, memory: instance.exports.memory };
     },
     execute(payload) {
       if (invalid) throw new Error("This session instance has been invalidated");
@@ -321,6 +325,92 @@ export function createEmbeddedSession(module, archive, language, options = {}) {
       }
     },
   };
+}
+
+// A durable session: one embedded interpreter kept alive across many
+// execute() calls, and snapshottable to a Durable Object's `pages` table via
+// .snapshot()/.canSnapshot() (see runtime/snapshot.mjs and runtime/session.mjs).
+export function createEmbeddedSession(module, archive, language, options = {}) {
+  const workspace = options.workspace ?? null;
+  const cwd = options.cwd ?? "/workspace";
+  const fuel = language === "perl" ? 10_000_000 : 100_000_000;
+  const meter = budget(fuel);
+  const host = createWasi(module, archive, meter, {}, workspace?.root ?? null);
+  const instance = new WebAssembly.Instance(module, host.imports);
+  host.wasi.initialize(instance);
+  instance.exports.wasm_init();
+  const handle = invoke(instance, language === "python" ? "w_0_5" : "w_0_16", [[1, "/stdlib"]])[1];
+  if (!handle) throw new Error("Interpreter initialization failed");
+
+  if (language === "python") {
+    evaluatePythonRaw(instance, handle, host, PYTHON_SESSION_BOOT);
+  } else {
+    const boot = invokePerlRaw(instance, handle, PERL_SESSION_BOOT);
+    if (boot.stdout) host.capture("log", boot.stdout);
+    if (boot.stderr) host.capture("error", boot.stderr);
+    if (!boot.ok) throw new Error(boot.error || "Perl session initialization failed");
+  }
+
+  return buildEmbeddedApi({ instance, handle, host, meter, fuel, workspace, language, cwd });
+}
+
+// Restores a session from a previous .snapshot() (see runtime/session.mjs):
+// instantiates fresh, then -- per docs/sessions-design.md's verified restore
+// recipe -- points wasi.inst at the instance directly (no wasi.initialize(),
+// no _initialize, no wasm_init()), grows memory to the snapshot's page count,
+// and copies its non-zero pages back in. The interpreter handle from the
+// snapshot is reused as-is (no re-init call).
+//
+// `options.snapshot` is `{ handle, memoryPages, readPage }` (`extra` is
+// accepted but unused -- Python/Perl need no extra restore state); `readPage`
+// mirrors restoreJavaScriptSession's contract, see there.
+export function restoreEmbeddedSession(module, archive, language, options = {}) {
+  const workspace = options.workspace ?? null;
+  const cwd = options.cwd ?? "/workspace";
+  const fuel = language === "perl" ? 10_000_000 : 100_000_000;
+  const meter = budget(fuel);
+  const host = createWasi(module, archive, meter, {}, workspace?.root ?? null);
+  const instance = new WebAssembly.Instance(module, host.imports);
+  host.wasi.inst = instance;
+
+  const { handle, memoryPages, readPage: readSnapshotPage } = options.snapshot;
+  const currentPages = memoryPageCount(instance.exports.memory);
+  if (memoryPages > currentPages) instance.exports.memory.grow(memoryPages - currentPages);
+  for (let page = 0; page < memoryPages; page++) {
+    const data = readSnapshotPage(page);
+    if (data) writePage(instance.exports.memory, page, data);
+  }
+
+  // Python's `random` module seeds itself from OS entropy read once, at
+  // interpreter startup; a restored instance's module-level state (including
+  // that seed) is exactly whatever it was when the snapshot was taken, so
+  // without this every restored session would replay the same "random"
+  // sequence from that point on. Re-seed once, before the caller's first
+  // post-restore execute() (JavaScript's Math.random has no such hook --
+  // see the sessions guide for that caveat).
+  //
+  // `import random` itself walks the whole of sys.path (PathFinder checks
+  // every entry, including /workspace, for every import that isn't resolved
+  // by an earlier meta path finder) and caches /workspace's directory
+  // listing in a FileFinder. @bjorn3/browser_wasi_shim's Directory.stat()
+  // always reports mtime 0, so that cache would otherwise never invalidate
+  // -- any file written to /workspace after this reseed (by a later
+  // execute(), or already sitting in a freshly-provided workspace's rows)
+  // could become permanently invisible to `import` even though `open()`/
+  // `os.listdir()` see it fine. Drop just that one cache entry via `sys`
+  // (already imported, so this costs nothing beyond a dict pop) rather than
+  // `importlib.invalidate_caches()`, which needs a first-time `import
+  // importlib` and was measured to blow the fuel budget on this heavily
+  // tick-instrumented engine (see the note on the `traceback` module below).
+  if (language === "python")
+    evaluatePythonRaw(
+      instance,
+      handle,
+      host,
+      "import random; random.seed()\nimport sys; sys.path_importer_cache.pop('/workspace', None)",
+    );
+
+  return buildEmbeddedApi({ instance, handle, host, meter, fuel, workspace, language, cwd });
 }
 
 export function runEmbedded(module, archive, language, payload) {

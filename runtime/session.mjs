@@ -1,10 +1,13 @@
 // createSessionClass(engine) builds the SandboxSession Durable Object class
-// each language package exports. Phase 1: /workspace, cwd, the files API,
-// and REPL execution kept alive in memory for as long as the Durable Object
-// instance stays resident — no memory snapshot yet (phase 2). The SQLite
-// schema below intentionally matches docs/sessions-design.md's storage
-// layout (`meta`, `files`) so phase 2 can add the `pages` table and a
-// `snapshot` key without a migration.
+// each language package exports. Phase 1 built /workspace, cwd, the files
+// API, and REPL execution kept alive in memory only for as long as the
+// Durable Object instance stayed resident. Phase 2 (this file) adds memory
+// snapshots: the `pages` table and a `snapshot` meta record, so a session
+// survives eviction, hibernation, and redeploys (as long as the engine
+// `build` hasn't changed) — see docs/sessions-design.md "Durable Object" and
+// "Snapshot rules". `engine` additionally provides `build` (a sha256 of the
+// metered engine.wasm, used to guard restores) and `restore(workspace, cwd,
+// onCwdChange, snapshot)`.
 import { DurableObject } from "cloudflare:workers";
 import {
   ApiError,
@@ -14,6 +17,7 @@ import {
   MAX_REQUEST_BYTES,
 } from "@sandbox-workers/core";
 import { Workspace, WorkspaceError } from "./workspace.mjs";
+import { PAGE_BYTES, hashMemory, diffPages } from "./snapshot.mjs";
 
 const ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 const ENV_VAR_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -109,6 +113,11 @@ export function createSessionClass(engine) {
       this.instance = null;
       this.workspace = null;
       this.changesSince = undefined;
+      // Page hashes for the live `this.instance`'s memory as of the last
+      // snapshot write (or, right after a restore, as of the restored
+      // memory itself — see _ensureInstance). Kept in memory only; the
+      // Durable Object never needs to persist hashes, only page bytes.
+      this.prevPageHashes = new Map();
       this.queue = Promise.resolve();
       ctx.blockConcurrencyWhile(async () => {
         this._createTables();
@@ -120,6 +129,7 @@ export function createSessionClass(engine) {
         "CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, data BLOB, updated_at INTEGER)",
       );
       this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
+      this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pages (page INTEGER PRIMARY KEY, data BLOB)");
     }
 
     // --- storage helpers ---------------------------------------------
@@ -136,6 +146,18 @@ export function createSessionClass(engine) {
       );
     }
 
+    _loadSnapshotMeta() {
+      const rows = [...this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'snapshot'")];
+      return rows.length ? JSON.parse(rows[0].value) : null;
+    }
+
+    _saveSnapshotMeta(snapshot) {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO meta (key, value) VALUES ('snapshot', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1",
+        JSON.stringify(snapshot),
+      );
+    }
+
     _loadFiles() {
       return [...this.ctx.storage.sql.exec("SELECT path, data, updated_at FROM files")];
     }
@@ -147,7 +169,7 @@ export function createSessionClass(engine) {
         meta = {
           id,
           language: engine.language,
-          build: engine.engineName,
+          build: engine.build,
           cwd: "/workspace",
           createdAt: now,
           lastUsed: now,
@@ -167,29 +189,99 @@ export function createSessionClass(engine) {
       return this.workspace;
     }
 
+    // Drops any stored snapshot (pages + the `snapshot` meta record) — used
+    // both when a stored snapshot's `build` no longer matches the current
+    // engine (below) and by POST /reset.
+    _dropStoredSnapshot() {
+      this.ctx.storage.transactionSync(() => {
+        this.ctx.storage.sql.exec("DELETE FROM pages");
+        this.ctx.storage.sql.exec("DELETE FROM meta WHERE key = 'snapshot'");
+      });
+    }
+
     _ensureInstance(meta) {
       this._ensureWorkspace();
       if (this.instance && !this.instance.invalid) return this.instance;
-      this.instance = engine.boot(this.workspace, meta.cwd, (cwd) => {
+      const onCwdChange = (cwd) => {
         meta.cwd = cwd;
-      });
+      };
+      const snapshotMeta = this._loadSnapshotMeta();
+      if (snapshotMeta && snapshotMeta.build === engine.build) {
+        // Restore: read every stored page once up front (Durable Object
+        // SQLite reads are cheap — see docs/sessions-design.md's measured
+        // 5 ms/16 MiB, 19 ms/64 MiB) into a plain Map so `readPage` below is
+        // synchronous, matching runtime/{javascript,embedded}.mjs's restore
+        // contract.
+        const rows = [...this.ctx.storage.sql.exec("SELECT page, data FROM pages")];
+        const byPage = new Map(
+          rows.map((row) => [row.page, row.data instanceof Uint8Array ? row.data : new Uint8Array(row.data)]),
+        );
+        this.instance = engine.restore(this.workspace, meta.cwd, onCwdChange, {
+          // Stored as a decimal string (see _persist's snapshotRecord.handle
+          // comment) because JSON can't carry a BigInt; convert back here
+          // rather than in the runtime modules, because runtime/protobuf.mjs's
+          // message() encodes a field as a length-delimited STRING whenever
+          // typeof value === "string" -- passing the stored string straight
+          // through as `handle` would silently send the wrong wire type to
+          // the engine instead of the varint it expects.
+          handle: BigInt(snapshotMeta.handle),
+          extra: snapshotMeta.extra,
+          memoryPages: snapshotMeta.memoryPages,
+          readPage: (page) => byPage.get(page),
+        });
+        // The restored instance's memory isn't necessarily identical to what
+        // was stored (restore only replays non-zero pages; freshly grown
+        // regions are already zero) — hash it once so the next diff is
+        // exact, rather than assuming byPage's keys are the full picture.
+        this.prevPageHashes = hashMemory(this.instance.snapshot().memory);
+      } else {
+        if (snapshotMeta) this._dropStoredSnapshot(); // stale build: boot fresh, replay nothing
+        this.instance = engine.boot(this.workspace, meta.cwd, onCwdChange);
+        this.prevPageHashes = new Map();
+      }
       return this.instance;
     }
 
-    _persist(meta, diff) {
-      const byPath = new Map(this.workspace.serialize().map((f) => [f.path, f]));
+    // Writes meta, the workspace file diff (if any), and the memory page
+    // diff (if any) in one transaction, matching docs/sessions-design.md
+    // step 4: "write meta, changed files, and changed pages in one
+    // transaction". `fileDiff` is null when the execution failed (its
+    // workspace writes were already discarded by the caller); `pageDiff` is
+    // null when the instance can't be snapshotted this round.
+    _persist(meta, fileDiff, pageDiff, snapshotRecord) {
+      const byPath = fileDiff ? new Map(this.workspace.serialize().map((f) => [f.path, f])) : null;
       this.ctx.storage.transactionSync(() => {
-        for (const path of diff.deleted) this.ctx.storage.sql.exec("DELETE FROM files WHERE path = ?", path);
-        for (const path of [...diff.created, ...diff.updated]) {
-          const file = byPath.get(path);
-          if (!file) continue;
-          this.ctx.storage.sql.exec(
-            "INSERT INTO files (path, data, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(path) DO UPDATE SET data = ?2, updated_at = ?3",
-            path,
-            file.data,
-            file.updatedAt,
-          );
+        if (fileDiff) {
+          for (const path of fileDiff.deleted)
+            this.ctx.storage.sql.exec("DELETE FROM files WHERE path = ?", path);
+          for (const path of [...fileDiff.created, ...fileDiff.updated]) {
+            const file = byPath.get(path);
+            if (!file) continue;
+            this.ctx.storage.sql.exec(
+              "INSERT INTO files (path, data, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(path) DO UPDATE SET data = ?2, updated_at = ?3",
+              path,
+              file.data,
+              file.updatedAt,
+            );
+          }
         }
+        if (pageDiff) {
+          // All-zero pages (the page went back to zero, or a stale row
+          // outlives a page count the current snapshot no longer reaches)
+          // are deleted rather than stored, per docs/sessions-design.md.
+          for (const page of pageDiff.removed) this.ctx.storage.sql.exec("DELETE FROM pages WHERE page = ?", page);
+          for (const [page, data] of pageDiff.changed) {
+            this.ctx.storage.sql.exec(
+              "INSERT INTO pages (page, data) VALUES (?1, ?2) ON CONFLICT(page) DO UPDATE SET data = ?2",
+              page,
+              data,
+            );
+          }
+        }
+        // Separate from `pageDiff` so the "mark the existing snapshot
+        // stale" path (no page bytes to write, just flip one flag) can share
+        // this same transaction with the meta/file writes above.
+        if (snapshotRecord) this._saveSnapshotMeta(snapshotRecord);
         this._saveMeta(meta);
       });
     }
@@ -221,6 +313,7 @@ export function createSessionClass(engine) {
           this.instance = null;
           this.workspace = null;
           this.changesSince = undefined;
+          this.prevPageHashes = new Map();
           return json({ ok: true });
         }
 
@@ -228,6 +321,7 @@ export function createSessionClass(engine) {
 
         if (request.method === "GET" && path === "/") {
           this._ensureWorkspace();
+          const snapshotMeta = this._loadSnapshotMeta();
           return json({
             id: meta.id,
             language: meta.language,
@@ -237,7 +331,7 @@ export function createSessionClass(engine) {
             lastUsed: meta.lastUsed,
             executions: meta.executions,
             workspace: this.workspace.stats(),
-            snapshot: null,
+            snapshot: snapshotMeta ? snapshotInfo(snapshotMeta) : null,
           });
         }
 
@@ -245,6 +339,8 @@ export function createSessionClass(engine) {
           this._ensureWorkspace();
           this.instance?.close?.();
           this.instance = null;
+          this.prevPageHashes = new Map();
+          this._dropStoredSnapshot();
           meta.lastUsed = Date.now();
           this._saveMeta(meta);
           return json({ ok: true });
@@ -266,14 +362,19 @@ export function createSessionClass(engine) {
       const before = this.workspace.serialize();
 
       let result;
+      let threw = false;
       try {
         result = instance.execute({ code, envVars, cwd });
       } catch (error) {
-        // Only the JS session throws here, and only for a fuel-exhaustion
-        // interrupt (the instance survives that); anything else escaping is
-        // unexpected, so the instance is dropped defensively.
+        threw = true;
+        // The JS session throws here for a fuel-exhaustion interrupt (the
+        // instance survives that — `error.trap` is not set) or the hard
+        // fuel backstop (`error.trap === true`, a genuine trap: the instance
+        // does NOT survive that, unlike the clean interrupt case). Anything
+        // else escaping is unexpected and is treated the same as a trap.
         const limited = error?.name === "ExecutionLimitError";
-        if (!limited) this.instance = null;
+        const trap = error?.trap === true;
+        if (!limited || trap) this.instance = null;
         result = {
           logs: { stdout: [], stderr: [] },
           results: [],
@@ -290,22 +391,66 @@ export function createSessionClass(engine) {
       meta.lastUsed = Date.now();
       if (result.session?.cwd) meta.cwd = result.session.cwd;
 
+      // A guest-level error (result.error without a throw, e.g. an ordinary
+      // Python exception) still discards this execution's workspace writes
+      // in place (keeps `workspace.root`'s identity, so a still-alive
+      // instance's WASI mount / host functions keep seeing the same object)
+      // — but per docs/sessions-design.md, an ordinary guest exception does
+      // NOT invalidate the instance or block a memory snapshot, only a trap
+      // does (handled above by dropping `this.instance`).
+      let fileDiff = null;
       if (result.error) {
-        // Discard this execution's workspace writes in place (keeps
-        // `workspace.root`'s identity, so a still-alive instance's WASI
-        // mount / host functions keep seeing the same object) and persist
-        // only meta (executions/lastUsed/cwd).
         this.workspace.restoreFrom(before);
-        this._saveMeta(meta);
       } else {
-        const diff = this.workspace.changes(this.changesSince);
-        this.changesSince = diff.snapshot;
-        this._persist(meta, diff);
+        fileDiff = this.workspace.changes(this.changesSince);
+        this.changesSince = fileDiff.snapshot;
       }
 
       // Python/Perl: a trap or fuel exhaustion invalidates the instance;
-      // the next call boots a fresh one. JavaScript never sets this.
-      if (instance.invalid) this.instance = null;
+      // the next call boots a fresh one. JavaScript never sets this (its
+      // traps throw instead, handled above).
+      if (!threw && instance.invalid) this.instance = null;
+
+      // Snapshot attempt: only when instance.execute() didn't throw (a
+      // throw either means a safe interrupt with the instance kept alive —
+      // still fine to snapshot next time, nothing to do this round — or a
+      // trap, which already dropped `this.instance` above so there is
+      // nothing left to snapshot).
+      let snapshotMs;
+      const live = threw ? null : this.instance;
+      if (live && live.canSnapshot()) {
+        const start = performance.now();
+        const snap = live.snapshot();
+        const pageDiff = diffPages(snap.memory, this.prevPageHashes);
+        this.prevPageHashes = pageDiff.hashes;
+        const snapshotRecord = {
+          build: engine.build,
+          memoryPages: Math.round(snap.memory.buffer.byteLength / PAGE_BYTES),
+          pageCount: pageDiff.hashes.size,
+          bytes: pageDiff.hashes.size * PAGE_BYTES,
+          // `snap.handle` is a BigInt (runtime/protobuf.mjs decodes every
+          // protobuf varint field as one), which JSON.stringify can't
+          // serialize -- store it as a decimal string. protobuf.mjs's
+          // varint() does `BigInt(value)` internally, so passing this string
+          // straight back as `snapshot.handle` on restore works unchanged.
+          handle: String(snap.handle),
+          extra: snap.extra,
+          takenAt: Date.now(),
+          stale: false,
+        };
+        this._persist(meta, fileDiff, pageDiff, snapshotRecord);
+        snapshotMs = performance.now() - start;
+      } else {
+        // canSnapshot() is false (the guest still holds an open file
+        // descriptor beyond the preopens): the execution result still
+        // stands, but restoring the on-disk snapshot later would replay an
+        // older memory image than what this execution produced. Flag it so
+        // GET reports `snapshot.stale: true` (see docs), in the same
+        // transaction as the meta/file writes below.
+        const existing = live ? this._loadSnapshotMeta() : null;
+        const staleRecord = existing && !existing.stale ? { ...existing, stale: true } : null;
+        this._persist(meta, fileDiff, null, staleRecord);
+      }
 
       return json({
         code,
@@ -313,7 +458,12 @@ export function createSessionClass(engine) {
         engine: engine.engineName,
         durationMs: 0,
         ...result,
-        session: { id: meta.id, cwd: meta.cwd, executions: meta.executions },
+        session: {
+          id: meta.id,
+          cwd: meta.cwd,
+          executions: meta.executions,
+          ...(snapshotMs !== undefined ? { snapshotMs } : {}),
+        },
       });
     }
 
@@ -367,6 +517,18 @@ export function createSessionClass(engine) {
         throw error;
       }
     }
+  };
+}
+
+// Shapes the stored `snapshot` meta record for GET /sessions/:id, per
+// docs/sessions-design.md: `{build, pages: pageCount, bytes, takenAt, stale}`.
+function snapshotInfo(snapshotMeta) {
+  return {
+    build: snapshotMeta.build,
+    pages: snapshotMeta.pageCount,
+    bytes: snapshotMeta.bytes,
+    takenAt: snapshotMeta.takenAt,
+    stale: !!snapshotMeta.stale,
   };
 }
 

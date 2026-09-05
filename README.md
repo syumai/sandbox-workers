@@ -83,7 +83,7 @@ Replace `javascript` in the installation commands with `python`, `perl`, or `rub
 
 ### Sessions
 
-`runCode` above is stateless. `sandbox.session(id)` opens a durable, stateful REPL instead — top-level variables and a writable `/workspace` persist across calls, backed by a Durable Object the runtime Worker exports (`SESSIONS` / `SandboxSession`, already wired into the CLI initializer and deploy templates for JavaScript, Python, and Perl; Ruby does not support sessions). See the [sessions guide](website/content/guides/sessions.md) and [language runtimes](docs/languages.md) for the client API, the files API, and per-language REPL semantics.
+`runCode` above is stateless. `sandbox.session(id)` opens a durable, stateful REPL instead — top-level variables and a writable `/workspace` persist across calls, surviving Durable Object eviction, hibernation, and redeploys via a memory snapshot taken after each execution, backed by a Durable Object the runtime Worker exports (`SESSIONS` / `SandboxSession`, already wired into the CLI initializer and deploy templates for JavaScript, Python, and Perl; Ruby does not support sessions). See the [sessions guide](website/content/guides/sessions.md) and [language runtimes](docs/languages.md) for the client API, the files API, per-language REPL semantics, and the snapshot mechanism.
 
 ## Develop the Playground
 

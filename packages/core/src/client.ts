@@ -34,7 +34,13 @@ export interface SessionRunCodeOptions extends RunCodeOptions {
   cwd?: string;
 }
 export interface SessionExecutionResult extends ExecutionResult {
-  session: { id: string; cwd: string; executions: number };
+  // `snapshotMs` is present only on an execution that actually wrote a
+  // memory snapshot (see docs/sessions-design.md phase 2): the time spent
+  // hashing/diffing/persisting pages, useful for measurement. Absent when
+  // the session's engine doesn't support snapshots yet, when the guest held
+  // an open file descriptor (see SessionInfo.snapshot.stale below), or right
+  // after a trap dropped the live instance.
+  session: { id: string; cwd: string; executions: number; snapshotMs?: number };
 }
 export interface SessionInfo {
   id: string;
@@ -45,7 +51,11 @@ export interface SessionInfo {
   lastUsed: number;
   executions: number;
   workspace: { files: number; bytes: number };
-  snapshot: { pages: number; bytes: number; build: string } | null;
+  // `null` until the first successful snapshot is taken. `stale: true` means
+  // the guest held an open file descriptor on the most recent execution, so
+  // this snapshot predates that execution's globals -- see the sessions
+  // guide's "Memory snapshots" section.
+  snapshot: { build: string; pages: number; bytes: number; takenAt: number; stale: boolean } | null;
 }
 export type FileEncoding = "utf-8" | "base64";
 export interface FileEntry {

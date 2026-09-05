@@ -109,13 +109,13 @@ A **session** is a named, durable REPL backed by a Durable Object — see the [s
 
 | Method and path | Body | Response |
 | --- | --- | --- |
-| `POST /sessions/:id/execute` | `{code, envVars?, cwd?}` | The `/execute` result plus `session: {id, cwd, executions}`; always 200 |
-| `GET /sessions/:id` | | `{id, language, engine, cwd, createdAt, lastUsed, executions, workspace: {files, bytes}, snapshot: null}` |
+| `POST /sessions/:id/execute` | `{code, envVars?, cwd?}` | The `/execute` result plus `session: {id, cwd, executions, snapshotMs?}`; always 200 |
+| `GET /sessions/:id` | | `{id, language, engine, cwd, createdAt, lastUsed, executions, workspace: {files, bytes}, snapshot}` |
 | `DELETE /sessions/:id` | | `{ok: true}` |
 | `POST /sessions/:id/reset` | | `{ok: true}` |
 | `POST /sessions/:id/files` | `{op, path, newPath?, content?, encoding?, recursive?, force?}` | Per operation — see the sessions guide |
 
-`snapshot` is always `null` in this phase; memory snapshots that survive Durable Object eviction are a later phase. File operation failures return a 4xx status with `{error: {name: "FileError", code, message}}`; other transport and validation errors on these routes use the same `{error: {name: "ApiError", message}}` shape as `/execute`.
+`snapshot` is `{build, pages, bytes, takenAt, stale}` once a session has taken at least one memory snapshot (surviving Durable Object eviction, hibernation, and redeploys — see the sessions guide's "Memory snapshots" section for when a snapshot is skipped, `stale`, and how `reset` compacts), or `null` before the first one / right after `reset`. `session.snapshotMs` on the execute response is present only on an execution that actually wrote a snapshot. File operation failures return a 4xx status with `{error: {name: "FileError", code, message}}`; other transport and validation errors on these routes use the same `{error: {name: "ApiError", message}}` shape as `/execute`.
 
 ### Gateway path
 

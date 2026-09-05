@@ -40,9 +40,9 @@ Playground. See the runtime package documentation for limits and compatibility.
 `runCode` is stateless: every call boots a fresh Wasm instance. `sandbox.session(id)`
 returns a durable, stateful REPL instead, backed by a Durable Object the runtime
 Worker exports (JavaScript, Python, and Perl; **not** Ruby). Top-level variables,
-functions, and a writable `/workspace` persist across calls to the same session id
-for as long as its Durable Object instance stays live in memory (surviving eviction
-is a later phase).
+functions, and a writable `/workspace` persist across calls to the same session id,
+surviving Durable Object eviction, hibernation, and redeploys via a linear-memory
+snapshot taken after each execution.
 
 ```ts
 const session = sandbox.session("user-42"); // validated against /^[A-Za-z0-9._-]{1,128}$/

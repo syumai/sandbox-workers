@@ -29,7 +29,7 @@ Python and Perl's upstream ABI captures stdout until execution completes. Wasm m
 
 ## Sessions
 
-`POST /execute` boots a fresh Wasm instance every call. A **session** (`POST /sessions/:id/execute` and the rest of `/sessions/:id/...`) is a durable, stateful REPL backed by a Durable Object instead: top-level variables, functions, and a writable `/workspace` persist across calls to the same session id, for as long as its Durable Object stays live in memory (surviving eviction is a later phase; see `docs/sessions-design.md`). Sessions are supported for JavaScript, Python, and Perl; Ruby answers every `/sessions/*` route with 400. See the [sessions guide](../website/content/guides/sessions.md) for the client API, the files API, and per-language REPL semantics.
+`POST /execute` boots a fresh Wasm instance every call. A **session** (`POST /sessions/:id/execute` and the rest of `/sessions/:id/...`) is a durable, stateful REPL backed by a Durable Object instead: top-level variables, functions, and a writable `/workspace` persist across calls to the same session id, and survive Durable Object eviction, hibernation, and redeploys via a linear-memory snapshot taken after each execution (see `docs/sessions-design.md` and the [sessions guide](../website/content/guides/sessions.md) for when a snapshot is skipped and how `reset` compacts one). Sessions are supported for JavaScript, Python, and Perl; Ruby answers every `/sessions/*` route with 400. See the sessions guide for the client API, the files API, and per-language REPL semantics.
 
 ## PHP evaluation
 

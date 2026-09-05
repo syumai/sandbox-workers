@@ -39,7 +39,7 @@ const session = sandbox.session("user-42");
 await session.runCode(code, { envVars, cwd });
 ```
 
-A session keeps top-level variables, functions, and a writable `/workspace` alive across calls for as long as its Durable Object stays in memory (persistence across eviction is a later phase). See [the sessions guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md) for language-specific REPL semantics, the files API, and limits.
+A session keeps top-level variables, functions, and a writable `/workspace` alive across calls, surviving Durable Object eviction, hibernation, and redeploys via a linear-memory snapshot taken after each execution. See [the sessions guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md) for language-specific REPL semantics, the files API, the snapshot mechanism, and limits.
 
 ## Licenses
 

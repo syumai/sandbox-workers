@@ -221,6 +221,11 @@ export function createWasi(module, archive, meter, envVars = {}, workspaceDir = 
   return {
     wasi,
     imports,
+    // Index of the first fd a guest could ever open itself (stdin/stdout/
+    // stderr, then the fixed preopens above). Any fds.length beyond this
+    // that are still non-undefined mean the guest holds an open file
+    // descriptor -- see hasOpenGuestFds below.
+    fdBase: 3 + preopens.length,
     get logs() {
       return { stdout: splitLines(chunks.stdout), stderr: splitLines(chunks.stderr) };
     },
@@ -234,4 +239,15 @@ export function createWasi(module, archive, meter, envVars = {}, workspaceDir = 
       size = 0;
     },
   };
+}
+
+// Snapshot precondition (see docs/sessions-design.md "Snapshot rules"): a
+// guest that still holds a file descriptor beyond the fixed preopens (e.g. an
+// `open()`ed file it never closed) may have host-side read/write position
+// state that a memory-only snapshot can't capture faithfully. path_open
+// pushes new entries onto wasi.fds and fd_close only sets the slot back to
+// undefined (see @bjorn3/browser_wasi_shim's wasi.js), so any defined slot at
+// or past fdBase means an open guest fd.
+export function hasOpenGuestFds(host) {
+  return host.wasi.fds.slice(host.fdBase).some((fd) => fd !== undefined);
 }

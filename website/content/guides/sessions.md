@@ -7,9 +7,19 @@ description: Durable, stateful REPLs on top of the stateless execution API.
 
 Sessions are supported for **JavaScript, Python, and Perl**. **Ruby is not supported** — every `/sessions/*` route on a Ruby runtime Worker answers 400 `Sessions are not supported for ruby`, because Ruby's initial memory (35.6 MiB) and `RubyVM`'s host-side state rule out the memory-snapshot mechanism the other languages use.
 
-## Current phase: in-memory only
+## Memory snapshots
 
-This is phase 1 of the durable sessions feature (see the design document referenced below). A session's globals and workspace persist only while its Durable Object instance stays live in memory — repeated calls in quick succession see the same state. Memory snapshotting to survive Durable Object eviction, hibernation, and redeploys is a later phase; until then, an evicted session starts over with an empty workspace and fresh interpreter state the next time it is used. The Playground does not yet expose a session mode; that is also a later phase.
+A session's globals (not just its `/workspace`) survive Durable Object eviction, hibernation, and redeploys: after each execution that leaves the interpreter in a safe, resumable state, the runtime Worker takes a snapshot of the engine's linear memory and writes it to the Durable Object's own SQLite storage, alongside the workspace files. The next time the session is used — even from a brand-new Durable Object instance, in a brand-new `wrangler dev`/isolate process — the engine is restored from that snapshot instead of booting fresh, so top-level variables, functions, classes, and imported modules are exactly as a prior execution left them.
+
+A few things follow from how this works:
+
+- **A snapshot is skipped, never corrupted, after a trap.** Fuel exhaustion in Python and Perl, and any other unrecoverable engine error, both throw away the live interpreter; the *next* execution boots a fresh one from the most recent snapshot (or from scratch, if there is none yet) — nothing from the failed execution's globals survives, but the session keeps working. JavaScript's fuel-exhaustion interrupt is different: the interpreter is not corrupted by it, so the session stays live and stays snapshottable.
+- **A snapshot is skipped, and the existing one is flagged stale, if the guest still holds an open file descriptor** when an execution finishes (for example, Python or Perl code that calls `open()` without closing the result). The execution's result is unaffected, but restoring the snapshot later would replay an older memory image than what that execution actually produced — `GET /sessions/:id` reports `snapshot.stale: true` until a later execution snapshots cleanly again.
+- **Memory never shrinks.** Once a session's linear memory has grown, later executions keep paying for that page count even if they use less. `POST /sessions/:id/reset` is the way to compact: it drops both the live interpreter and the stored snapshot (keeping `/workspace` and `cwd`), so the next execution starts from a fresh, minimum-size interpreter.
+- **A stored snapshot is discarded, not restored, if the engine build changed** (a redeploy with different engine code). `GET /sessions/:id` then reports `snapshot: null` until the next execution's memory image is snapshotted from scratch.
+- **`Math.random()`'s sequence repeats after a restore.** A restored JavaScript engine resumes its pseudo-random generator from exactly the state it was in when the snapshot was taken, so code that calls `Math.random()` right after a restore can see the same values it would have seen right after the original snapshot. Python's `random` module is reseeded automatically after every restore, so it doesn't have this issue; Perl session code that needs fresh entropy across a restore should call `srand()` itself.
+
+An execution that actually wrote a snapshot reports how long that took in `session.snapshotMs` (milliseconds) — useful for measuring the cost of a particular session's workload, not something callers need to act on.
 
 ## Enable sessions in your Worker
 
@@ -62,13 +72,13 @@ Every route is under `/sessions/:id` on the runtime Worker (or `/languages/:lang
 
 | Method and path | Body | Response |
 | --- | --- | --- |
-| `POST /sessions/:id/execute` | `{code, envVars?, cwd?}` | The `/execute` result plus `session: {id, cwd, executions}`; always 200 |
-| `GET /sessions/:id` | | `{id, language, engine, cwd, createdAt, lastUsed, executions, workspace: {files, bytes}, snapshot: null}` |
+| `POST /sessions/:id/execute` | `{code, envVars?, cwd?}` | The `/execute` result plus `session: {id, cwd, executions, snapshotMs?}`; always 200 |
+| `GET /sessions/:id` | | `{id, language, engine, cwd, createdAt, lastUsed, executions, workspace: {files, bytes}, snapshot}` |
 | `DELETE /sessions/:id` | | `{ok: true}` — deletes storage and drops the instance |
-| `POST /sessions/:id/reset` | | `{ok: true}` — drops the live instance, keeps files and `cwd` |
+| `POST /sessions/:id/reset` | | `{ok: true}` — drops the live instance and the stored snapshot, keeps files and `cwd` |
 | `POST /sessions/:id/files` | `{op, path, newPath?, content?, encoding?, recursive?, force?}` | Per operation, below |
 
-`snapshot` is always `null` in this phase; a populated `{pages, bytes, build}` object is a later phase.
+`snapshot` is `{build, pages, bytes, takenAt, stale}` once the session has snapshotted at least once (`pages`/`bytes` describe the stored linear-memory pages, `takenAt` is a timestamp, `stale` is `true` when the most recent execution couldn't be snapshotted — see "Memory snapshots" above), or `null` before the first snapshot or right after `reset`. `session.snapshotMs` (on the execute response) is present only on an execution that actually wrote a snapshot.
 
 ### The files API
 
@@ -120,4 +130,4 @@ Code runs with `eval` in package `main`. Package variables declared `our`, subro
 
 ## See also
 
-[`docs/sessions-design.md`](https://github.com/syumai/sandbox-workers/blob/main/docs/sessions-design.md) in the repository is the full design document, including the Durable Object's internal storage layout and the memory-snapshot mechanism planned for phase 2.
+[`docs/sessions-design.md`](https://github.com/syumai/sandbox-workers/blob/main/docs/sessions-design.md) in the repository is the full design document, including the Durable Object's internal storage layout and the memory-snapshot mechanism described above.

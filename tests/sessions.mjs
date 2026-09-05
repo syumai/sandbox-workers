@@ -257,6 +257,53 @@ function uniqueId(prefix) {
   console.log("javascript: DELETE removes everything");
 }
 
+// ---- memory snapshots (phase 2) ---------------------------------------
+
+{
+  const id = uniqueId("js-snapshot");
+  const before = await info("javascript", id);
+  assert.equal(before.snapshot, null);
+  const r1 = await execute("javascript", id, { code: "var snapped = 1; snapped" });
+  assert.deepEqual(r1.results, [{ text: "1" }]);
+  // The runtime under test is a live `wrangler dev` process, so the very
+  // first execute() in a session takes the first snapshot synchronously
+  // (canSnapshot() is true right after an ordinary top-level call) -- no
+  // need to wait for anything async here.
+  assert.equal(typeof r1.session.snapshotMs, "number");
+  const after = await info("javascript", id);
+  assert.ok(after.snapshot, "GET info should report a snapshot after an execute");
+  assert.ok(after.snapshot.pages > 0);
+  assert.ok(after.snapshot.bytes > 0);
+  assert.equal(after.snapshot.stale, false);
+  assert.equal(typeof after.snapshot.build, "string");
+  assert.equal(typeof after.snapshot.takenAt, "number");
+
+  await reset("javascript", id);
+  const afterReset = await info("javascript", id);
+  assert.equal(afterReset.snapshot, null);
+  console.log("javascript: GET info reports a snapshot after execute; reset clears it");
+}
+
+{
+  const id = uniqueId("py-snapshot");
+  const r1 = await execute("python", id, { code: "snapped = 1" });
+  assert.equal(typeof r1.session.snapshotMs, "number");
+  const after = await info("python", id);
+  assert.ok(after.snapshot);
+  assert.ok(after.snapshot.pages > 0);
+  console.log("python: GET info reports a snapshot after execute");
+}
+
+{
+  const id = uniqueId("pl-snapshot");
+  const r1 = await execute("perl", id, { code: "our $snapped = 1;" });
+  assert.equal(typeof r1.session.snapshotMs, "number");
+  const after = await info("perl", id);
+  assert.ok(after.snapshot);
+  assert.ok(after.snapshot.pages > 0);
+  console.log("perl: GET info reports a snapshot after execute");
+}
+
 // ---- limits -----------------------------------------------------------
 
 {

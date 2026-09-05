@@ -1,7 +1,12 @@
 import wasm from "./engine.wasm";
+import build from "./engine-build.json";
 import { ExecutionLimitError } from "../../../runtime/wasi.mjs";
 import archive from "./stdlib.bin";
-import { runEmbedded, createEmbeddedSession } from "../../../runtime/embedded.mjs";
+import {
+  runEmbedded,
+  createEmbeddedSession,
+  restoreEmbeddedSession,
+} from "../../../runtime/embedded.mjs";
 import { createSessionClass } from "../../../runtime/session.mjs";
 import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
 
@@ -10,8 +15,12 @@ const ENGINE_NAME = "Perl 5.42.2 / goccy v0.2.1";
 export const SandboxSession = createSessionClass({
   language: "perl",
   engineName: ENGINE_NAME,
+  build: build.sha256,
   boot(workspace: unknown, cwd: string) {
     return createEmbeddedSession(wasm, archive, "perl", { workspace, cwd });
+  },
+  restore(workspace: unknown, cwd: string, _onCwdChange: unknown, snapshot: unknown) {
+    return restoreEmbeddedSession(wasm, archive, "perl", { workspace, cwd, snapshot });
   },
 });
 

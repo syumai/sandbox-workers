@@ -1,6 +1,11 @@
 import wasm from "./engine.wasm";
+import build from "./engine-build.json";
 import { ExecutionLimitError } from "../../../runtime/wasi.mjs";
-import { runJavaScript, createJavaScriptSession } from "../../../runtime/javascript.mjs";
+import {
+  runJavaScript,
+  createJavaScriptSession,
+  restoreJavaScriptSession,
+} from "../../../runtime/javascript.mjs";
 import { createSessionClass } from "../../../runtime/session.mjs";
 import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
 
@@ -9,8 +14,12 @@ const ENGINE_NAME = "SpiderMonkey 147 / goccy spidermonkey-wasm v0.2.6";
 export const SandboxSession = createSessionClass({
   language: "javascript",
   engineName: ENGINE_NAME,
+  build: build.sha256,
   boot(workspace: unknown, cwd: string, onCwdChange: (cwd: string) => void) {
     return createJavaScriptSession(wasm, { workspace, cwd, onCwdChange });
+  },
+  restore(workspace: unknown, cwd: string, onCwdChange: (cwd: string) => void, snapshot: unknown) {
+    return restoreJavaScriptSession(wasm, { workspace, cwd, onCwdChange, snapshot });
   },
 });
 
