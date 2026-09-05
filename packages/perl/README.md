@@ -49,17 +49,16 @@ The service name must match the deployed Worker. Install `@sandbox-workers/core`
 ```js
 import { createSandbox } from "@sandbox-workers/core";
 const sandbox = createSandbox(env.SANDBOX, "perl");
-const output = await sandbox.execute({
-  code: "return $input->{x} ** 2;",
-  input: { x: 12 },
+const output = await sandbox.runCode("my $x = $ENV{X};\n$x ** 2", {
+  envVars: { X: "12" },
 });
-// output.result === 144
+// output.results[0].text === "144"
 ```
 
 ## Execution contract
 
-`POST /execute` accepts `{language: "perl", code, input}`. The language may be omitted when calling this runtime Worker directly. Code is a function body. JSON input is available as `$input`; use `return` for the result. Standard output is captured in the response's `logs`. Return values must be representable as JSON.
+`POST /execute` accepts `{language: "perl", code, envVars}`. The language may be omitted when calling this runtime Worker directly. Code is a **script**: the value of the last top-level expression is the result, and an explicit top-level `return` also works. Env vars are available as `%ENV`, e.g. `$ENV{NAME}`. Standard output is captured in the response's `logs.stdout`. HASH/ARRAY ref results are returned as `{ json }`; everything else is returned as `{ text: "$v" }`.
 
-Each execution creates a fresh Wasm instance. Host environment variables, networking, and files are unavailable. Limits include 64 KiB of code, a 96 KiB request, 32 KiB of standard output, 64 MiB of Wasm linear memory, and a fuel budget. Installing external packages or arbitrary native extensions is unsupported.
+Each execution creates a fresh Wasm instance; no context persists between calls. Host environment variables, networking, and files are unavailable — only the key/value pairs passed in `envVars` are visible. Limits include 64 KiB of code, a 96 KiB request, 32 KiB of combined stdout/stderr, 64 MiB of Wasm linear memory, a 64 KiB serialized result, and a fuel budget. Installing external packages or arbitrary native extensions is unsupported.
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for licenses and upstream sources.

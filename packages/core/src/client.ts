@@ -1,26 +1,9 @@
-import type { ExecutionRequest, LanguageEngine } from "./protocol.js";
-export type JsonValue =
-  null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
-export interface ExecutionLog {
-  level: string;
-  text: string;
+import type { ExecutionResult, LanguageEngine } from "./protocol.js";
+export type { JsonValue } from "./protocol.js";
+export interface RunCodeOptions {
+  envVars?: Record<string, string | undefined>;
 }
-export interface ExecutionUsage {
-  fuelConsumed: number;
-  fuelLimit: number;
-  memoryBytes: number;
-}
-export type ExecutionResponse<T = JsonValue> = {
-  language?: string;
-  engine?: string;
-  durationMs?: number;
-  usage?: ExecutionUsage;
-  logs?: ExecutionLog[];
-} & (
-  | { ok: true; result: T }
-  | { ok: false; error: { name: string; message: string; stack?: string } }
-);
-/** HTTP/transport failures are distinct from a guest execution failure (ok: false). */
+/** HTTP/transport failures are distinct from a guest execution failure (`error` on the result). */
 export class SandboxTransportError extends Error {
   constructor(
     public status: number,
@@ -36,46 +19,60 @@ export function createSandbox(
   language = "javascript",
 ) {
   return {
-    async execute<T = JsonValue>(
-      request: Omit<ExecutionRequest, "language">,
-    ): Promise<ExecutionResponse<T>> {
+    async runCode(
+      code: string,
+      options: RunCodeOptions = {},
+    ): Promise<ExecutionResult> {
+      const envVars = options.envVars
+        ? Object.fromEntries(
+            Object.entries(options.envVars).filter(
+              ([, value]) => value !== undefined,
+            ),
+          )
+        : undefined;
       const response = await binding.fetch(
         new Request("https://sandbox.internal/execute", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...request, language }),
+          body: JSON.stringify({ language, code, envVars }),
         }),
       );
-      if (!response.headers.get("content-type")?.includes("application/json"))
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
         throw new SandboxTransportError(
           response.status,
           "Sandbox returned a non-JSON response",
         );
-      let value: unknown;
-      try {
-        value = await response.json();
-      } catch {
-        throw new SandboxTransportError(
-          response.status,
-          "Sandbox returned invalid JSON",
-        );
+      }
+      if (!response.ok) {
+        const message =
+          body &&
+          typeof body === "object" &&
+          "error" in body &&
+          body.error &&
+          typeof body.error === "object" &&
+          "message" in body.error &&
+          typeof body.error.message === "string"
+            ? body.error.message
+            : "Sandbox request failed";
+        throw new SandboxTransportError(response.status, message);
       }
       if (
-        !value ||
-        typeof value !== "object" ||
-        !("ok" in value) ||
-        typeof value.ok !== "boolean"
+        !body ||
+        typeof body !== "object" ||
+        !("results" in body) ||
+        !Array.isArray((body as { results: unknown }).results) ||
+        !("logs" in body) ||
+        typeof (body as { logs: unknown }).logs !== "object" ||
+        (body as { logs: unknown }).logs === null
       )
         throw new SandboxTransportError(
           response.status,
           "Invalid sandbox response",
         );
-      if (response.status >= 500)
-        throw new SandboxTransportError(
-          response.status,
-          "Sandbox service unavailable",
-        );
-      return value as ExecutionResponse<T>;
+      return body as ExecutionResult;
     },
   };
 }

@@ -5,8 +5,13 @@ export const perlRuntime = {
   version: "0.1.0",
   engine: "Perl 5.42.2 / goccy v0.2.1",
   enabled: true,
-  mode: "function-body",
-  capabilities: ["stdout", "json-input", "standard-library"],
+  mode: "script",
+  capabilities: [
+    "stdout",
+    "env-vars",
+    "last-expression-result",
+    "standard-library",
+  ],
   limits: {
     codeBytes: 65536,
     requestBytes: 98304,

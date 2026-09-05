@@ -29,14 +29,13 @@ import { createSandbox, SandboxTransportError } from "@sandbox-workers/core";
 
 const python = createSandbox(env.PYTHON, "python");
 try {
-  const output = await python.execute<number>({
-    code: "return input['x'] ** 2",
-    input: { x: 12 },
+  const output = await python.runCode("import os\nint(os.environ['X']) ** 2", {
+    envVars: { X: "12" },
   });
-  if (!output.ok) {
+  if (output.error) {
     console.error(output.error.name, output.error.message);
   } else {
-    console.log(output.result);
+    console.log(output.results[0]);
   }
 } catch (error) {
   // Binding failures, malformed responses, or HTTP 5xx.
@@ -44,7 +43,7 @@ try {
 }
 ```
 
-The generic describes the expected result; it does not validate that shape at runtime. Guest errors return `ok: false`. Transport failures reject. The client sends code only to the supplied binding, never to the public Playground.
+`runCode` always resolves to an `ExecutionResult`; it does not validate the result's shape at runtime. Guest errors set `output.error` instead of throwing. Transport failures (a malformed response or a non-2xx status) reject with `SandboxTransportError`. The client sends code only to the supplied binding, never to the public Playground. There is no persistent context between calls: every call boots a fresh Wasm instance.
 
 Before publication, install the local core tarball or use the raw fetch example in [Quickstart](/getting-started/quickstart).
 

@@ -5,7 +5,7 @@ description: Persist files in Computer and execute code through sandbox-workers 
 
 ## A persistent workspace with four languages
 
-The [Cloudflare Computer example](https://github.com/syumai/sandbox-workers/tree/main/examples/cloudflare-computer) stores input, code, and results in a SQLite-backed Durable Object using `@cloudflare/computer` 0.2.1. Private Service Bindings send execution to JavaScript, Python, Perl, or Ruby.
+The [Cloudflare Computer example](https://github.com/syumai/sandbox-workers/tree/main/examples/cloudflare-computer) stores env vars, code, and results in a SQLite-backed Durable Object using `@cloudflare/computer` 0.2.1. Private Service Bindings send execution to JavaScript, Python, Perl, or Ruby.
 
 Computer handles persistence; sandbox-workers handles guest execution. This example bridges selected file contents as JSON. It does not mount Computer's filesystem inside the interpreters or register a `workspace.runtime.exec()` backend.
 
@@ -25,7 +25,7 @@ Use the example URL printed by Wrangler:
 curl -X POST 'http://localhost:8787/demo?language=python'
 ```
 
-Choose `javascript`, `python`, `perl`, or `ruby`. Each returns an `execution` envelope whose `result` is `{ "total": 3400, "count": 2 }`. The fixed basket is written to `/input.json`, the selected program to `/program.txt`, and the full response to `/result.json`.
+Choose `javascript`, `python`, `perl`, or `ruby`. Each returns an `execution` envelope whose `results[0].json` is `{ "total": 3400, "count": 2 }`. The fixed basket is written to `/input.json`, the selected program to `/program.txt`, and the full response to `/result.json`.
 
 ## Deploy
 
@@ -44,14 +44,14 @@ The host uses this sequence inside the Durable Object:
 
 ```ts
 await workspace.fs.writeFile("/input.json", JSON.stringify(data));
-const execution = await createSandbox(env.PYTHON, "python").execute({
-  code: await workspace.fs.readFile("/program.txt", "utf8"),
-  input: JSON.parse(await workspace.fs.readFile("/input.json", "utf8")),
-});
+const execution = await createSandbox(env.PYTHON, "python").runCode(
+  await workspace.fs.readFile("/program.txt", "utf8"),
+  { envVars: JSON.parse(await workspace.fs.readFile("/input.json", "utf8")) },
+);
 await workspace.fs.writeFile("/result.json", JSON.stringify(execution));
 ```
 
-Guest code receives only the JSON selected by the host. It cannot directly read the workspace, make network calls, or use the host's bindings. Validate guest results before turning them into file writes or other actions.
+Guest code receives only the string env vars selected by the host. It cannot directly read the workspace, make network calls, or use the host's bindings. Validate guest results before turning them into file writes or other actions.
 
 The public example runs only fixed programs and fixtures, overwrites three bounded files, and serializes each language's executions. It accepts no uploaded files or request-body input. For a multi-user agent, authenticate requests and select a workspace per authorized user before accepting private data or persistent writes.
 

@@ -56,15 +56,27 @@ class NullFile extends File {
     };
   }
 }
-export function createWasi(module, archive, meter) {
-  const logs = [];
+// WASI fd_write hands us raw write() chunks, which rarely line up with a
+// single print/puts call (one call can split across chunks, or one chunk can
+// hold several newline-terminated writes). Join the chunks captured for a
+// stream and split on "\n" so each returned entry is one line, matching how
+// the JS guest already reports one entry per console call.
+function splitLines(chunks) {
+  const joined = chunks.join("");
+  if (!joined) return [];
+  const lines = joined.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return lines;
+}
+export function createWasi(module, archive, meter, envVars = {}) {
+  const chunks = { stdout: [], stderr: [] };
   let size = 0;
   const capture = (level, text) => {
     size += new TextEncoder().encode(text).length;
     if (!text) return;
-    if (size > 32768 || logs.length >= 200)
+    if (size > 32768 || chunks.stdout.length + chunks.stderr.length >= 200)
       throw new ExecutionLimitError("Output limit exceeded");
-    logs.push({ level, text });
+    (level === "log" ? chunks.stdout : chunks.stderr).push(text);
   };
   const root = new Map();
   if (archive) {
@@ -84,7 +96,7 @@ export function createWasi(module, archive, meter) {
   }
   const wasi = new WASI(
     ["sandbox"],
-    [],
+    Object.entries(envVars).map(([key, value]) => `${key}=${value}`),
     [
       new OpenFile(new File([], { readonly: true })),
       new ConsoleStdout((data) => {
@@ -141,5 +153,12 @@ export function createWasi(module, archive, meter) {
     args[4] & 9 ? 63 : open(...args);
   imports.wasi_snapshot_preview1.path_filestat_mode = () => 63;
   imports.sandbox = { tick: meter.tick };
-  return { wasi, imports, logs, capture };
+  return {
+    wasi,
+    imports,
+    get logs() {
+      return { stdout: splitLines(chunks.stdout), stderr: splitLines(chunks.stderr) };
+    },
+    capture,
+  };
 }

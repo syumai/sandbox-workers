@@ -3,7 +3,7 @@ title: Ruby
 description: Execute code with CRuby 4.0.0 inside a dedicated Wasm Worker.
 ---
 
-Package: `@sandbox-workers/ruby`. Supports Ruby function bodies, Enumerable, and the bundled standard library. The JavaScript bridge is disabled. gem installation and arbitrary native extensions are unavailable.
+Package: `@sandbox-workers/ruby`. Code is a script: the value of the last expression is the result. Supports Enumerable and the bundled standard library. The JavaScript bridge is disabled. gem installation and arbitrary native extensions are unavailable.
 
 ## Deploy
 
@@ -19,17 +19,18 @@ See [deployment setup](/getting-started/deploy) and [Service Bindings](/guides/s
 
 ## Example
 
-Input:
+Env vars:
 
 ```json
-{ "name": "world" }
+{ "NAME": "world" }
 ```
 
 Code:
 
 ```ruby
+name = ENV.fetch("NAME", "world")
 puts "Hello from Ruby!"
-return {message: "Hello, #{input['name']}!", squares: (0..5).map { |x| x*x }}
+{message: "Hello, #{name}!", squares: (0..5).map { |x| x*x }}
 ```
 
 Every request gets a fresh engine instance. State does not persist between executions. Consult [limits](/reference/limits) for fuel, memory, and output budgets.

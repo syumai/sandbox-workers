@@ -98,8 +98,9 @@
             <div class="aside-note">
               <span>◇</span><strong>Room to experiment</strong>
               <p>
-                Pass JSON in, return JSON out. Standard libraries run inside an
-                isolated Wasm instance. No host network or files.
+                Write a script — the last expression is the result. Standard
+                libraries run inside an isolated Wasm instance. No host
+                network or files.
               </p>
               <a href="#api-panel">Explore the API ↓</a>
             </div>
@@ -117,18 +118,18 @@
             </div>
             <div id="editor" aria-label="JavaScript code editor"></div>
             <div class="input-heading">
-              <label for="input"
-                >INPUT
+              <label for="env-vars"
+                >ENV VARS
                 <span
-                  >Available as <code id="input-name">input</code></span
+                  >Available as <code id="env-name">process.env</code></span
                 ></label
               ><span>JSON</span>
             </div>
-            <textarea id="input" spellcheck="false" aria-label="JSON input">
-{"name":"world"}</textarea>
+            <textarea id="env-vars" spellcheck="false" aria-label="Environment variables JSON">
+{"NAME":"world"}</textarea>
             <div class="editor-footer">
-              <span id="editor-mode">JavaScript · async function body</span
-              ><span>Use <code>return</code> for a result</span>
+              <span id="editor-mode">JavaScript · script</span
+              ><span>The last expression is the result</span>
             </div>
           </section>
           <section class="result-pane">
@@ -288,11 +289,11 @@ import { createSandbox } from
   "@sandbox-workers/core";
 
 const js = createSandbox(env.SANDBOX);
-const output = await js.execute({
-  code: "return input.x ** 2;",
-  input: { x: 12 },
-});
-// { ok: true, result: 144, ... }</pre>
+const output = await js.runCode(
+  "const x = Number(process.env.X);\nx ** 2",
+  { envVars: { X: "12" } },
+);
+// { results: [{ text: "144" }], ... }</pre>
             </article>
           </div>
           <details>
@@ -312,7 +313,7 @@ const output = await js.execute({
             <div class="eyebrow">LANGUAGE-NEUTRAL PROTOCOL</div>
             <h2>One contract. More runtimes.</h2>
             <p>
-              POST code and JSON input to <code>/execute</code>.<br />Language
+              POST code and env vars to <code>/execute</code>.<br />Language
               adapters keep the API ready for what comes next.
             </p>
           </div>
@@ -321,8 +322,8 @@ Content-Type: application/json
 
 {
   "language": "javascript",
-  "code": "return input.x ** 2;",
-  "input": { "x": 12 }
+  "code": "const x = Number(process.env.X);\nx ** 2",
+  "envVars": { "X": "12" }
 }</pre>
         </section>
         <section class="docs-panel" aria-label="Documentation">

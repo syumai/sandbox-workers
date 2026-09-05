@@ -5,8 +5,13 @@ export const rubyRuntime = {
   version: "0.1.0",
   engine: "CRuby 4.0.0 / ruby.wasm 2.10.1",
   enabled: true,
-  mode: "function-body",
-  capabilities: ["stdout", "json-input", "standard-library"],
+  mode: "script",
+  capabilities: [
+    "stdout",
+    "env-vars",
+    "last-expression-result",
+    "standard-library",
+  ],
   limits: {
     codeBytes: 65536,
     requestBytes: 98304,

@@ -5,8 +5,8 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
   const text = await response.text();
   assert.equal(response.status, 200, text);
   const result = JSON.parse(text);
-  assert.equal(result.execution.ok, true);
-  assert.deepEqual(result.execution.result, { total: 3400, count: 2 });
+  assert.equal(result.execution.error, undefined);
+  assert.deepEqual(result.execution.results[0].json, { total: 3400, count: 2 });
   assert.deepEqual(result.files, ["/input.json", "/program.txt", "/result.json"]);
   console.log(`${language}: persisted input → Service Binding → persisted result passed`);
 }

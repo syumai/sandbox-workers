@@ -3,7 +3,7 @@ title: JavaScript
 description: Execute code with SpiderMonkey / Fastly 3.45.0 inside a dedicated Wasm Worker.
 ---
 
-Package: `@sandbox-workers/javascript`. Supports async function bodies, promises, modern JavaScript syntax, and selected Fastly Web builtins. ES modules, Node/npm resolution, timers, and networking are unavailable. BigInt results become strings ending in n.
+Package: `@sandbox-workers/javascript`. Code is a script: the value of the last expression is the result. Supports `await`, promises, modern JavaScript syntax, and selected Fastly Web builtins. ES modules, Node/npm resolution, timers, and networking are unavailable. BigInt results become strings ending in n.
 
 ## Deploy
 
@@ -19,21 +19,21 @@ See [deployment setup](/getting-started/deploy) and [Service Bindings](/guides/s
 
 ## Example
 
-Input:
+Env vars:
 
 ```json
-{ "name": "world" }
+{ "NAME": "world" }
 ```
 
 Code:
 
 ```javascript
-const name = input?.name ?? "world";
+const name = process.env.NAME ?? "world";
 console.log(`Hello, ${name}!`);
-return {
+({
   greeting: `Hello, ${name}!`,
   engine: "SpiderMonkey inside WebAssembly",
-};
+});
 ```
 
 Every request gets a fresh engine instance. State does not persist between executions. Consult [limits](/reference/limits) for fuel, memory, and output budgets.

@@ -6,4 +6,4 @@ const response = new Response(
     headers: { "content-type": "application/json" },
   },
 );
-return { bytes: bytes.length, response: await response.json() };
+({ bytes: bytes.length, response: await response.json() });

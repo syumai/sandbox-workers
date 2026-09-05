@@ -6,22 +6,27 @@ import { runRuby } from "../runtime/ruby.mjs";
 const cases = {
   python: {
     normal:
-      'print("hello")\nreturn {"name": input["name"], "sum": sum(range(10))}',
+      'import os\nprint("hello")\n{"name": os.environ["NAME"], "sum": sum(range(10))}',
     loop: "while True: pass",
     failure: 'raise ValueError("broken")',
-    host: 'import os\nreturn os.environ.get("HOME")',
+    host: 'import os\nos.environ.get("HOME")',
+    logs: 'print("a")\nprint("b")',
   },
   perl: {
-    normal: 'print "hello"; return {name=>$input->{name},sum=>45};',
+    normal: 'print "hello"; +{ name => $ENV{NAME}, sum => 45 };',
+    explicitReturn: 'print "hello"; return { name => $ENV{NAME}, sum => 45 };',
     loop: "while(1) {}",
     failure: 'die "broken";',
-    host: "return $ENV{HOME};",
+    host: "$ENV{HOME};",
+    logs: 'print "a\\n"; print "b\\n";',
   },
   ruby: {
-    normal: 'puts "hello"\nreturn {name: input["name"], sum: (0...10).sum}',
+    normal: 'puts "hello"\n{name: ENV["NAME"], sum: (0...10).sum}',
+    explicitReturn: 'return {name: ENV["NAME"], sum: (0...10).sum}',
     loop: "loop {}",
     failure: 'raise "broken"',
-    host: 'return ENV["HOME"]',
+    host: 'ENV["HOME"]',
+    logs: 'puts "a"\nputs "b"',
   },
 };
 for (const [language, samples] of Object.entries(cases)) {
@@ -32,33 +37,57 @@ for (const [language, samples] of Object.entries(cases)) {
     language === "ruby"
       ? null
       : readFileSync(`packages/${language}/dist/stdlib.bin`);
-  const run = (code) =>
+  const run = (code, envVars = { NAME: "世界" }) =>
     language === "ruby"
-      ? runRuby(module, { code, input: { name: "世界" } })
+      ? runRuby(module, { code, envVars })
       : Promise.resolve().then(() =>
-          runEmbedded(module, archive, language, {
-            code,
-            input: { name: "世界" },
-          }),
+          runEmbedded(module, archive, language, { code, envVars }),
         );
-  test(`${language}: JSON, Unicode and stdout`, async () => {
+  test(`${language}: last expression, envVars and stdout`, async () => {
     const r = await run(samples.normal);
-    assert.deepEqual(r.result, { name: "世界", sum: 45 });
-    assert.match(r.logs.map((x) => x.text).join(""), /hello/);
+    assert.deepEqual(r.results, [{ json: { name: "世界", sum: 45 } }]);
+    assert.match(r.logs.stdout.join(""), /hello/);
+    assert.deepEqual(r.logs.stderr, []);
+    assert.equal(r.error, undefined);
   });
-  test(`${language}: error and fuel limit`, async () => {
-    await assert.rejects(run(samples.failure), /broken/);
+  if (samples.explicitReturn)
+    test(`${language}: explicit top-level return still works`, async () => {
+      const r = await run(samples.explicitReturn);
+      assert.deepEqual(r.results, [{ json: { name: "世界", sum: 45 } }]);
+    });
+  test(`${language}: error envelope has a name and message`, async () => {
+    const r = await run(samples.failure);
+    assert.ok(r.error.name);
+    assert.match(r.error.message, /broken/);
+    assert.deepEqual(r.results, []);
+  });
+  test(`${language}: fuel exhaustion is thrown as ExecutionLimitError`, async () => {
     await assert.rejects(run(samples.loop), /fuel exhausted/);
   });
   test(`${language}: host environment is not inherited`, async () => {
-    assert.equal((await run(samples.host)).result, null);
+    const r = await run(samples.host, {});
+    assert.deepEqual(r.results, []);
+  });
+  test(`${language}: log entries are one line each, without trailing newlines`, async () => {
+    const r = await run(samples.logs, {});
+    assert.deepEqual(r.logs.stdout, ["a", "b"]);
+    assert.deepEqual(r.logs.stderr, []);
   });
   if (language === "ruby")
     test("Ruby: JavaScript bridge is denied", async () => {
       await assert.rejects(
-        run('require "js"; return JS.global[:process].to_s'),
+        run('require "js"; JS.global[:process].to_s'),
         /disabled/,
       );
+    });
+  if (language === "perl")
+    test("Perl: unicode env values and literals print without warnings or double encoding", async () => {
+      const r = await run(
+        'print "$ENV{NAME}\\n"; print "こんにちは\\n"; +{ name => $ENV{NAME} };',
+      );
+      assert.deepEqual(r.logs.stdout, ["世界", "こんにちは"]);
+      assert.deepEqual(r.logs.stderr, []);
+      assert.deepEqual(r.results, [{ json: { name: "世界" } }]);
     });
 }
 for (const [language, files] of Object.entries({
@@ -66,7 +95,7 @@ for (const [language, files] of Object.entries({
   perl: ["hello.pl", "regex.pl"],
   ruby: ["hello.rb", "enumerable.rb"],
 })) {
-  test(`${language}: shipped examples`, async () => {
+  test(`${language}: shipped examples run without error`, async () => {
     const module = new WebAssembly.Module(
       readFileSync(`packages/${language}/dist/engine.wasm`),
     );
@@ -77,17 +106,13 @@ for (const [language, files] of Object.entries({
     for (const file of files) {
       const payload = {
         code: readFileSync(`examples/${language}/${file}`, "utf8"),
-        input: {
-          name: "world",
-          words: ["hello", "world", "hello"],
-          text: "Hello world! Hello Perl.",
-        },
+        envVars: { NAME: "world", WORDS: "hello,world,hello" },
       };
       const result =
         language === "ruby"
           ? await runRuby(module, payload)
           : runEmbedded(module, archive, language, payload);
-      assert.equal(result.ok, true);
+      assert.equal(result.error, undefined, file);
     }
   });
 }

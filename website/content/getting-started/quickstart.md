@@ -34,8 +34,8 @@ export default {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           language: "python",
-          code: "print('Hello!')\nreturn input['x'] ** 2",
-          input: { x: 12 },
+          code: "print('Hello!')\nimport os\nint(os.environ['X']) ** 2",
+          envVars: { X: "12" },
         }),
       }),
     );
@@ -44,6 +44,6 @@ export default {
 };
 ```
 
-Deploy your caller after the engine. The result contains `ok: true`, `result: 144`, and the captured greeting in `logs`. The internal URL selects the endpoint path; it does not create a DNS request to a public server.
+Deploy your caller after the engine. The result has no `error`, `results: [{ text: "144" }]`, and the captured greeting in `logs.stdout`. The internal URL selects the endpoint path; it does not create a DNS request to a public server.
 
 Before exposing a caller that accepts arbitrary code, configure its authentication and rate limits. See [Service Bindings](/guides/service-bindings) for the typed client and multiple engines.

@@ -1,5 +1,7 @@
-my @words = $input->{text} =~ /\b\w+\b/g;
+my @words = split /,/, ($ENV{WORDS} // "hello,world,hello,perl");
+my $text = join(" ", @words);
+my @matches = $text =~ /\b\w+\b/g;
 my %counts;
-$counts{lc $_}++ for @words;
-print "Parsed ", scalar(@words), " words\n";
-return \%counts;
+$counts{lc $_}++ for @matches;
+print "Parsed ", scalar(@matches), " words\n";
+\%counts;

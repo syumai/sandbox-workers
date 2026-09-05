@@ -8,6 +8,12 @@ alone does not cover that software.
   Full license: licenses/FASTLY.txt.
   Source: https://github.com/fastly/js-compute-runtime (release v3.45.0).
   Binary input: npm package @fastly/js-compute@3.45.0, fastly.wasm.
+- Acorn 8.18.0: MIT. Used by the host-side `transformForAsyncExecution` helper
+  (src/transform.mjs) to rewrite a script's last expression into a `return`;
+  esbuild bundles it into dist/worker.js, so it ships in this package's code,
+  not as a separate npm dependency.
+  Full license: licenses/ACORN.txt.
+  Source: https://github.com/acornjs/acorn (npm package acorn@8.18.0).
 - SpiderMonkey / Mozilla code in the upstream runtime: MPL-2.0 and the
   applicable notices in the upstream source files.
   License: https://www.mozilla.org/MPL/2.0/

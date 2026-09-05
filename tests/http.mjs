@@ -9,26 +9,28 @@ async function post(payload, status = 200) {
   assert.equal(res.status, status);
   return res.json();
 }
-assert.equal(
+assert.deepEqual(
   (
     await post({
-      code: "console.log(input.x); return await Promise.resolve(input.x ** 2)",
-      input: { x: 12 },
+      code: "console.log(process.env.X); await Promise.resolve(Number(process.env.X) ** 2)",
+      envVars: { X: "12" },
     })
-  ).result,
-  144,
+  ).results,
+  [{ text: "144" }],
 );
 assert.equal(
-  (await post({ code: "while(true){}" }, 422)).error.name,
+  (await post({ code: "while(true){}" })).error.name,
   "ExecutionLimitError",
 );
-assert.equal((await post({ code: "return 5" })).result, 5);
+assert.deepEqual((await post({ code: "5" })).results, [{ text: "5" }]);
 assert.equal((await post({ code: "return (;" })).error.name, "SyntaxError");
 await post({ language: "php", code: "echo 1;" }, 400);
 await post({ language: "__proto__", code: "1" }, 400);
 await post({ code: "" }, 400);
 await post({ code: "あ".repeat(22000) }, 413);
-await post({ code: "return 1", input: "a".repeat(100000) }, 413);
+await post({ code: "1", input: { x: 1 } }, 400);
+await post({ code: "1", envVars: "not an object" }, 400);
+await post({ code: "1", envVars: { X: 1 } }, 400);
 for (const [method, body, type, expected] of [
   ["GET", undefined, undefined, 405],
   ["POST", "{", "application/json", 400],
@@ -46,8 +48,14 @@ assert.equal(
   "javascript",
 );
 assert.match(await (await fetch(base)).text(), /sandbox-workers/);
-console.log("14 HTTP checks passed against " + base);
+console.log("16 HTTP checks passed against " + base);
 
-for (const [language,code] of [["python","return input['x'] ** 2"],["perl","return $input->{x} ** 2;"],["ruby","return input['x'] ** 2"]]) {
- const r=await post({language,code,input:{x:12}});assert.equal(r.result,144);console.log(language+" HTTP passed");
+for (const [language, code] of [
+  ["python", "import os\nint(os.environ['X']) ** 2"],
+  ["perl", "$ENV{X} ** 2;"],
+  ["ruby", "ENV['X'].to_i ** 2"],
+]) {
+  const r = await post({ language, code, envVars: { X: "12" } });
+  assert.deepEqual(r.results, [{ text: "144" }]);
+  console.log(language + " HTTP passed");
 }

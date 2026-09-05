@@ -61,14 +61,14 @@ Deploy this dedicated Worker, then add to your caller's Wrangler configuration:
 // In your caller (pnpm add @sandbox-workers/core)
 import { createSandbox } from "@sandbox-workers/core";
 const sandbox = createSandbox(env.SANDBOX);
-const result = await sandbox.execute({
-  code: "return input.x ** 2;",
-  input: { x: 12 },
-});
+const result = await sandbox.runCode(
+  "const x = Number(process.env.X);\nx ** 2",
+  { envVars: { X: "12" } },
+);
 ```
 
 Or use `env.SANDBOX.fetch(new Request('https://sandbox.internal/execute', ...))`
-with a JSON POST body `{ "language": "javascript", "code": "return 42" }`.
+with a JSON POST body `{ "language": "javascript", "code": "42" }`.
 Both Workers must be deployed in your own Cloudflare account. A Service Binding
 is to a deployed Worker name; installing this npm package alone does not create it.
 For local development run both Wrangler projects, or pass both `-c` configs to
@@ -82,18 +82,23 @@ one `wrangler dev` command.
 
 ## Execution contract and limits
 
-Code is an async function body (`return` / `await`, `input` contains JSON).
-Console logs, JSON result, duration and fuel/memory metrics are returned.
-BigInt becomes a string ending in `n`; undefined results become null.
-ES-module imports, npm resolution, Node APIs, external networking and files are
-not provided. Pure promises and supported Fastly Web builtins work; timers and
-indefinitely pending promises are unsupported.
+Code is a **script**: the value of the last top-level expression is the
+result. An explicit top-level `return` and `await` also work. Data is passed
+with `envVars` (string values only) and read as `process.env.NAME`. Console
+logs (split into `stdout`/`stderr`), the result, duration, and fuel/memory
+metrics are returned. BigInt becomes a string ending in `n`; an `undefined`
+result produces an empty `results` array. ES-module imports, npm resolution,
+Node APIs, external networking and files are not provided. Pure promises and
+supported Fastly Web builtins work; timers and indefinitely pending promises
+are unsupported.
 
-Every execution creates a fresh Wasm instance. Fuel bounds engine function/loop
-entries to 5,000,000; the linear memory maximum is 64 MiB. Code is limited to
-64 KiB, request to 96 KiB and result body to 128 KiB. Console capture is bounded
-to 200 entries / 32,768 UTF-16 code units. CPU/isolate overhead and concurrent
-memory use still need to fit Cloudflare's separate resource limits.
+Every execution creates a fresh Wasm instance; no context persists between
+calls. Fuel bounds engine function/loop entries to 5,000,000; the linear
+memory maximum is 64 MiB. Code is limited to 64 KiB, request to 96 KiB and
+the serialized result to 64 KiB. Console capture is bounded to 200 entries /
+32,768 UTF-16 code units combined across `stdout`/`stderr`. CPU/isolate
+overhead and concurrent memory use still need to fit Cloudflare's separate
+resource limits.
 
 This is an experimental runtime, not a claim of full Test262 conformance or a
 production security audit. The demo is independent of your deployment.

@@ -11,4 +11,4 @@ console.log(
   "Named captures:",
   /(?<year>\d{4})-(?<month>\d{2})/.exec("2026-09").groups,
 );
-return { values, bigint: 2n ** 64n, unique: [...new Set([1, 1, 2, 3])] };
+({ values, bigint: 2n ** 64n, unique: [...new Set([1, 1, 2, 3])] });

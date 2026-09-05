@@ -5,8 +5,13 @@ export const pythonRuntime = {
   version: "0.1.0",
   engine: "CPython 3.14.6 / goccy v0.2.0",
   enabled: true,
-  mode: "function-body",
-  capabilities: ["stdout", "json-input", "standard-library"],
+  mode: "script",
+  capabilities: [
+    "stdout",
+    "env-vars",
+    "last-expression-result",
+    "standard-library",
+  ],
   limits: {
     codeBytes: 65536,
     requestBytes: 98304,

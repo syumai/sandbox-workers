@@ -18,10 +18,11 @@ export default {
         const result = runEmbedded(wasm, archive, "perl", payload);
         return Response.json(
           {
-            ...result,
+            code: payload.code,
             language: "perl",
             engine: "Perl 5.42.2 / goccy v0.2.1",
             durationMs: performance.now() - start,
+            ...result,
           },
           { headers: { "cache-control": "no-store" } },
         );
@@ -29,22 +30,22 @@ export default {
         const limited = error instanceof ExecutionLimitError;
         return Response.json(
           {
-            ok: false,
+            code: payload.code,
             language: "perl",
+            engine: "Perl 5.42.2 / goccy v0.2.1",
+            durationMs: performance.now() - start,
+            logs: { stdout: [], stderr: [] },
+            results: [],
             error: {
               name: limited ? "ExecutionLimitError" : "EngineError",
               message:
                 error instanceof Error
                   ? error.message.slice(0, 2048)
                   : "Execution failed",
+              traceback: [],
             },
-            logs: [],
-            durationMs: performance.now() - start,
           },
-          {
-            status: limited ? 422 : 400,
-            headers: { "cache-control": "no-store" },
-          },
+          { headers: { "cache-control": "no-store" } },
         );
       }
     } catch (error) {

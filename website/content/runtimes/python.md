@@ -19,17 +19,19 @@ See [deployment setup](/getting-started/deploy) and [Service Bindings](/guides/s
 
 ## Example
 
-Input:
+Env vars:
 
 ```json
-{ "name": "world" }
+{ "NAME": "world" }
 ```
 
 Code:
 
 ```python
+import os
+name = os.environ.get("NAME", "world")
 print("Hello from CPython!")
-return {"message": f"Hello, {input['name']}!", "squares": [x*x for x in range(6)]}
+{"message": f"Hello, {name}!", "squares": [x*x for x in range(6)]}
 ```
 
 Every request gets a fresh engine instance. State does not persist between executions. Consult [limits](/reference/limits) for fuel, memory, and output budgets.

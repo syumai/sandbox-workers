@@ -1,8 +1,16 @@
 // This program is snapshotted with the complete Fastly SpiderMonkey engine.
 addEventListener("fetch", (event) => event.respondWith(execute(event.request)));
+class ExecutionLimitError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ExecutionLimitError";
+  }
+}
 async function execute(request) {
-  const { code, input } = await request.json();
-  const logs = [];
+  const { code, envVars } = await request.json();
+  globalThis.process = Object.freeze({ env: Object.freeze({ ...envVars }) });
+  const stdout = [];
+  const stderr = [];
   let bytes = 0;
   const format = (value) =>
     typeof value === "string"
@@ -10,39 +18,60 @@ async function execute(request) {
       : typeof value === "bigint"
         ? `${value}n`
         : (JSON.stringify(value) ?? String(value));
-  for (const level of ["log", "info", "warn", "error", "debug"]) {
-    console[level] = (...args) => {
-      const text = args.map(format).join(" ");
-      bytes += text.length;
-      if (logs.length >= 200 || bytes > 32768)
-        throw new Error("Console output limit exceeded");
-      logs.push({ level, text });
-    };
-  }
+  const capture = (list) => (...args) => {
+    // One entry per console call, like today; strip a single trailing
+    // newline so a stray console.log("x\n") matches the WASI languages'
+    // line-per-entry logs instead of leaving a blank line in the array.
+    const text = args.map(format).join(" ").replace(/\n$/, "");
+    bytes += text.length;
+    if (stdout.length + stderr.length >= 200 || bytes > 32768)
+      throw new ExecutionLimitError("Output limit exceeded");
+    list.push(text);
+  };
+  console.log = console.info = console.debug = capture(stdout);
+  console.warn = console.error = capture(stderr);
+  const quote = (value) =>
+    `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+  const formatText = (value) => {
+    if (typeof value === "string") return quote(value);
+    if (typeof value === "bigint") return `${value}n`;
+    return String(value);
+  };
+  const mapResult = (value) => {
+    if (value === undefined) return [];
+    let entry;
+    if (typeof value === "object" && value !== null) {
+      const json = JSON.parse(
+        JSON.stringify(value, (_, v) =>
+          typeof v === "bigint" ? `${v}n` : v,
+        ),
+      );
+      entry = { json };
+    } else {
+      entry = { text: formatText(value) };
+    }
+    const size = new TextEncoder().encode(JSON.stringify(entry)).length;
+    if (size > 65536) throw new ExecutionLimitError("Result limit exceeded");
+    return [entry];
+  };
   try {
     // Dynamic compilation happens INSIDE SpiderMonkey/Wasm, never in Workers V8.
-    const AsyncFunction = Object.getPrototypeOf(
-      async function () {},
-    ).constructor;
-    const value = await new AsyncFunction("input", code)(input);
-    const result =
-      value === undefined
-        ? null
-        : JSON.parse(
-            JSON.stringify(value, (_, v) =>
-              typeof v === "bigint" ? `${v}n` : v,
-            ),
-          );
-    return Response.json({ ok: true, result, logs });
+    const value = await (0, eval)(code);
+    return Response.json({
+      logs: { stdout, stderr },
+      results: mapResult(value),
+    });
   } catch (error) {
     return Response.json({
-      ok: false,
+      logs: { stdout, stderr },
+      results: [],
       error: {
         name: String(error?.name ?? "Error"),
         message: String(error?.message ?? error),
-        stack: String(error?.stack ?? "").slice(0, 8192),
+        traceback: String(error?.stack ?? "")
+          .slice(0, 8192)
+          .split("\n"),
       },
-      logs,
     });
   }
 }

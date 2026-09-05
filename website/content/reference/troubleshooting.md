@@ -33,7 +33,7 @@ This build cannot initialize `_decimal` because mpdecimal host imports are unres
 
 ## Ruby JavaScript bridge is disabled
 
-`JS.global` and related bridge functions are intentionally blocked to keep guest code from accessing the Worker host. Pass the data you need as JSON input.
+`JS.global` and related bridge functions are intentionally blocked to keep guest code from accessing the Worker host. Pass the data you need with `envVars`.
 
 ## Production CPU limit exceeded
 

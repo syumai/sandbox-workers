@@ -24,6 +24,9 @@
     }
   },
   "types": "./dist/worker.d.ts",
+  "devDependencies": {
+    "acorn": "^8.18.0"
+  },
   "engines": {
     "node": ">=22.12"
   },

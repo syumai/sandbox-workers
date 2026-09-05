@@ -77,12 +77,12 @@ try {
   const clientTest = `import { createSandbox, SandboxTransportError } from '@sandbox-workers/core';
 import assert from 'node:assert/strict';
 let body;
-const client = createSandbox({ async fetch(request) { body = await request.json(); return Response.json({ok:true,result:144}); } });
-assert.deepEqual(await client.execute({code:'return input.x ** 2',input:{x:12}}),{ok:true,result:144});
+const client = createSandbox({ async fetch(request) { body = await request.json(); return Response.json({logs:{stdout:[],stderr:[]},results:[{text:'144'}]}); } });
+assert.deepEqual(await client.runCode('process.env.X ** 2', { envVars: { X: '12' } }), {logs:{stdout:[],stderr:[]},results:[{text:'144'}]});
 assert.equal(body.language,'javascript');
-assert.equal(body.input.x,12);
+assert.equal(body.envVars.X,'12');
 const broken = createSandbox({ async fetch() { return new Response('down',{status:503}); } });
-await assert.rejects(broken.execute({code:'return 1'}),SandboxTransportError);
+await assert.rejects(broken.runCode('1'),SandboxTransportError);
 `;
   await writeFile(join(dir, "client-test.mjs"), clientTest);
   run(process.execPath, ["client-test.mjs"]);

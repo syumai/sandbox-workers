@@ -1,6 +1,6 @@
-const name = input?.name ?? "world";
+const name = process.env.NAME ?? "world";
 console.log(`Hello, ${name}!`);
-return {
+({
   greeting: `Hello, ${name}!`,
   engine: "SpiderMonkey inside WebAssembly",
-};
+});

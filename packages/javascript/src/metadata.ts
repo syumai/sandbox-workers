@@ -5,8 +5,14 @@ export const javascriptRuntime = {
   version: "0.1.0",
   engine: "SpiderMonkey / Fastly 3.45.0",
   enabled: true,
-  mode: "async-function",
-  capabilities: ["console", "json-input", "promises", "web-builtins"],
+  mode: "script",
+  capabilities: [
+    "console",
+    "env-vars",
+    "last-expression-result",
+    "promises",
+    "web-builtins",
+  ],
   limits: {
     codeBytes: 65536,
     requestBytes: 98304,

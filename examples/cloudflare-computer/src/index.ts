@@ -12,11 +12,11 @@ interface Env {
 
 const programs = {
   javascript:
-    "return {total: input.items.reduce((sum, item) => sum + item.price * item.quantity, 0), count: input.items.length};",
+    "const items = JSON.parse(process.env.ITEMS); ({total: items.reduce((sum, item) => sum + item.price * item.quantity, 0), count: items.length});",
   python:
-    "return {'total': sum(item['price'] * item['quantity'] for item in input['items']), 'count': len(input['items'])}",
-  perl: "my $total = 0; for my $item (@{$input->{items}}) { $total += $item->{price} * $item->{quantity}; } return {total => $total, count => scalar @{$input->{items}}};",
-  ruby: "return {'total' => input['items'].sum { |item| item['price'] * item['quantity'] }, 'count' => input['items'].length}",
+    "import json, os\nitems = json.loads(os.environ['ITEMS'])\n{'total': sum(item['price'] * item['quantity'] for item in items), 'count': len(items)}",
+  perl: "use JSON::PP; my $items = JSON::PP::decode_json($ENV{ITEMS}); my $total = 0; for my $item (@$items) { $total += $item->{price} * $item->{quantity}; } +{total => $total, count => scalar @$items};",
+  ruby: "require 'json'\nitems = JSON.parse(ENV['ITEMS'])\n{'total' => items.sum { |item| item['price'] * item['quantity'] }, 'count' => items.length}",
 } as const;
 type Language = keyof typeof programs;
 const input = {
@@ -51,23 +51,20 @@ export class SandboxComputer extends DurableObject<Env> {
         perl: this.env.PERL,
         ruby: this.env.RUBY,
       };
+      const { items } = JSON.parse(await fs.readFile("/input.json", "utf8"));
       const execution = await createSandbox(
         bindings[language],
         language,
-      ).execute({
-        code: await fs.readFile("/program.txt", "utf8"),
-        input: JSON.parse(await fs.readFile("/input.json", "utf8")),
+      ).runCode(await fs.readFile("/program.txt", "utf8"), {
+        envVars: { ITEMS: JSON.stringify(items) },
       });
       await fs.writeFile("/result.json", JSON.stringify(execution));
-      return Response.json(
-        {
-          language,
-          input: JSON.parse(await fs.readFile("/input.json", "utf8")),
-          execution: JSON.parse(await fs.readFile("/result.json", "utf8")),
-          files: ["/input.json", "/program.txt", "/result.json"],
-        },
-        { status: execution.ok ? 200 : 422 },
-      );
+      return Response.json({
+        language,
+        input: JSON.parse(await fs.readFile("/input.json", "utf8")),
+        execution: JSON.parse(await fs.readFile("/result.json", "utf8")),
+        files: ["/input.json", "/program.txt", "/result.json"],
+      });
     });
   }
 }

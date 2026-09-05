@@ -1,3 +1,4 @@
+import { transformForAsyncExecution } from "./transform.mjs";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 export class ExecutionLimitError extends Error {}
@@ -13,7 +14,11 @@ export function runEngine(module, payload, fuel = 5_000_000) {
   let nextHandle = 10;
   let output;
   let diagnostic = "";
-  const bodies = new Map([[2, encoder.encode(JSON.stringify(payload))]]);
+  const guestRequest = {
+    code: transformForAsyncExecution(payload.code),
+    envVars: payload.envVars ?? {},
+  };
+  const bodies = new Map([[2, encoder.encode(JSON.stringify(guestRequest))]]);
   const view = () => new DataView(instance.exports.memory.buffer);
   const bytes = () => new Uint8Array(instance.exports.memory.buffer);
   const put32 = (p, n) => {
@@ -212,8 +217,11 @@ export function runEngine(module, payload, fuel = 5_000_000) {
   }
   if (output === undefined)
     throw new Error(`Engine returned no response: ${diagnostic}`);
+  const { logs, results, error } = JSON.parse(output);
   return {
-    ...JSON.parse(output),
+    logs,
+    results,
+    ...(error ? { error } : {}),
     usage: {
       fuelConsumed: fuel - remaining,
       fuelLimit: fuel,

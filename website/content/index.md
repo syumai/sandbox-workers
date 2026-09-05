@@ -3,7 +3,7 @@ title: Documentation
 description: Run code in isolated language engines on your own Cloudflare account.
 ---
 
-sandbox-workers packages JavaScript, Python, Perl, and Ruby interpreters as separate Wasm Workers. Your application sends code and JSON input through a Service Binding and receives a JSON result and captured output.
+sandbox-workers packages JavaScript, Python, Perl, and Ruby interpreters as separate Wasm Workers. Your application sends a code script and string env vars through a Service Binding and receives the value of the last expression, captured output, and any error.
 
 ## Start here
 
@@ -16,12 +16,12 @@ sandbox-workers packages JavaScript, Python, Perl, and Ruby interpreters as sepa
 
 ## Choose an engine
 
-| Runtime                            | Engine                       | Input variable |
-| ---------------------------------- | ---------------------------- | -------------- |
-| [JavaScript](/runtimes/javascript) | SpiderMonkey / Fastly 3.45.0 | `input`        |
-| [Python](/runtimes/python)         | CPython 3.14.6               | `input`        |
-| [Perl](/runtimes/perl)             | Perl 5.42.2                  | `$input`       |
-| [Ruby](/runtimes/ruby)             | CRuby 4.0.0                  | `input`        |
+| Runtime                            | Engine                       | Env vars accessed as |
+| ---------------------------------- | ---------------------------- | --------------------- |
+| [JavaScript](/runtimes/javascript) | SpiderMonkey / Fastly 3.45.0 | `process.env.NAME`    |
+| [Python](/runtimes/python)         | CPython 3.14.6               | `os.environ["NAME"]`  |
+| [Perl](/runtimes/perl)             | Perl 5.42.2                  | `$ENV{NAME}`          |
+| [Ruby](/runtimes/ruby)             | CRuby 4.0.0                  | `ENV["NAME"]`         |
 
 Every run creates a fresh Wasm instance. Fuel, memory, and output bounds limit guest execution. Standard libraries depend on the selected engine; host networking, host files, and package installation are unavailable.
 

@@ -3,7 +3,7 @@ title: Perl
 description: Execute code with Perl 5.42.2 inside a dedicated Wasm Worker.
 ---
 
-Package: `@sandbox-workers/perl`. JSON input is available as $input. The wrapper uses JSON::PP for values and captures stdout. Includes a read-only standard library; CPAN installations and arbitrary native extensions are unavailable.
+Package: `@sandbox-workers/perl`. Code is a script: the value of the last expression is the result. Env vars are available as `%ENV`, e.g. `$ENV{NAME}`. The wrapper uses JSON::PP for values and captures stdout. Includes a read-only standard library; CPAN installations and arbitrary native extensions are unavailable.
 
 ## Deploy
 
@@ -19,17 +19,18 @@ See [deployment setup](/getting-started/deploy) and [Service Bindings](/guides/s
 
 ## Example
 
-Input:
+Env vars:
 
 ```json
-{ "name": "world" }
+{ "NAME": "world" }
 ```
 
 Code:
 
 ```perl
+my $name = $ENV{NAME} // "world";
 print "Hello from Perl!\n";
-return {message => "Hello, $input->{name}!", squares => [map { $_ * $_ } 0..5]};
++{message => "Hello, $name!", squares => [map { $_ * $_ } 0..5]};
 ```
 
 Every request gets a fresh engine instance. State does not persist between executions. Consult [limits](/reference/limits) for fuel, memory, and output budgets.

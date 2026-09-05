@@ -20,37 +20,53 @@ import web from "../examples/web-apis.js?raw";
 import "./style.css";
 const $ = (id) => document.getElementById(id);
 const javascriptExamples = [
-  { name: "Hello, sandbox", code: hello, input: { name: "world" } },
-  { name: "Modern JavaScript", code: modern, input: {} },
-  { name: "Transform data", code: transform, input: {} },
-  { name: "Web primitives", code: web, input: {} },
+  { name: "Hello, sandbox", code: hello, envVars: { NAME: "world" } },
+  { name: "Modern JavaScript", code: modern, envVars: {} },
+  {
+    name: "Transform data",
+    code: transform,
+    envVars: { WORDS: "Books,Tools,Books,Books,Tools" },
+  },
+  { name: "Web primitives", code: web, envVars: {} },
 ];
 const library = {
   javascript: javascriptExamples,
   python: [
-    { name: "Hello, Python", code: pyHello, input: { name: "world" } },
+    { name: "Hello, Python", code: pyHello, envVars: { NAME: "world" } },
     {
       name: "Standard library",
       code: pyStdlib,
-      input: { words: ["hello", "world", "hello"] },
+      envVars: { WORDS: "hello,world,hello" },
     },
   ],
   perl: [
-    { name: "Hello, Perl", code: plHello, input: { name: "world" } },
+    { name: "Hello, Perl", code: plHello, envVars: { NAME: "world" } },
     {
       name: "Regular expressions",
       code: plRegex,
-      input: { text: "Hello world! Hello Perl." },
+      envVars: { WORDS: "hello,world,hello,perl" },
     },
   ],
   ruby: [
-    { name: "Hello, Ruby", code: rbHello, input: { name: "world" } },
+    { name: "Hello, Ruby", code: rbHello, envVars: { NAME: "world" } },
     {
       name: "Enumerable",
       code: rbEnumerable,
-      input: { words: ["ruby", "wasm", "hi", "workers"] },
+      envVars: { WORDS: "ruby,wasm,hi,workers" },
     },
   ],
+};
+const envNames = {
+  javascript: "process.env",
+  python: "os.environ",
+  perl: "$ENV",
+  ruby: "ENV",
+};
+const clientSnippets = {
+  javascript: 'const x = Number(process.env.X);\nx ** 2',
+  python: 'import os\nx = int(os.environ["X"])\nx ** 2',
+  perl: "my $x = $ENV{X};\n$x ** 2",
+  ruby: 'x = ENV["X"].to_i\nx ** 2',
 };
 const syntax = new Compartment();
 const modes = {
@@ -71,10 +87,7 @@ if (library[param]) requestedLanguage = param;
 let saved;
 try {
   saved = JSON.parse(
-    localStorage.getItem("sandbox-workers-playground") ??
-      // Read the previous storage key so existing drafts survive the rename.
-      localStorage.getItem("wasm-lab") ??
-      "null",
+    localStorage.getItem("sandbox-workers-playground-v2") ?? "null",
   );
 } catch {}
 const editor = new EditorView({
@@ -102,15 +115,15 @@ const editor = new EditorView({
   ],
   parent: $("editor"),
 });
-if (typeof saved?.input === "string") $("input").value = saved.input;
+if (typeof saved?.envVars === "string") $("env-vars").value = saved.envVars;
 function persist() {
   try {
     localStorage.setItem(
-      "sandbox-workers-playground",
+      "sandbox-workers-playground-v2",
       JSON.stringify({
         language,
         code: editor.state.doc.toString(),
-        input: $("input").value,
+        envVars: $("env-vars").value,
       }),
     );
   } catch {}
@@ -121,7 +134,7 @@ function selectExample(index) {
   editor.dispatch({
     changes: { from: 0, to: editor.state.doc.length, insert: e.code },
   });
-  $("input").value = JSON.stringify(e.input, null, 2);
+  $("env-vars").value = JSON.stringify(e.envVars, null, 2);
   $("dirty").textContent = "";
   persist();
   for (const [i, button] of [...$("examples").children].entries()) {
@@ -150,13 +163,12 @@ function switchLanguage(next, restore = false) {
     editor.dispatch({
       changes: { from: 0, to: editor.state.doc.length, insert: saved.code },
     });
-    if (typeof saved.input === "string") $("input").value = saved.input;
+    if (typeof saved.envVars === "string") $("env-vars").value = saved.envVars;
   }
   $("filename").textContent =
     `experiment.${{ javascript: "js", python: "py", perl: "pl", ruby: "rb" }[next]}`;
-  $("editor-mode").textContent =
-    `${next} · ${next === "javascript" ? "async function" : "function"} body`;
-  $("input-name").textContent = next === "perl" ? "$input" : "input";
+  $("editor-mode").textContent = `${next} · script`;
+  $("env-name").textContent = envNames[next];
   $("editor").setAttribute("aria-label", `${next} code editor`);
   $("install-command").textContent =
     `pnpm dlx @sandbox-workers/cli init ${next} my-sandbox\ncd my-sandbox\npnpm install\npnpm dry-run\npnpm run deploy`;
@@ -166,7 +178,7 @@ function switchLanguage(next, restore = false) {
     2,
   );
   $("client-command").textContent =
-    `import { createSandbox } from "@sandbox-workers/core";\n\nconst sandbox = createSandbox(env.SANDBOX, "${next}");\nconst output = await sandbox.execute({\n  code: ${JSON.stringify(examples[0].code)},\n  input: { name: "world" },\n});`;
+    `import { createSandbox } from "@sandbox-workers/core";\n\nconst sandbox = createSandbox(env.SANDBOX, "${next}");\nconst output = await sandbox.runCode(\n  ${JSON.stringify(clientSnippets[next])},\n  { envVars: { X: "12" } },\n);\n// { results: [{ text: "144" }], ... }`;
   response = undefined;
   $("output").textContent = "Run your code to see the result.";
   $("status").textContent = "Ready";
@@ -186,37 +198,54 @@ for (const item of document.querySelectorAll(".runtime-item[data-language]")) {
     }
   });
 }
-$("input").oninput = persist;
+$("env-vars").oninput = persist;
 $("reset").onclick = () => selectExample(selected);
 $("run").onclick = run;
+function logRow(label, text, isError) {
+  const row = document.createElement("div");
+  row.className = `log ${isError ? "error" : ""}`;
+  const labelEl = document.createElement("span");
+  labelEl.textContent = label;
+  const textEl = document.createElement("pre");
+  textEl.textContent = text;
+  row.append(labelEl, textEl);
+  return row;
+}
 function display() {
   if (!response) return;
   const out = $("output");
   out.replaceChildren();
   const pre = document.createElement("pre");
   if (tab === "console") {
-    if (!response.logs?.length) {
+    const stdout = response.logs?.stdout ?? [];
+    const stderr = response.logs?.stderr ?? [];
+    if (!stdout.length && !stderr.length) {
       pre.textContent = "No console output.";
       pre.className = "muted";
       out.append(pre);
     }
-    for (const log of response.logs ?? []) {
-      const row = document.createElement("div");
-      row.className = `log ${["error", "warn"].includes(log.level) ? log.level : ""}`;
-      const label = document.createElement("span");
-      label.textContent = log.level;
-      const text = document.createElement("pre");
-      text.textContent = log.text;
-      row.append(label, text);
-      out.append(row);
-    }
-  } else {
-    pre.textContent = JSON.stringify(
-      tab === "raw" ? response : response.ok ? response.result : response.error,
-      null,
-      2,
+    for (const text of stdout) out.append(logRow("stdout", text, false));
+    for (const text of stderr) out.append(logRow("stderr", text, true));
+  } else if (tab === "raw") {
+    pre.textContent = JSON.stringify(response, null, 2);
+    out.append(pre);
+  } else if (response.error) {
+    const { name, message, traceback } = response.error;
+    pre.textContent = [`${name}: ${message}`, ...(traceback ?? [])].join(
+      "\n",
     );
-    if (!response.ok) pre.className = "error";
+    pre.className = "error";
+    out.append(pre);
+  } else {
+    const result = response.results?.[0];
+    if (!result) {
+      pre.textContent = "No result (the last expression was undefined).";
+      pre.className = "muted";
+    } else if (result.json !== undefined) {
+      pre.textContent = JSON.stringify(result.json, null, 2);
+    } else {
+      pre.textContent = result.text;
+    }
     out.append(pre);
   }
 }
@@ -236,14 +265,22 @@ $("copy").onclick = async () => {
     $("status").textContent = "Copy unavailable";
   }
 };
+function parseEnvVars(text) {
+  const value = JSON.parse(text || "{}");
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("envVars must be an object");
+  for (const v of Object.values(value))
+    if (typeof v !== "string") throw new Error("envVars values must be strings");
+  return value;
+}
 async function run() {
   if (busy) return;
-  let input;
+  let envVars;
   try {
-    input = JSON.parse($("input").value || "null");
+    envVars = parseEnvVars($("env-vars").value);
   } catch {
-    $("status").textContent = "Invalid input JSON";
-    $("input").focus();
+    $("status").textContent = "Invalid env vars JSON";
+    $("env-vars").focus();
     return;
   }
   busy = true;
@@ -256,26 +293,29 @@ async function run() {
       body: JSON.stringify({
         language: $("language").value,
         code: editor.state.doc.toString(),
-        input,
+        envVars,
       }),
       signal: AbortSignal.timeout(15000),
     });
     if (!res.headers.get("content-type")?.includes("application/json"))
       throw new Error(`Worker returned HTTP ${res.status}`);
     response = await res.json();
-    $("status").textContent = response.ok ? "✓ Completed" : "Execution failed";
+    $("status").textContent = response.error
+      ? "Execution failed"
+      : "✓ Completed";
   } catch (error) {
     response = {
-      ok: false,
-      error: { name: error.name, message: error.message },
-      logs: [],
+      error: { name: error.name, message: error.message, traceback: [] },
+      logs: { stdout: [], stderr: [] },
+      results: [],
     };
     $("status").textContent = "Request failed";
   } finally {
     busy = false;
     $("run").disabled = false;
   }
-  $("log-count").textContent = response.logs?.length ?? 0;
+  $("log-count").textContent =
+    (response.logs?.stdout?.length ?? 0) + (response.logs?.stderr?.length ?? 0);
   $("metrics").children[0].textContent =
     response.durationMs === undefined
       ? "— ms"

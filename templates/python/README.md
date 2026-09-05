@@ -23,7 +23,7 @@ After deployment, add this to your application's Wrangler configuration. Use the
 { "services": [{ "binding": "SANDBOX", "service": "sandbox-python" }] }
 ```
 
-Call `env.SANDBOX.fetch()` with a JSON POST to `https://sandbox.internal/execute` containing `{language: "python", code, input}`. Code is a function body; input is available as `input` (`$input` in Perl). Return a JSON-compatible value.
+Call `env.SANDBOX.fetch()` with a JSON POST to `https://sandbox.internal/execute` containing `{language: "python", code, envVars}`. Code is a script: the value of the last expression is the result. Env vars (string values only) are available as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby).
 
 Public and preview URLs are disabled. Deploying the runtime does not deploy the Playground or create the caller's Service Binding.
 

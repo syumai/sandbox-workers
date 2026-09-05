@@ -1,2 +1,3 @@
+name = ENV.fetch("NAME", "world")
 puts "Hello from Ruby!"
-return {message: "Hello, #{input['name']}!", squares: (0..5).map { |x| x*x }}
+{message: "Hello, #{name}!", squares: (0..5).map { |x| x*x }}

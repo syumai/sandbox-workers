@@ -1,11 +1,9 @@
-const orders = input?.orders ?? [
-  { category: "Books", total: 24 },
-  { category: "Tools", total: 80 },
-  { category: "Books", total: 16 },
-];
-const totals = orders.reduce((acc, { category, total }) => {
-  acc[category] = (acc[category] ?? 0) + total;
+const words = (process.env.WORDS ?? "Books,Tools,Books,Books,Tools").split(
+  ",",
+);
+const counts = words.reduce((acc, word) => {
+  acc[word] = (acc[word] ?? 0) + 1;
   return acc;
 }, Object.create(null));
-console.log(totals);
-return Object.entries(totals).map(([category, total]) => ({ category, total }));
+console.log(counts);
+Object.entries(counts).map(([word, count]) => ({ word, count }));
