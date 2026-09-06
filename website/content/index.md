@@ -7,7 +7,7 @@ sandbox-workers packages JavaScript, Python, Perl, and Ruby interpreters as sepa
 
 ## Start here
 
-- [Playground](/docs/../): try every runtime in the browser before deploying.
+- [Playground](/): try every runtime in the browser before deploying.
 - [Quickstart](/getting-started/quickstart): deploy an engine and run your first request.
 - [Deploy to Cloudflare](/getting-started/deploy): one button per runtime, with no local toolchain.
 - [CLI](/getting-started/cli): initialize a Worker from a published runtime package.

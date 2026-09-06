@@ -18,19 +18,19 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
     // would otherwise fail to resolve.
     mainFields: ["module", "main"],
   });
-  const supportsSessions = language !== "ruby";
+  const supportsSandboxes = language !== "ruby";
   await writeFile(
     `packages/${language}/dist/worker.d.ts`,
-    supportsSessions
+    supportsSandboxes
       ? [
           "declare const worker: { fetch(request: Request): Promise<Response> };",
           "export default worker;",
-          "// Bind this in the consuming Worker's wrangler config as SESSIONS to use",
-          "// sessions: { durable_objects: { bindings: [{ name: \"SESSIONS\", class_name: \"SandboxSession\" }] } }.",
+          "// Bind this in the consuming Worker's wrangler config as SANDBOX to use",
+          "// sandboxes: { durable_objects: { bindings: [{ name: \"SANDBOX\", class_name: \"Sandbox\" }] } }.",
           "export interface Env {",
-          "  SESSIONS: DurableObjectNamespace;",
+          "  SANDBOX: DurableObjectNamespace;",
           "}",
-          "export declare class SandboxSession {",
+          "export declare class Sandbox {",
           "  constructor(ctx: DurableObjectState, env: unknown);",
           "  fetch(request: Request): Promise<Response>;",
           "}",
@@ -39,7 +39,8 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
       : [
           "declare const worker: { fetch(request: Request): Promise<Response> };",
           "export default worker;",
-          "// Sessions are not supported for ruby: POST /sessions/* answers 400.",
+          "// Code contexts are not supported for ruby: /sandboxes/* routes other than",
+          "// a context-less execute answer 400.",
           "",
         ].join("\n"),
   );

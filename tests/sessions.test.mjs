@@ -33,7 +33,7 @@ const perlArchive = readFileSync("packages/perl/dist/stdlib.bin");
 // Full first snapshot: diffPages() against an empty hash map returns every
 // non-zero page already copied out, which is exactly what a from-scratch
 // restore needs (a Durable Object taking its first snapshot does the same
-// thing — see runtime/session.mjs's _ensureInstance/_execute).
+// thing — see runtime/sandbox.mjs's _ensureInstance/_execute).
 function captureSnapshot(session) {
   const snap = session.snapshot();
   const diff = diffPages(snap.memory, new Map());

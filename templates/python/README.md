@@ -27,21 +27,21 @@ Call `env.SANDBOX.fetch()` with a JSON POST to `https://sandbox.internal/execute
 
 Public and preview URLs are disabled. Deploying the runtime does not deploy the Playground or create the caller's Service Binding.
 
-## Sessions
+## Sandboxes and code contexts
 
-This template's `wrangler.jsonc` includes a `SESSIONS` Durable Object binding (`SandboxSession`, with a `new_sqlite_classes` migration), so callers can also open a named, durable session instead of the stateless `runCode`:
+This template's `wrangler.jsonc` includes a `SANDBOX` Durable Object binding (`Sandbox`, with a `new_sqlite_classes` migration), so callers can also open a durable sandbox with one or more named **code contexts** instead of the stateless `runCode`:
 
 ```ts
-import { createSandbox } from "@sandbox-workers/core";
+import { getSandbox } from "@sandbox-workers/core";
 
-const sandbox = createSandbox(env.SANDBOX);
-const session = sandbox.session("user-42");
-await session.runCode(code, { envVars, cwd });
+const sandbox = getSandbox(env.SANDBOX, "user-42");
+const ctx = await sandbox.createCodeContext({ cwd, envVars });
+await sandbox.runCode(code, { context: ctx });
 ```
 
-A session keeps top-level variables, functions, and a writable `/workspace` alive across calls, surviving Durable Object eviction, hibernation, and redeploys via a linear-memory snapshot taken after each execution. See [the sessions guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md) for language-specific REPL semantics, the files API, the snapshot mechanism, and limits.
+A code context keeps top-level variables and functions alive across calls, surviving Durable Object eviction, hibernation, and redeploys via a linear-memory snapshot taken after each execution; a `/workspace` is shared by every context in the sandbox. See [the sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md) for language-specific REPL semantics, the files API, the snapshot mechanism, and limits.
 
-An idle session is deleted automatically by a Durable Object alarm. Set `SESSION_IDLE_TTL_MS` (milliseconds, as a string) under `vars` in this template's `wrangler.jsonc` to change the timeout — it defaults to 24 hours (`86400000`) if unset, and `"0"` disables expiry entirely, for example:
+An idle sandbox is deleted automatically by a Durable Object alarm. Set `SESSION_IDLE_TTL_MS` (milliseconds, as a string) under `vars` in this template's `wrangler.jsonc` to change the timeout — it defaults to 24 hours (`86400000`) if unset, and `"0"` disables expiry entirely, for example:
 
 ```jsonc
 // wrangler.jsonc

@@ -5,9 +5,9 @@ const sha256 =
 for (const language of ["javascript", "python", "perl", "ruby"]) {
   const directory = `templates/${language}`;
   await mkdir(directory, { recursive: true });
-  // Sessions (a Durable Object-backed REPL) are not supported for Ruby; see
-  // docs/sessions-design.md.
-  const sessionsSupported = language !== "ruby";
+  // Code contexts (a Durable Object-backed REPL) are not supported for Ruby;
+  // see docs/sdk-parity-design.md.
+  const contextsSupported = language !== "ruby";
   const write = (name, value) =>
     writeFile(
       `${directory}/${name}`,
@@ -38,12 +38,12 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
     limits: { cpu_ms: 2000 },
     build: { command: "pnpm run build" },
     rules: [{ type: "Data", globs: ["**/*.bin"], fallthrough: true }],
-    ...(sessionsSupported
+    ...(contextsSupported
       ? {
           durable_objects: {
-            bindings: [{ name: "SESSIONS", class_name: "SandboxSession" }],
+            bindings: [{ name: "SANDBOX", class_name: "Sandbox" }],
           },
-          migrations: [{ tag: "v1", new_sqlite_classes: ["SandboxSession"] }],
+          migrations: [{ tag: "v1", new_sqlite_classes: ["Sandbox"] }],
         }
       : {}),
   });
@@ -63,7 +63,7 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
   const readme = await readFile("scripts/template-readme.md", "utf8");
   await write(
     "README.md",
-    renderTemplate(readme, language, sessionsSupported),
+    renderTemplate(readme, language, contextsSupported),
   );
 }
 // Minimal templating: {{language}} substitution and {{#sessions}}...{{/sessions}}

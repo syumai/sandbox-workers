@@ -584,7 +584,7 @@ function buildSessionApi({ instance, handle, meter, fuel, host, workspace, getCw
 
 // A durable session: one JS engine instance kept alive in memory across many
 // execute() calls, and snapshottable to a Durable Object's `pages` table via
-// .snapshot()/.canSnapshot() (see runtime/snapshot.mjs and runtime/session.mjs).
+// .snapshot()/.canSnapshot() (see runtime/snapshot.mjs and runtime/sandbox.mjs).
 export function createJavaScriptSession(module, options = {}) {
   const workspace = options.workspace ?? null;
   let cwd = options.cwd ?? "/workspace";
@@ -641,7 +641,7 @@ export function createJavaScriptSession(module, options = {}) {
   });
 }
 
-// Restores a session from a previous .snapshot() (see runtime/session.mjs):
+// Restores a session from a previous .snapshot() (see runtime/sandbox.mjs):
 // instantiates fresh, then -- per docs/sessions-design.md's verified restore
 // recipe -- points wasi.inst at the instance directly (no wasi.initialize(),
 // no _initialize, no wasm_init()), grows memory to the snapshot's page count,

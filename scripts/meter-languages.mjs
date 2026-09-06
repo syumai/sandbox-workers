@@ -4,7 +4,7 @@ import { instrument } from "./instrument.mjs";
 
 // engine-build.json is each session-capable worker.ts's engine identity: the
 // sha256 of its own metered dist/engine.wasm, used as `meta.build`/
-// `snapshot.build` by the Durable Object (runtime/session.mjs) to decide
+// `snapshot.build` by the Durable Object (runtime/sandbox.mjs) to decide
 // whether a stored snapshot still matches the running engine. Written next
 // to worker.ts (packages/<language>/src) rather than dist/ so the plain
 // relative `import build from "./engine-build.json"` in worker.ts resolves

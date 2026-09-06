@@ -61,11 +61,11 @@ Add a Service Binding to your application's `wrangler.jsonc`:
 Install `@sandbox-workers/core` in the calling application:
 
 ```ts
-import { createSandbox } from "@sandbox-workers/core";
+import { getSandbox } from "@sandbox-workers/core";
 
 export default {
   async fetch(request, env) {
-    const sandbox = createSandbox(env.SANDBOX);
+    const sandbox = getSandbox(env.SANDBOX, "user-42");
     const output = await sandbox.runCode(
       "console.log(process.env.X);\nawait Promise.resolve(Number(process.env.X) ** 2);",
       { envVars: { X: "12" } },
@@ -79,11 +79,34 @@ A Service Binding targets a **Worker deployed in your account**. Deploy the runt
 
 ### Python, Perl, and Ruby
 
-Replace `javascript` in the installation commands with `python`, `perl`, or `ruby`. The client takes only the binding, for example `createSandbox(env.SANDBOX)`; the runtime is whichever Worker that binding targets. Each initializer generates the required configuration, including Data module rules for the Python and Perl standard libraries.
+Replace `javascript` in the installation commands with `python`, `perl`, or `ruby`. The client takes only the binding and a sandbox id, for example `getSandbox(env.SANDBOX, "user-42")`; the runtime is whichever Worker that binding targets. Each initializer generates the required configuration, including Data module rules for the Python and Perl standard libraries.
 
-### Sessions
+### Sandboxes and code contexts
 
-`runCode` above is stateless. `sandbox.session(id)` opens a durable, stateful REPL instead — top-level variables and a writable `/workspace` persist across calls, surviving Durable Object eviction, hibernation, and redeploys via a memory snapshot taken after each execution, backed by a Durable Object the runtime Worker exports (`SESSIONS` / `SandboxSession`, already wired into the CLI initializer and deploy templates for JavaScript, Python, and Perl; Ruby does not support sessions). See the [sessions guide](website/content/guides/sessions.md) and [language runtimes](docs/languages.md) for the client API, the files API, per-language REPL semantics, and the snapshot mechanism.
+`runCode` above is stateless. `getSandbox(env.SANDBOX, id)` opens a durable sandbox instead, with a shared `/workspace` and one or more **code contexts** — named, stateful REPLs where top-level variables persist across calls, surviving Durable Object eviction, hibernation, and redeploys via a memory snapshot taken after each execution. A sandbox is backed by a Durable Object the runtime Worker exports (`SANDBOX` / `Sandbox`, already wired into the CLI initializer and deploy templates for JavaScript, Python, and Perl; Ruby does not support code contexts).
+
+```ts
+import { getSandbox } from "@sandbox-workers/core";
+
+const sandbox = getSandbox(env.SANDBOX, "user-42");
+const ctx = await sandbox.createCodeContext({ cwd: "/workspace" });
+await sandbox.runCode("counter = 1", { context: ctx });
+await sandbox.runCode("counter += 1; counter", { context: ctx }); // 2
+await sandbox.writeFile("/workspace/notes.txt", "hi");
+await sandbox.readFile("/workspace/notes.txt");
+```
+
+`env.SANDBOX` can also be a Durable Object namespace bound directly to the runtime Worker's `Sandbox` class with `script_name` (no migration needed in the caller):
+
+```jsonc
+{
+  "durable_objects": {
+    "bindings": [{ "name": "SANDBOX", "class_name": "Sandbox", "script_name": "sandbox-javascript" }],
+  },
+}
+```
+
+See the [sandboxes and code contexts guide](website/content/guides/sessions.md) and [language runtimes](docs/languages.md) for the client API, the files API, per-language REPL semantics, and the snapshot mechanism.
 
 ## Develop the Playground
 
@@ -112,7 +135,7 @@ Python and Perl release downloads are verified against pinned SHA-256 digests. R
 
 Code is a **script**: the value of the last top-level expression is the result; a top-level `return` is not part of the supported contract. Data is passed with `envVars` (string values only) and read as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby). No context persists between calls — every call boots a fresh Wasm instance. ES module imports, Node/npm resolution, and external networking are unsupported. The editor includes language-specific examples, syntax highlighting, output tabs, local draft storage, and Cmd/Ctrl+Enter execution.
 
-The editor toolbar has a **Script**/**Session** mode toggle. Script is the stateless behavior above. Session posts to a durable, per-browser Playground session (see [Sessions](#sessions)) instead, so top-level state and a `/workspace` directory persist between runs; the result pane then also shows a transcript of recent runs, session status (executions, cwd, snapshot size, time until idle expiry), and a Workspace tab for browsing/editing/deleting files. Ruby has no session mode, since sessions aren't supported for Ruby.
+The editor toolbar has a **Script**/**Session (REPL)** mode toggle. Script is the stateless behavior above. REPL mode posts to the default code context of a durable, per-browser Playground sandbox (see [Sandboxes and code contexts](#sandboxes-and-code-contexts)) instead, so top-level state and a `/workspace` directory persist between runs; the result pane then also shows a transcript of recent runs, sandbox status (executions, cwd, snapshot size, time until idle expiry), and a Workspace tab for browsing/editing/deleting files. Ruby has no REPL mode, since code contexts aren't supported for Ruby.
 
 The JavaScript runtime also accepts TypeScript automatically: no `language` option, no separate mode — code is parsed as JavaScript first, and only code that fails to parse falls back to stripping TypeScript-only syntax (types, `interface`, generics, `as`/`satisfies`, `enum`) before running. Types are stripped, not checked, so a type error still runs like any other JavaScript mistake. `import`/`export` remain unsupported.
 

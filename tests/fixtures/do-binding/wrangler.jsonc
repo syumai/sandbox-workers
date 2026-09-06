@@ -1,0 +1,11 @@
+{
+  "name": "sandbox-do-binding-fixture",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-04",
+  "durable_objects": {
+    "bindings": [
+      { "name": "SANDBOX_DO", "class_name": "Sandbox", "script_name": "sandbox-engine-javascript" },
+    ],
+  },
+  "services": [{ "binding": "SANDBOX_SERVICE", "service": "sandbox-engine-javascript" }],
+}

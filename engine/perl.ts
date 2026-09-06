@@ -1,1 +1,1 @@
-export { default, SandboxSession } from "@sandbox-workers/perl";
+export { default, Sandbox } from "@sandbox-workers/perl";

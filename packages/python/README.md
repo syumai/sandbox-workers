@@ -47,14 +47,38 @@ Disable `workers_dev` and `preview_urls`, deploy the runtime, and add a Service 
 The service name must match the deployed Worker. Install `@sandbox-workers/core` in the calling application:
 
 ```js
-import { createSandbox } from "@sandbox-workers/core";
-const sandbox = createSandbox(env.SANDBOX);
+import { getSandbox } from "@sandbox-workers/core";
+const sandbox = getSandbox(env.SANDBOX, "user-42");
 const output = await sandbox.runCode(
   'import os\nint(os.environ["X"]) ** 2',
   { envVars: { X: "12" } },
 );
 // output.results[0].text === "144"
 ```
+
+This package also exports the `Sandbox` Durable Object class, so a dedicated
+Worker can open durable, stateful **code contexts** (globals persist across
+calls) instead of only the stateless `/execute` above:
+
+```js
+export { default, Sandbox } from "@sandbox-workers/python";
+```
+
+```jsonc
+{
+  "durable_objects": { "bindings": [{ "name": "SANDBOX", "class_name": "Sandbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+}
+```
+
+```js
+const ctx = await sandbox.createCodeContext();
+await sandbox.runCode("counter = 1", { context: ctx });
+await sandbox.runCode("counter + 1", { context: ctx }); // 2
+```
+
+See the [sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md)
+for the full client API, the files API, and per-language REPL semantics.
 
 ## Execution contract
 

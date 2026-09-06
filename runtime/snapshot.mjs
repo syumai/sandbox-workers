@@ -1,7 +1,7 @@
 // Linear-memory snapshot helpers shared by createJavaScriptSession/
 // restoreJavaScriptSession (runtime/javascript.mjs) and createEmbeddedSession/
 // restoreEmbeddedSession (runtime/embedded.mjs), and consumed by the Durable
-// Object (runtime/session.mjs) to decide what to write to the `pages` table.
+// Object (runtime/sandbox.mjs) to decide what to write to the `pages` table.
 //
 // Deviation from docs/sessions-design.md, agreed up front: pages are stored
 // RAW, not deflated. A prototype measured per-page deflate at ~450 ms for a

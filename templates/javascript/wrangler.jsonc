@@ -23,8 +23,8 @@
   "durable_objects": {
     "bindings": [
       {
-        "name": "SESSIONS",
-        "class_name": "SandboxSession"
+        "name": "SANDBOX",
+        "class_name": "Sandbox"
       }
     ]
   },
@@ -32,7 +32,7 @@
     {
       "tag": "v1",
       "new_sqlite_classes": [
-        "SandboxSession"
+        "Sandbox"
       ]
     }
   ]

@@ -6,10 +6,15 @@
   "workers_dev": false,
   "preview_urls": false,
   "limits": { "cpu_ms": 2000 },
-  // Session idle expiry (docs/sessions-design.md, website/content/guides/sessions.md):
-  // a Durable Object alarm deletes a session after this many idle milliseconds.
-  // "0" disables expiry. Short here so the public Playground reclaims sessions quickly.
+  // Sandbox idle expiry (docs/sdk-parity-design.md, website/content/guides/sessions.md):
+  // a Durable Object alarm deletes a sandbox after this many idle milliseconds.
+  // "0" disables expiry. Short here so the public Playground reclaims sandboxes quickly.
   "vars": { "SESSION_IDLE_TTL_MS": "3600000" },
-  "durable_objects": { "bindings": [{ "name": "SESSIONS", "class_name": "SandboxSession" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SandboxSession"] }],
+  "durable_objects": { "bindings": [{ "name": "SANDBOX", "class_name": "Sandbox" }] },
+  // Already deployed with SandboxSession under v1; v2 renames it in place
+  // rather than migrating to a fresh class (docs/sdk-parity-design.md).
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SandboxSession"] },
+    { "tag": "v2", "renamed_classes": [{ "from": "SandboxSession", "to": "Sandbox" }] },
+  ],
 }

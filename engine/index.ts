@@ -1,2 +1,2 @@
 // Playground deployment: consume exactly the same package as downstream users.
-export { default, SandboxSession } from '@sandbox-workers/javascript';
+export { default, Sandbox } from '@sandbox-workers/javascript';

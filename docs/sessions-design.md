@@ -2,11 +2,18 @@
 
 Status: design accepted 2026-09-05 (revised the same day: no `state` API, REPL
 semantics through memory snapshots, File API built on spidermonkey-wasm host
-functions). This document is the specification for the session layer that
-keeps sandbox state in Durable Objects. It follows the split used by
-Cloudflare's Sandbox SDK: a session is a Durable Object that owns durable
-state, while the interpreter instance held in memory is a cache that can
-disappear at any time.
+functions). **Superseded 2026-09-06 by `docs/sdk-parity-design.md`**: the API
+surface described below (`sandbox.session(id)`, `/sessions/:id/...`,
+`SandboxSession`, `SESSIONS`) has been replaced by `getSandbox` and code
+contexts (`/sandboxes/:id/...`, `Sandbox`, `SANDBOX`). The storage and
+memory-snapshot mechanics documented here — the Durable Object tables, the
+linear-memory snapshot format, idle expiry — are unchanged and still apply;
+only the `pages` table gained a context column, keying each stored snapshot
+page by context id instead of by session. This document is the specification
+for the session layer that keeps sandbox state in Durable Objects. It follows
+the split used by Cloudflare's Sandbox SDK: a session is a Durable Object that
+owns durable state, while the interpreter instance held in memory is a cache
+that can disappear at any time.
 
 ## Goals
 

@@ -48,21 +48,22 @@ for (const language of ["python", "perl", "ruby"]) {
     );
     assert.equal(config.workers_dev, false);
     assert.equal(config.preview_urls, false);
-    // Sessions (a Durable Object-backed REPL) are supported for python and
-    // perl but not ruby; see docs/sessions-design.md.
+    // Durable sandboxes (a Durable Object-backed code interpreter) are
+    // supported for python and perl but not ruby; see
+    // docs/sdk-parity-design.md.
     const indexSource = await readFile(join(worker, "index.js"), "utf8");
     if (language === "ruby") {
       assert.equal(config.durable_objects, undefined);
       assert.equal(config.migrations, undefined);
-      assert.doesNotMatch(indexSource, /SandboxSession/);
+      assert.doesNotMatch(indexSource, /Sandbox/);
     } else {
       assert.deepEqual(config.durable_objects, {
-        bindings: [{ name: "SESSIONS", class_name: "SandboxSession" }],
+        bindings: [{ name: "SANDBOX", class_name: "Sandbox" }],
       });
       assert.deepEqual(config.migrations, [
-        { tag: "v1", new_sqlite_classes: ["SandboxSession"] },
+        { tag: "v1", new_sqlite_classes: ["Sandbox"] },
       ]);
-      assert.match(indexSource, /SandboxSession/);
+      assert.match(indexSource, /Sandbox/);
     }
     const output = run(
       [

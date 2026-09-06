@@ -24,20 +24,20 @@ for (const runtime of ["javascript", "python", "perl", "ruby"])
     assert.equal(config.preview_urls, false);
     const indexSource = readFileSync(join(dir, "index.js"), "utf8");
     assert.match(indexSource, new RegExp("@sandbox-workers/" + runtime));
-    // Sessions (a Durable Object-backed REPL) are wired for every language
-    // except Ruby; see docs/sessions-design.md.
+    // Code contexts (a Durable Object-backed REPL) are wired for every
+    // language except Ruby; see docs/sdk-parity-design.md.
     if (runtime === "ruby") {
       assert.equal(config.durable_objects, undefined);
       assert.equal(config.migrations, undefined);
-      assert.doesNotMatch(indexSource, /SandboxSession/);
+      assert.doesNotMatch(indexSource, /Sandbox\b/);
     } else {
       assert.deepEqual(config.durable_objects, {
-        bindings: [{ name: "SESSIONS", class_name: "SandboxSession" }],
+        bindings: [{ name: "SANDBOX", class_name: "Sandbox" }],
       });
       assert.deepEqual(config.migrations, [
-        { tag: "v1", new_sqlite_classes: ["SandboxSession"] },
+        { tag: "v1", new_sqlite_classes: ["Sandbox"] },
       ]);
-      assert.match(indexSource, /SandboxSession/);
+      assert.match(indexSource, /Sandbox/);
     }
     assert.match(
       readFileSync(join(dir, "README.md"), "utf8"),

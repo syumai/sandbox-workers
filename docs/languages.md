@@ -29,9 +29,9 @@ Python and Perl use goccy's protobuf ABI; Ruby uses the official RubyVM ABI. Thi
 
 Python and Perl's upstream ABI captures stdout until execution completes. Wasm memory and fuel bound that accumulation, and the host checks output limits afterward. Ruby output is limited as it is written. Result serialization and parsing also have size bounds.
 
-## Sessions
+## Sandboxes and code contexts
 
-`POST /execute` boots a fresh Wasm instance every call. A **session** (`POST /sessions/:id/execute` and the rest of `/sessions/:id/...`) is a durable, stateful REPL backed by a Durable Object instead: top-level variables, functions, and a writable `/workspace` persist across calls to the same session id, and survive Durable Object eviction, hibernation, and redeploys via a linear-memory snapshot taken after each execution (see `docs/sessions-design.md` and the [sessions guide](../website/content/guides/sessions.md) for when a snapshot is skipped and how `reset` compacts one). Sessions are supported for JavaScript, Python, and Perl; Ruby answers every `/sessions/*` route with 400. See the sessions guide for the client API, the files API, and per-language REPL semantics.
+`POST /execute` boots a fresh Wasm instance every call. A **sandbox** (`POST /sandboxes/:id/execute` and the rest of `/sandboxes/:id/...`) is a durable Durable Object instead, owning a shared `/workspace` and one or more named **code contexts** — durable, stateful REPLs: top-level variables, functions, and imported modules persist across calls to the same context, and survive Durable Object eviction, hibernation, and redeploys via a linear-memory snapshot taken after each execution (see `docs/sdk-parity-design.md`, `docs/sessions-design.md`, and the [sandboxes and code contexts guide](../website/content/guides/sessions.md) for when a snapshot is skipped and how deleting a context compacts one). Code contexts are supported for JavaScript, Python, and Perl; Ruby answers every `/sandboxes/:id/*` route with 400, except a context-less `execute`, which runs statelessly. See the guide for the client API, the files API, and per-language REPL semantics.
 
 ## PHP evaluation
 

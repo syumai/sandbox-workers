@@ -1,3 +1,11 @@
+import {
+  ErrorCode,
+  SandboxError,
+  errorCodeForErrno,
+  httpStatusForCode,
+  type ErrorResponse,
+} from "./errors.js";
+
 export const MAX_REQUEST_BYTES = 96 * 1024;
 /** Session file operations carry up to a 1 MiB file as base64, so they get a larger cap. */
 export const MAX_FILES_REQUEST_BYTES = 2 * 1024 * 1024;
@@ -32,18 +40,24 @@ export interface ExecutionError {
   traceback: string[];
   lineNumber?: number;
 }
-export type ExecutionResultValue =
-  | { text: string; json?: undefined }
-  | { json: JsonValue; text?: undefined };
 export interface ExecutionResult {
   code: string;
+  logs: ExecutionLog;
+  results: Array<{ text?: string; json?: JsonValue }>;
+  error?: ExecutionError;
+  executionCount?: number;
+  // extensions
   language: string;
   engine: string;
   durationMs: number;
-  logs: ExecutionLog;
-  results: ExecutionResultValue[];
-  error?: ExecutionError;
   usage?: ExecutionUsage;
+  context?: {
+    id: string;
+    cwd: string;
+    executions: number;
+    snapshotMs?: number;
+    expiresAt?: number;
+  };
 }
 
 export interface LanguageEngine {
@@ -134,8 +148,12 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public code: ErrorCode = ErrorCode.VALIDATION_FAILED,
+    public context: Record<string, unknown> = {},
+    public operation?: string,
   ) {
     super(message);
+    this.name = "ApiError";
   }
 }
 /**
@@ -175,15 +193,58 @@ export async function readBody(
   }
   return data;
 }
+
+/** Emits `ErrorResponse` (see docs/sdk-parity-design.md, "Errors"). */
 export function errorResponse(error: unknown): Response {
-  return Response.json(
-    {
-      error: {
-        name: "ApiError",
-        message:
-          error instanceof ApiError ? error.message : "Engine execution failed",
-      },
-    },
-    { status: error instanceof ApiError ? error.status : 502 },
-  );
+  let payload: ErrorResponse;
+  if (error instanceof ApiError) {
+    payload = {
+      code: error.code,
+      message: error.message,
+      context: error.context,
+      httpStatus: error.status,
+      timestamp: new Date().toISOString(),
+      ...(error.operation !== undefined ? { operation: error.operation } : {}),
+    };
+  } else if (error instanceof SandboxError) {
+    payload = error.errorResponse;
+  } else {
+    payload = {
+      code: ErrorCode.INTERNAL_ERROR,
+      message: "Engine execution failed",
+      context: {},
+      httpStatus: 502,
+      timestamp: new Date().toISOString(),
+    };
+  }
+  return Response.json(payload, {
+    status: payload.httpStatus,
+    headers: { "cache-control": "no-store" },
+  });
+}
+
+/**
+ * Builds an `ErrorResponse` for a workspace errno (see
+ * docs/sdk-parity-design.md, "Errors"). Used by the runtime Durable Object
+ * to report filesystem failures without depending on `ApiError`/`SandboxError`.
+ */
+export function errnoErrorResponse(
+  errno: string,
+  message: string,
+  context: { path?: string; operation?: string; [key: string]: unknown },
+): Response {
+  const code = errorCodeForErrno(errno);
+  const httpStatus = httpStatusForCode(code);
+  const payload: ErrorResponse = {
+    code,
+    message,
+    context: { ...context, errno },
+    httpStatus,
+    timestamp: new Date().toISOString(),
+    ...(context.operation !== undefined ? { operation: context.operation } : {}),
+  };
+  return Response.json(payload, {
+    status: httpStatus,
+    headers: { "cache-control": "no-store" },
+  });
 }

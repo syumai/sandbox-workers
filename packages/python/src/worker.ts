@@ -7,12 +7,12 @@ import {
   createEmbeddedSession,
   restoreEmbeddedSession,
 } from "../../../runtime/embedded.mjs";
-import { createSessionClass } from "../../../runtime/session.mjs";
+import { createSandboxClass } from "../../../runtime/sandbox.mjs";
 import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
 
 const ENGINE_NAME = "CPython 3.14.6 / goccy v0.2.0";
 
-export const SandboxSession = createSessionClass({
+export const Sandbox = createSandboxClass({
   language: "python",
   engineName: ENGINE_NAME,
   build: build.sha256,
@@ -25,22 +25,22 @@ export const SandboxSession = createSessionClass({
 });
 
 interface Env {
-  SESSIONS: DurableObjectNamespace;
+  SANDBOX: DurableObjectNamespace;
 }
 
-const SESSION_ROUTE = /^\/sessions\/([^/]+)(\/.*)?$/;
+const SANDBOX_ROUTE = /^\/sandboxes\/([^/]+)(\/.*)?$/;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const sessionMatch = SESSION_ROUTE.exec(url.pathname);
-    if (sessionMatch) {
-      const [, id, subpath] = sessionMatch;
+    const sandboxMatch = SANDBOX_ROUTE.exec(url.pathname);
+    if (sandboxMatch) {
+      const [, id, subpath] = sandboxMatch;
       if (!/^[A-Za-z0-9._-]{1,128}$/.test(id))
-        return errorResponse(new ApiError(400, "Invalid session id"));
-      const stub = env.SESSIONS.get(env.SESSIONS.idFromName(id));
+        return errorResponse(new ApiError(400, "Invalid sandbox id"));
+      const stub = env.SANDBOX.get(env.SANDBOX.idFromName(id));
       const headers = new Headers(request.headers);
-      headers.set("x-sandbox-session-id", id);
+      headers.set("x-sandbox-id", id);
       const hasBody = request.method !== "GET" && request.method !== "HEAD";
       const forwarded = new Request(new URL(subpath || "/", url), {
         method: request.method,

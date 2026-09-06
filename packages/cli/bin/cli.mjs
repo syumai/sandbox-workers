@@ -41,7 +41,7 @@ const files = {
       2,
     ) + "\n",
   "index.js": sessionsSupported
-    ? `export { default, SandboxSession } from "@sandbox-workers/${runtime}";\n`
+    ? `export { default, Sandbox } from "@sandbox-workers/${runtime}";\n`
     : `export { default } from "@sandbox-workers/${runtime}";\n`,
   "wrangler.jsonc":
     JSON.stringify(
@@ -57,11 +57,11 @@ const files = {
           ? {
               durable_objects: {
                 bindings: [
-                  { name: "SESSIONS", class_name: "SandboxSession" },
+                  { name: "SANDBOX", class_name: "Sandbox" },
                 ],
               },
               migrations: [
-                { tag: "v1", new_sqlite_classes: ["SandboxSession"] },
+                { tag: "v1", new_sqlite_classes: ["Sandbox"] },
               ],
             }
           : {}),
@@ -71,8 +71,8 @@ const files = {
     ) + "\n",
   "README.md": `# ${runtime} sandbox Worker\n\nRun pnpm install, pnpm dry-run, then pnpm run deploy. Set a unique Worker name first. Bind your caller to that Worker name. Code is a function body with JSON input (input, or $input for Perl).\n${
     sessionsSupported
-      ? `\nThis Worker also includes a \`SESSIONS\` Durable Object binding and a \`new_sqlite_classes\` migration, both already in \`wrangler.jsonc\`, so callers can open durable sessions with \`sandbox.session(id)\` in addition to the stateless \`runCode\`. An idle session is deleted automatically by a Durable Object alarm after \`SESSION_IDLE_TTL_MS\` milliseconds (default 24 hours if unset; add \`"vars": { "SESSION_IDLE_TTL_MS": "3600000" }\` to \`wrangler.jsonc\` to change it, or \`"0"\` to disable expiry). See the [sessions guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md).\n`
-      : `\nSessions (durable, stateful REPLs) are not supported for ${runtime}; this Worker only serves the stateless execution API.\n`
+      ? `\nThis Worker also includes a \`SANDBOX\` Durable Object binding and a \`new_sqlite_classes\` migration, both already in \`wrangler.jsonc\`, so callers can open code contexts with \`getSandbox(env.SANDBOX, id)\` (\`createCodeContext\`, \`runCode\`, and the file methods) in addition to the stateless \`runCode\` over \`/execute\`. An idle sandbox is deleted automatically by a Durable Object alarm after \`SESSION_IDLE_TTL_MS\` milliseconds (default 24 hours if unset; add \`"vars": { "SESSION_IDLE_TTL_MS": "3600000" }\` to \`wrangler.jsonc\` to change it, or \`"0"\` to disable expiry). See the [sessions guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md).\n`
+      : `\nCode contexts (durable, stateful REPLs) are not supported for ${runtime}; this Worker only serves stateless execution.\n`
   }\n## Licenses\n\nBefore use or redistribution, review [the runtime LICENSE](https://github.com/syumai/sandbox-workers/blob/main/packages/${runtime}/LICENSE) and [THIRD_PARTY_NOTICES.md](https://github.com/syumai/sandbox-workers/blob/main/packages/${runtime}/THIRD_PARTY_NOTICES.md). Installed copies are in node_modules/@sandbox-workers/${runtime}/. Bundled engines retain their upstream licenses; sandbox-workers' MIT license does not replace them.\n`,
   ".gitignore": "node_modules/\n.wrangler/\n.dev.vars\n",
 };

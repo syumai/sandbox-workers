@@ -1,0 +1,606 @@
+// HTTP tests for durable sandboxes (code contexts), run like tests/http.mjs
+// against a running gateway (SANDBOX_URL). The gateway forwards
+// /languages/:language/sandboxes/:id/... to the runtime binding for
+// :language as /sandboxes/:id/... (see src/index.ts, docs/sdk-parity-design.md).
+import assert from "node:assert/strict";
+
+const base = process.env.SANDBOX_URL ?? "http://localhost:8787";
+let checks = 0;
+
+function sandboxUrl(language, id, subpath = "") {
+  return `${base}/languages/${language}/sandboxes/${id}${subpath}`;
+}
+
+async function execute(language, id, body, status = 200) {
+  const res = await fetch(sandboxUrl(language, id, "/execute"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(res.status, status, `execute ${language}/${id}: unexpected status`);
+  checks++;
+  return res.json();
+}
+
+async function files(language, id, body, status = 200) {
+  const res = await fetch(sandboxUrl(language, id, "/files"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(res.status, status, `files ${language}/${id}: unexpected status`);
+  checks++;
+  return res.json();
+}
+
+async function createContext(language, id, body = {}, status = 201) {
+  const res = await fetch(sandboxUrl(language, id, "/contexts"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(res.status, status, `createContext ${language}/${id}: unexpected status`);
+  checks++;
+  return res.json();
+}
+
+async function listContexts(language, id) {
+  const res = await fetch(sandboxUrl(language, id, "/contexts"));
+  assert.equal(res.status, 200);
+  checks++;
+  return res.json();
+}
+
+async function deleteContext(language, id, contextId, status = 200) {
+  const res = await fetch(sandboxUrl(language, id, `/contexts/${contextId}`), { method: "DELETE" });
+  assert.equal(res.status, status, `deleteContext ${language}/${id}/${contextId}: unexpected status`);
+  checks++;
+  return res.json();
+}
+
+async function setEnv(language, id, envVars, status = 200) {
+  const res = await fetch(sandboxUrl(language, id, "/env"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ envVars }),
+  });
+  assert.equal(res.status, status, `setEnv ${language}/${id}: unexpected status`);
+  checks++;
+  return res.json();
+}
+
+async function info(language, id) {
+  const res = await fetch(sandboxUrl(language, id));
+  assert.equal(res.status, 200);
+  checks++;
+  return res.json();
+}
+
+async function destroy(language, id) {
+  const res = await fetch(sandboxUrl(language, id), { method: "DELETE" });
+  assert.equal(res.status, 200);
+  checks++;
+  return res.json();
+}
+
+function uniqueId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ---- JavaScript: default context REPL semantics ------------------------
+
+{
+  const id = uniqueId("js-basic");
+  const r1 = await execute("javascript", id, { code: "var counter = 1; counter" });
+  assert.deepEqual(r1.results, [{ text: "1" }]);
+  assert.equal(typeof r1.context.id, "string");
+  assert.equal(r1.executionCount, 1);
+  assert.equal(r1.context.executions, 1);
+  const r2 = await execute("javascript", id, { code: "counter += 1; counter" });
+  assert.deepEqual(r2.results, [{ text: "2" }]);
+  assert.equal(r2.context.executions, 2);
+  // Context-less executes always resolve to the same default context.
+  assert.equal(r1.context.id, r2.context.id);
+  console.log("javascript: variable persists across calls; default context is reused");
+}
+
+{
+  const id = uniqueId("js-letconst");
+  await execute("javascript", id, {
+    code: "let letValue = 10; const constValue = 20; class Greeter { hi() { return 'hi'; } }",
+  });
+  const r = await execute("javascript", id, {
+    code: "letValue + constValue + new Greeter().hi().length",
+  });
+  assert.deepEqual(r.results, [{ text: "32" }]);
+  console.log("javascript: let/const/class persist across calls");
+}
+
+{
+  const id = uniqueId("js-await");
+  await execute("javascript", id, {
+    code: "let awaited = 5; await Promise.resolve(); awaited",
+  });
+  const r = await execute("javascript", id, { code: "awaited" });
+  assert.deepEqual(r.results, [{ text: "5" }]);
+  console.log("javascript: top-level await still persists declarations");
+}
+
+{
+  const id = uniqueId("js-fs");
+  await execute("javascript", id, {
+    code: 'fs.writeFileSync("/workspace/from-guest.txt", "hello from guest")',
+  });
+  const readViaApi = await files("javascript", id, { op: "read", path: "/workspace/from-guest.txt" });
+  assert.equal(readViaApi.content, "hello from guest");
+
+  await files("javascript", id, {
+    op: "write",
+    path: "/workspace/from-api.txt",
+    content: "hello from api",
+  });
+  const readViaGuest = await execute("javascript", id, {
+    code: 'fs.readFileSync("/workspace/from-api.txt", "utf8")',
+  });
+  assert.deepEqual(readViaGuest.results, [{ text: "'hello from api'" }]);
+  console.log("javascript: files written by guest/API are visible to each other");
+}
+
+{
+  const id = uniqueId("js-cwd");
+  await execute("javascript", id, { code: 'fs.mkdirSync("/workspace/sub"); process.chdir("sub")' });
+  const r = await execute("javascript", id, { code: "process.cwd()" });
+  assert.deepEqual(r.results, [{ text: "'/workspace/sub'" }]);
+  assert.equal(r.context.cwd, "/workspace/sub");
+  console.log("javascript: cwd persists after process.chdir, reported on context.cwd");
+}
+
+{
+  const id = uniqueId("js-import");
+  await execute("javascript", id, {
+    code: 'fs.writeFileSync("/workspace/lib.mjs", "export const val = 99;")',
+  });
+  const r = await execute("javascript", id, { code: 'const m = await import("./lib.mjs"); m.val' });
+  assert.deepEqual(r.results, [{ text: "99" }]);
+  console.log('javascript: import("./lib.mjs") is served from the workspace');
+}
+
+{
+  // transformForRepl strips TypeScript-only syntax the same way
+  // transformForAsyncExecution does for the stateless /execute path (acorn
+  // first, sucrase fallback), and the declaration still persists on the
+  // context's real global across calls.
+  const id = uniqueId("js-typescript");
+  await execute("javascript", id, { code: "const n: number = 41;" });
+  const r = await execute("javascript", id, { code: "n + 1" });
+  assert.deepEqual(r.results, [{ text: "42" }]);
+  console.log("javascript: a TypeScript declaration persists across context calls");
+}
+
+// ---- Python --------------------------------------------------------------
+
+{
+  const id = uniqueId("py-basic");
+  await execute("python", id, { code: "counter = 1" });
+  const r = await execute("python", id, { code: "counter + 1" });
+  assert.deepEqual(r.results, [{ text: "2" }]);
+  console.log("python: variable persists across calls");
+}
+
+{
+  const id = uniqueId("py-fs");
+  await execute("python", id, {
+    code: 'open("/workspace/from-guest.txt", "w").write("hello from guest")',
+  });
+  const readViaApi = await files("python", id, { op: "read", path: "/workspace/from-guest.txt" });
+  assert.equal(readViaApi.content, "hello from guest");
+  await files("python", id, { op: "write", path: "/workspace/from-api.txt", content: "hello from api" });
+  const readViaGuest = await execute("python", id, {
+    code: 'open("/workspace/from-api.txt").read()',
+  });
+  assert.deepEqual(readViaGuest.results, [{ text: "'hello from api'" }]);
+  console.log("python: files written by guest/API are visible to each other");
+}
+
+{
+  const id = uniqueId("py-cwd");
+  await execute("python", id, { code: 'import os\nos.mkdir("/workspace/sub")\nos.chdir("sub")' });
+  const r = await execute("python", id, { code: "import os\nos.getcwd()" });
+  assert.deepEqual(r.results, [{ text: "'/workspace/sub'" }]);
+  assert.equal(r.context.cwd, "/workspace/sub");
+  console.log("python: cwd persists after os.chdir");
+}
+
+{
+  const id = uniqueId("py-import");
+  await execute("python", id, {
+    code: 'open("/workspace/lib.py", "w").write("val = 99\\n")',
+  });
+  const r = await execute("python", id, { code: "import lib\nlib.val" });
+  assert.deepEqual(r.results, [{ text: "99" }]);
+  console.log("python: import lib from /workspace");
+}
+
+// ---- Perl ------------------------------------------------------------------
+
+{
+  const id = uniqueId("pl-basic");
+  await execute("perl", id, { code: "our $counter = 1;" });
+  const r = await execute("perl", id, { code: "$counter + 1;" });
+  assert.deepEqual(r.results, [{ text: "2" }]);
+  console.log("perl: our variable persists across calls");
+}
+
+{
+  const id = uniqueId("pl-fs");
+  await execute("perl", id, {
+    code:
+      'open(my $fh, ">", "/workspace/from-guest.txt") or die $!; print $fh "hello from guest"; close($fh); 1;',
+  });
+  const readViaApi = await files("perl", id, { op: "read", path: "/workspace/from-guest.txt" });
+  assert.equal(readViaApi.content, "hello from guest");
+  await files("perl", id, { op: "write", path: "/workspace/from-api.txt", content: "hello from api" });
+  const readViaGuest = await execute("perl", id, {
+    code:
+      'open(my $fh, "<", "/workspace/from-api.txt") or die $!; my $data = do { local $/; <$fh> }; $data;',
+  });
+  assert.deepEqual(readViaGuest.results, [{ text: "hello from api" }]);
+  console.log("perl: files written by guest/API are visible to each other");
+}
+
+{
+  const id = uniqueId("pl-cwd");
+  await execute("perl", id, { code: 'mkdir("/workspace/sub"); chdir("sub") or die $!; 1;' });
+  const r = await execute("perl", id, { code: "1;" });
+  assert.equal(r.context.cwd, "/workspace/sub");
+  console.log("perl: cwd persists after chdir");
+}
+
+// ---- Ruby: no Durable Object, execute stays stateless ---------------------
+
+{
+  const id = uniqueId("rb-stateless");
+  const r = await execute("ruby", id, { code: "1 + 1" });
+  assert.deepEqual(r.results, [{ text: "2" }]);
+  assert.ok(!("context" in r), "a ruby ExecutionResult should not report a context");
+  console.log("ruby: context-less execute runs statelessly with no context in the result");
+}
+
+{
+  const id = uniqueId("rb-execute-context");
+  const res = await fetch(sandboxUrl("ruby", id, "/execute"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: "1", contextId: "does-not-matter" }),
+  });
+  assert.equal(res.status, 400);
+  const body = await res.json();
+  assert.match(body.message, /not supported for ruby/);
+  checks++;
+  console.log("ruby: execute with a contextId returns 400");
+}
+
+{
+  const id = uniqueId("rb-contexts");
+  const res = await fetch(sandboxUrl("ruby", id, "/contexts"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 400);
+  const body = await res.json();
+  assert.match(body.message, /not supported for ruby/);
+  checks++;
+  console.log("ruby: POST /contexts returns 400");
+}
+
+{
+  const id = uniqueId("rb-info");
+  const res = await fetch(sandboxUrl("ruby", id));
+  assert.equal(res.status, 400);
+  checks++;
+  console.log("ruby: GET /sandboxes/:id returns 400 (no Durable Object backs ruby)");
+}
+
+// ---- code contexts: create / list / delete --------------------------------
+
+{
+  const id = uniqueId("ctx-crud");
+  const created = await createContext("javascript", id, { cwd: "/workspace", envVars: { A: "1" } });
+  assert.equal(typeof created.id, "string");
+  assert.equal(created.language, "javascript");
+  assert.equal(created.cwd, "/workspace");
+  assert.ok(!Number.isNaN(Date.parse(created.createdAt)));
+  assert.ok(!Number.isNaN(Date.parse(created.lastUsed)));
+
+  const listed = await listContexts("javascript", id);
+  assert.equal(listed.contexts.length, 1);
+  assert.equal(listed.contexts[0].id, created.id);
+
+  await deleteContext("javascript", id, created.id);
+  const afterDelete = await listContexts("javascript", id);
+  assert.deepEqual(afterDelete.contexts, []);
+
+  await deleteContext("javascript", id, created.id, 404);
+  console.log("javascript: contexts can be created, listed, and deleted");
+}
+
+{
+  const id = uniqueId("ctx-isolation");
+  const ctxA = await createContext("javascript", id, {});
+  const ctxB = await createContext("javascript", id, {});
+  await execute("javascript", id, { code: "var onlyInA = 1", contextId: ctxA.id });
+  const checkB = await execute("javascript", id, {
+    code: 'typeof onlyInA === "undefined" ? "isolated" : "leaked"',
+    contextId: ctxB.id,
+  });
+  assert.deepEqual(checkB.results, [{ text: "'isolated'" }]);
+
+  await execute("javascript", id, {
+    code: 'fs.writeFileSync("/workspace/shared.txt", "from A")',
+    contextId: ctxA.id,
+  });
+  const readFromB = await execute("javascript", id, {
+    code: 'fs.readFileSync("/workspace/shared.txt", "utf8")',
+    contextId: ctxB.id,
+  });
+  assert.deepEqual(readFromB.results, [{ text: "'from A'" }]);
+  console.log("javascript: two contexts don't share globals but do share /workspace");
+}
+
+{
+  const id = uniqueId("ctx-default");
+  const r1 = await execute("javascript", id, { code: "1" });
+  const r2 = await execute("javascript", id, { code: "2" });
+  assert.equal(r1.context.id, r2.context.id);
+  console.log("javascript: the default context is reused across context-less executes");
+}
+
+{
+  const id = uniqueId("ctx-lang");
+  const ts = await execute("javascript", id, { code: "const n: number = 41; n", language: "typescript" });
+  assert.deepEqual(ts.results, [{ text: "41" }]);
+  const rejected = await execute("javascript", id, { code: "1", language: "python" }, 400);
+  assert.equal(rejected.code, "VALIDATION_FAILED");
+  console.log("javascript: language 'typescript' is accepted, 'python' is rejected");
+}
+
+// ---- setEnvVars layering ---------------------------------------------------
+
+{
+  const id = uniqueId("env-layer");
+  await setEnv("javascript", id, { FOO: "sandbox" });
+  const r1 = await execute("javascript", id, { code: "process.env.FOO" });
+  assert.deepEqual(r1.results, [{ text: "'sandbox'" }]);
+
+  const r2 = await execute("javascript", id, { code: "process.env.FOO", envVars: { FOO: "call" } });
+  assert.deepEqual(r2.results, [{ text: "'call'" }]);
+
+  // A later call without an override sees the sandbox-level value again.
+  const r3 = await execute("javascript", id, { code: "process.env.FOO" });
+  assert.deepEqual(r3.results, [{ text: "'sandbox'" }]);
+
+  await setEnv("javascript", id, { FOO: null });
+  const r4 = await execute("javascript", id, { code: "process.env.FOO ?? 'unset'" });
+  assert.deepEqual(r4.results, [{ text: "'unset'" }]);
+  console.log("javascript: setEnvVars layering (sandbox env, per-call override, null unsets)");
+}
+
+// ---- files: moveFile, includeHidden, FileInfo shape ------------------------
+
+{
+  const id = uniqueId("files-move");
+  await files("javascript", id, { op: "write", path: "/workspace/a.txt", content: "hi" });
+  const moved = await files("javascript", id, {
+    op: "move",
+    path: "/workspace/a.txt",
+    newPath: "/workspace/b.txt",
+  });
+  assert.equal(moved.path, "/workspace/a.txt");
+  assert.equal(moved.newPath, "/workspace/b.txt");
+  const goneA = await files("javascript", id, { op: "exists", path: "/workspace/a.txt" });
+  assert.equal(goneA.exists, false);
+  const readB = await files("javascript", id, { op: "read", path: "/workspace/b.txt" });
+  assert.equal(readB.content, "hi");
+  console.log("javascript: moveFile behaves like rename");
+}
+
+{
+  const id = uniqueId("files-hidden");
+  await files("javascript", id, { op: "write", path: "/workspace/visible.txt", content: "v" });
+  await files("javascript", id, { op: "write", path: "/workspace/.hidden.txt", content: "h" });
+  const listed = await files("javascript", id, { op: "list", path: "/workspace" });
+  assert.ok(!listed.files.some((f) => f.name === ".hidden.txt"));
+  const listedWithHidden = await files("javascript", id, {
+    op: "list",
+    path: "/workspace",
+    includeHidden: true,
+  });
+  assert.ok(listedWithHidden.files.some((f) => f.name === ".hidden.txt"));
+  console.log("javascript: includeHidden controls whether dotfiles are listed");
+}
+
+{
+  const id = uniqueId("files-info");
+  await files("javascript", id, { op: "write", path: "/workspace/info.txt", content: "abc" });
+  const listed = await files("javascript", id, { op: "list", path: "/workspace" });
+  const entry = listed.files.find((f) => f.name === "info.txt");
+  assert.ok(entry);
+  assert.equal(entry.absolutePath, "/workspace/info.txt");
+  assert.equal(entry.relativePath, "info.txt");
+  assert.equal(entry.type, "file");
+  assert.equal(entry.size, 3);
+  assert.ok(!Number.isNaN(Date.parse(entry.modifiedAt)));
+  assert.equal(entry.mode, "-rw-r--r--");
+  assert.deepEqual(entry.permissions, { readable: true, writable: true, executable: false });
+  console.log("javascript: list() files carry the full FileInfo shape");
+}
+
+// ---- "reset" (delete every context; files stay) / delete sandbox ----------
+
+{
+  const id = uniqueId("js-reset");
+  await execute("javascript", id, { code: "var kept = 1" });
+  await files("javascript", id, { op: "write", path: "/workspace/keep.txt", content: "still here" });
+  const before = await listContexts("javascript", id);
+  for (const context of before.contexts) await deleteContext("javascript", id, context.id);
+  const r = await execute("javascript", id, {
+    code: 'typeof kept === "undefined" ? "cleared" : "kept"',
+  });
+  assert.deepEqual(r.results, [{ text: "'cleared'" }]);
+  const stillThere = await files("javascript", id, { op: "read", path: "/workspace/keep.txt" });
+  assert.equal(stillThere.content, "still here");
+  console.log("javascript: deleting every context clears globals but keeps files");
+}
+
+{
+  const id = uniqueId("js-delete");
+  await execute("javascript", id, { code: "1" });
+  await files("javascript", id, { op: "write", path: "/workspace/gone.txt", content: "x" });
+  await destroy("javascript", id);
+  const afterInfo = await info("javascript", id);
+  // A fresh GET after DELETE creates a brand-new sandbox record with no contexts.
+  assert.deepEqual(afterInfo.contexts, []);
+  const gone = await files("javascript", id, { op: "exists", path: "/workspace/gone.txt" });
+  assert.equal(gone.exists, false);
+  console.log("javascript: DELETE removes everything");
+}
+
+// ---- memory snapshots ------------------------------------------------------
+
+{
+  const id = uniqueId("js-snapshot");
+  const before = await info("javascript", id);
+  assert.deepEqual(before.contexts, []);
+  const r1 = await execute("javascript", id, { code: "var snapped = 1; snapped" });
+  assert.deepEqual(r1.results, [{ text: "1" }]);
+  // The runtime under test is a live `wrangler dev` process, so the very
+  // first execute() in a context takes the first snapshot synchronously
+  // (canSnapshot() is true right after an ordinary top-level call) -- no
+  // need to wait for anything async here.
+  assert.equal(typeof r1.context.snapshotMs, "number");
+  const after = await info("javascript", id);
+  assert.equal(after.contexts.length, 1);
+  const snap = after.contexts[0].snapshot;
+  assert.ok(snap, "contexts[0].snapshot should be present after execute");
+  assert.ok(snap.pages > 0);
+  assert.ok(snap.bytes > 0);
+  assert.equal(snap.stale, false);
+  assert.equal(typeof snap.build, "string");
+  assert.equal(typeof snap.takenAt, "number");
+
+  await deleteContext("javascript", id, after.contexts[0].id);
+  const afterDelete = await info("javascript", id);
+  assert.deepEqual(afterDelete.contexts, []);
+  console.log("javascript: GET / reports a context's snapshot after execute; deleting it clears the snapshot");
+}
+
+{
+  const id = uniqueId("py-snapshot");
+  const r1 = await execute("python", id, { code: "snapped = 1" });
+  assert.equal(typeof r1.context.snapshotMs, "number");
+  const after = await info("python", id);
+  assert.ok(after.contexts[0].snapshot);
+  assert.ok(after.contexts[0].snapshot.pages > 0);
+  console.log("python: GET / reports a snapshot for the context after execute");
+}
+
+{
+  const id = uniqueId("pl-snapshot");
+  const r1 = await execute("perl", id, { code: "our $snapped = 1;" });
+  assert.equal(typeof r1.context.snapshotMs, "number");
+  const after = await info("perl", id);
+  assert.ok(after.contexts[0].snapshot);
+  assert.ok(after.contexts[0].snapshot.pages > 0);
+  console.log("perl: GET / reports a snapshot for the context after execute");
+}
+
+// ---- limits (new ErrorResponse shape) --------------------------------------
+
+{
+  const id = uniqueId("js-limits");
+  // The oversized content is generated INSIDE the guest (a tiny script over
+  // the wire) rather than sent as request body content: the gateway caps
+  // forwarded sandbox request bodies at the same size it uses for /execute
+  // (MAX_REQUEST_BYTES, 96 KiB — well under the 1 MiB per-file workspace
+  // limit this exercises), so a literal >1 MiB /files write can't reach the
+  // runtime through the gateway at all.
+  const big = await execute("javascript", id, {
+    code:
+      'let code; try { fs.writeFileSync("/workspace/big.txt", "x".repeat(1024*1024+1)); code = "none"; } catch (e) { code = e.code; } code',
+  });
+  assert.deepEqual(big.results, [{ text: "'EFBIG'" }]);
+
+  const escape = await files("javascript", id, { op: "read", path: "../../etc/passwd" }, 403);
+  assert.equal(escape.code, "PERMISSION_DENIED");
+  assert.equal(escape.context.errno, "EACCES");
+  const missing = await files("javascript", id, { op: "read", path: "/workspace/missing.txt" }, 404);
+  assert.equal(missing.code, "FILE_NOT_FOUND");
+  assert.equal(missing.context.errno, "ENOENT");
+  // The gateway allows larger bodies on /files than on /execute, so an
+  // over-limit write can reach the runtime and be rejected there.
+  const tooLarge = await files(
+    "javascript",
+    id,
+    { op: "write", path: "/workspace/toolarge.txt", content: "z".repeat(1024 * 1024 + 1) },
+    413,
+  );
+  assert.equal(tooLarge.code, "FILE_TOO_LARGE");
+  assert.equal(tooLarge.context.errno, "EFBIG");
+  const large = await files("javascript", id, {
+    op: "write",
+    path: "/workspace/large.txt",
+    content: "y".repeat(600 * 1024),
+  });
+  assert.equal(large.path, "/workspace/large.txt");
+  console.log("javascript: file limits produce the ErrorResponse shape (code, context.errno)");
+}
+
+// ---- fuel exhaustion --------------------------------------------------
+
+{
+  const id = uniqueId("js-fuel");
+  await execute("javascript", id, { code: "var survivor = 42" });
+  const looped = await execute("javascript", id, { code: "while (true) {}" });
+  assert.equal(looped.error.name, "ExecutionLimitError");
+  const after = await execute("javascript", id, { code: "survivor" });
+  assert.deepEqual(after.results, [{ text: "42" }]);
+  console.log("javascript: fuel exhaustion in a context leaves it usable");
+}
+
+{
+  const id = uniqueId("py-fuel");
+  await execute("python", id, { code: "survivor = 42" });
+  const looped = await execute("python", id, { code: "while True: pass" });
+  assert.equal(looped.error.name, "ExecutionLimitError");
+  // Python's instance is discarded and rebuilt from the persisted workspace;
+  // in-memory globals not yet reflected in a snapshot are lost, but the
+  // context itself keeps working.
+  const after = await execute("python", id, { code: "1 + 1" });
+  assert.deepEqual(after.results, [{ text: "2" }]);
+  console.log("python: fuel exhaustion rebuilds the instance; context stays usable");
+}
+
+// ---- idle expiry ------------------------------------------------------
+
+{
+  const id = uniqueId("js-expiry");
+  const before = Date.now();
+  const r = await execute("javascript", id, { code: "1 + 1" });
+  // The Playground's own engine/wrangler*.jsonc set a finite
+  // SESSION_IDLE_TTL_MS, but a caller could disable expiry (`"0"`), in which
+  // case expiresAt is omitted/null -- only assert the shape when present.
+  if (r.context.expiresAt !== undefined) {
+    assert.equal(typeof r.context.expiresAt, "number");
+    assert.ok(r.context.expiresAt > before, "execute response context.expiresAt should be in the future");
+  }
+  const after = await info("javascript", id);
+  assert.ok("expiresAt" in after, "GET / should include expiresAt");
+  if (after.expiresAt !== null) {
+    assert.equal(typeof after.expiresAt, "number");
+    assert.ok(after.expiresAt > before, "GET / expiresAt should be in the future");
+  }
+  console.log("javascript: sandbox idle expiry (expiresAt) is present and in the future");
+}
+
+console.log(`${checks} sandbox HTTP checks passed against ${base}`);

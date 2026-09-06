@@ -329,7 +329,7 @@ function buildEmbeddedApi({ instance, handle, host, meter, fuel, workspace, lang
 
 // A durable session: one embedded interpreter kept alive across many
 // execute() calls, and snapshottable to a Durable Object's `pages` table via
-// .snapshot()/.canSnapshot() (see runtime/snapshot.mjs and runtime/session.mjs).
+// .snapshot()/.canSnapshot() (see runtime/snapshot.mjs and runtime/sandbox.mjs).
 export function createEmbeddedSession(module, archive, language, options = {}) {
   const workspace = options.workspace ?? null;
   const cwd = options.cwd ?? "/workspace";
@@ -354,7 +354,7 @@ export function createEmbeddedSession(module, archive, language, options = {}) {
   return buildEmbeddedApi({ instance, handle, host, meter, fuel, workspace, language, cwd });
 }
 
-// Restores a session from a previous .snapshot() (see runtime/session.mjs):
+// Restores a session from a previous .snapshot() (see runtime/sandbox.mjs):
 // instantiates fresh, then -- per docs/sessions-design.md's verified restore
 // recipe -- points wasi.inst at the instance directly (no wasi.initialize(),
 // no _initialize, no wasm_init()), grows memory to the snapshot's page count,

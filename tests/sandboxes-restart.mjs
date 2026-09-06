@@ -1,19 +1,19 @@
-// End-to-end acceptance test for phase 2 (memory snapshots): a session must
+// End-to-end acceptance test for phase 2 (memory snapshots): a sandbox must
 // survive a Durable Object eviction across a full `wrangler dev` process
-// restart, not just quick in-memory reuse. Unlike tests/sessions.mjs (which
+// restart, not just quick in-memory reuse. Unlike tests/sandboxes.mjs (which
 // runs entirely against one `wrangler dev` process and never exercises a
 // restore from storage), this file is meant to be run TWICE against two
 // separate `wrangler dev` processes that share the same --persist-to state:
 //
-//   PHASE=1 node tests/sessions-restart.mjs   # while wrangler dev #1 is up
+//   PHASE=1 node tests/sandboxes-restart.mjs   # while wrangler dev #1 is up
 //   <stop wrangler dev #1>
 //   <start wrangler dev #2, same --persist-to>
-//   PHASE=2 node tests/sessions-restart.mjs   # while wrangler dev #2 is up
+//   PHASE=2 node tests/sandboxes-restart.mjs   # while wrangler dev #2 is up
 //
 // PHASE=1 defines a variable, a function, and (for JavaScript and Python) a
-// class in one session per language, and writes a file. PHASE=2 -- run
-// against a brand-new wrangler dev process, so every SandboxSession Durable
-// Object instance's in-memory interpreter is gone -- checks that the
+// class in one sandbox's default context per language, and writes a file.
+// PHASE=2 -- run against a brand-new wrangler dev process, so every Sandbox
+// Durable Object instance's in-memory interpreter is gone -- checks that the
 // variable, the function, a class method call, and the file are all still
 // there, restored from the snapshot taken during PHASE=1.
 import assert from "node:assert/strict";
@@ -22,16 +22,18 @@ const base = process.env.SANDBOX_URL ?? "http://localhost:8791";
 const phase = process.env.PHASE ?? "1";
 if (phase !== "1" && phase !== "2") throw new Error("PHASE must be 1 or 2");
 
-// Fixed (not time-random) ids: phase 2 must address the exact same sessions
+// Fixed (not time-random) ids: phase 2 must address the exact same sandboxes
 // phase 1 created.
 const ids = { javascript: "restart-js", python: "restart-py", perl: "restart-pl" };
 
-function sessionUrl(language, id, subpath = "") {
-  return `${base}/languages/${language}/sessions/${id}${subpath}`;
+function sandboxUrl(language, id, subpath = "") {
+  return `${base}/languages/${language}/sandboxes/${id}${subpath}`;
 }
 
+// Both phases address the *default* context: executing without a
+// `contextId` (see docs/sdk-parity-design.md, "Default context").
 async function execute(language, id, body) {
-  const res = await fetch(sessionUrl(language, id, "/execute"), {
+  const res = await fetch(sandboxUrl(language, id, "/execute"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -41,7 +43,7 @@ async function execute(language, id, body) {
 }
 
 async function readFile(language, id, path) {
-  const res = await fetch(sessionUrl(language, id, "/files"), {
+  const res = await fetch(sandboxUrl(language, id, "/files"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ op: "read", path }),
@@ -51,7 +53,7 @@ async function readFile(language, id, path) {
 }
 
 async function info(language, id) {
-  const res = await fetch(sessionUrl(language, id));
+  const res = await fetch(sandboxUrl(language, id));
   assert.equal(res.status, 200);
   return res.json();
 }
@@ -64,7 +66,7 @@ function check(condition, message) {
 }
 
 if (phase === "1") {
-  console.log(`PHASE 1: defining state in sessions ${JSON.stringify(ids)} against ${base}`);
+  console.log(`PHASE 1: defining state in sandboxes ${JSON.stringify(ids)} against ${base}`);
 
   const js = await execute("javascript", ids.javascript, {
     code:
@@ -73,7 +75,7 @@ if (phase === "1") {
       "fs.writeFileSync('/workspace/marker.txt', 'phase1'); 'defined'",
   });
   check(js.results?.[0]?.text === "'defined'", "javascript: definitions + file write executed");
-  check(typeof js.session.snapshotMs === "number", "javascript: execute() reports session.snapshotMs");
+  check(typeof js.context.snapshotMs === "number", "javascript: execute() reports context.snapshotMs");
 
   const py = await execute("python", ids.python, {
     code:
@@ -82,7 +84,7 @@ if (phase === "1") {
       "open('/workspace/marker.txt', 'w').write('phase1')\n'defined'",
   });
   check(py.results?.[0]?.text === "'defined'", "python: definitions + file write executed");
-  check(typeof py.session.snapshotMs === "number", "python: execute() reports session.snapshotMs");
+  check(typeof py.context.snapshotMs === "number", "python: execute() reports context.snapshotMs");
 
   const pl = await execute("perl", ids.perl, {
     code:
@@ -91,16 +93,17 @@ if (phase === "1") {
       "'defined';",
   });
   check(pl.results?.[0]?.text === "defined", "perl: definitions + file write executed");
-  check(typeof pl.session.snapshotMs === "number", "perl: execute() reports session.snapshotMs");
+  check(typeof pl.context.snapshotMs === "number", "perl: execute() reports context.snapshotMs");
 
   for (const [language, id] of Object.entries(ids)) {
     const snapshotInfo = await info(language, id);
-    check(!!snapshotInfo.snapshot && snapshotInfo.snapshot.pages > 0, `${language}: GET info reports a snapshot before restart`);
+    const snapshot = snapshotInfo.contexts?.[0]?.snapshot;
+    check(!!snapshot && snapshot.pages > 0, `${language}: GET info reports a snapshot before restart`);
   }
 
   console.log(`PHASE 1 complete: ${checks} checks passed. Stop wrangler dev, start a new instance, then run PHASE=2.`);
 } else {
-  console.log(`PHASE 2: verifying state survived a wrangler dev restart in sessions ${JSON.stringify(ids)} against ${base}`);
+  console.log(`PHASE 2: verifying state survived a wrangler dev restart in sandboxes ${JSON.stringify(ids)} against ${base}`);
 
   const js = await execute("javascript", ids.javascript, {
     code: "counter + '/' + inc(1) + '/' + new Greeter().hello('world')",
@@ -132,5 +135,5 @@ if (phase === "1") {
     check(file.content === "phase1", `${language}: /workspace/marker.txt survived the restart`);
   }
 
-  console.log(`PHASE 2 complete: ${checks} checks passed. Durable sessions survived a full wrangler dev restart.`);
+  console.log(`PHASE 2 complete: ${checks} checks passed. Durable sandboxes survived a full wrangler dev restart.`);
 }

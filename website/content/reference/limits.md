@@ -20,6 +20,10 @@ Code is a **script**: the value of the last top-level expression is the result; 
 
 Code is limited to 64 KiB and the request to 96 KiB. Python, Perl, and Ruby stdout/stderr is limited to 32 KiB and 200 log chunks combined; JavaScript console capture uses the same limits. The serialized result is capped at 64 KiB. Every execution — success, guest error, or a fuel/output/result limit — returns HTTP 200 with `{ code, language, engine, durationMs, logs: { stdout, stderr }, results, error?, usage? }`; check the `error` field through the shared client. Only request/transport failures (bad JSON, an unsupported gateway path, invalid `envVars`, an `input` or `language` key, wrong method, oversized payload, wrong content type, or a gateway failure) use non-200 statuses with `{ error: { name: "ApiError", message } }`.
 
+## Sandboxes and code contexts
+
+Sandboxes (JavaScript, Python, Perl; not Ruby) add limits on top of the execution contract above: at most 8 code contexts per sandbox, with only 1 interpreter resident in memory at a time (the rest are restored from their snapshot on next use). The shared `/workspace` is limited to 1 MiB per file, 16 MiB total, and 4096 entries. See the [sandboxes and code contexts guide](/guides/sessions) for the full contract.
+
 ## Isolation and compatibility
 
 Each execution creates a fresh Wasm instance and memory; no context persists between calls. Host environment variables and secrets are never passed to the guest — only the key/value pairs supplied in `envVars` are visible. The WASI adapter exposes a virtual standard library and `/dev/null`, without host files, sockets, or process creation. Python and Perl libraries are read-only. Ruby's embedded filesystem stays inside its instance. Ruby's JavaScript bridge is disabled, and its asynchronous initialization is serialized to avoid overlapping guest memories within one isolate.

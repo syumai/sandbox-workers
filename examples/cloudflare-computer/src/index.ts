@@ -1,6 +1,6 @@
 import { Workspace, type DurableObjectStorageLike } from "@cloudflare/computer";
 import { DurableObject } from "cloudflare:workers";
-import { createSandbox } from "@sandbox-workers/core";
+import { getSandbox } from "@sandbox-workers/core";
 
 interface Env {
   COMPUTERS: DurableObjectNamespace<SandboxComputer>;
@@ -52,8 +52,11 @@ export class SandboxComputer extends DurableObject<Env> {
         ruby: this.env.RUBY,
       };
       const { items } = JSON.parse(await fs.readFile("/input.json", "utf8"));
-      const execution = await createSandbox(
+      // One sandbox per language keeps this public demo's Durable Object
+      // storage bounded too; Ruby has no Durable Object and runs statelessly.
+      const execution = await getSandbox(
         bindings[language],
+        `computer-demo-${language}`,
       ).runCode(await fs.readFile("/program.txt", "utf8"), {
         envVars: { ITEMS: JSON.stringify(items) },
       });

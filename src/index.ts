@@ -27,8 +27,17 @@ function engineFor(env: Env, language: string): LanguageEngine | undefined {
   engines.ruby = env.RUBY;
   return engines[language];
 }
-const SESSION_ROUTE = /^\/languages\/([^/]+)(\/sessions\/.+)$/;
-const SESSION_METHODS = new Set(["GET", "POST", "DELETE"]);
+const SANDBOX_ROUTE = /^\/languages\/([^/]+)(\/sandboxes\/.+)$/;
+const SANDBOX_METHODS = new Set(["GET", "POST", "DELETE"]);
+// Builds a 405 error response in the ErrorResponse shape, with an Allow
+// header attached (errorResponse() itself doesn't set one).
+function methodNotAllowed(message: string, allow: string): Response {
+  const res = errorResponse(new ApiError(405, message));
+  return new Response(res.body, {
+    status: res.status,
+    headers: { ...Object.fromEntries(res.headers), Allow: allow },
+  });
+}
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const path = new URL(request.url).pathname;
@@ -38,10 +47,7 @@ export default {
       });
     if (path === "/execute" || path.startsWith("/execute/")) {
       if (request.method !== "POST")
-        return Response.json(
-          { error: "Use POST" },
-          { status: 405, headers: { Allow: "POST" } },
-        );
+        return methodNotAllowed("Use POST", "POST");
       try {
         // The Playground gateway selects a runtime from the URL path; each
         // runtime is deployed as a private, independently versioned Worker.
@@ -61,19 +67,16 @@ export default {
       }
     }
     if (path === "/languages")
-      return new Response("Method not allowed", { status: 405 });
-    // Forward /languages/:language/sessions/:id[/...] to the runtime binding
-    // for :language as /sessions/:id[/...]. Bodies are passed through
+      return methodNotAllowed("Method not allowed", "GET");
+    // Forward /languages/:language/sandboxes/:id[/...] to the runtime binding
+    // for :language as /sandboxes/:id[/...]. Bodies are passed through
     // unchanged (size-limited like /execute); status codes and bodies are
     // relayed verbatim.
-    const sessionMatch = SESSION_ROUTE.exec(path);
-    if (sessionMatch) {
-      const [, language, rest] = sessionMatch;
-      if (!SESSION_METHODS.has(request.method))
-        return new Response("Method not allowed", {
-          status: 405,
-          headers: { Allow: "GET, POST, DELETE" },
-        });
+    const sandboxMatch = SANDBOX_ROUTE.exec(path);
+    if (sandboxMatch) {
+      const [, language, rest] = sandboxMatch;
+      if (!SANDBOX_METHODS.has(request.method))
+        return methodNotAllowed("Method not allowed", "GET, POST, DELETE");
       try {
         const engine = engineFor(env, language);
         if (!engine)

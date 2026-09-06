@@ -41,7 +41,7 @@ This checks each persisted execution result plus unsupported-language and method
 
 1. The HTTP Worker selects one of four fixed demo Durable Objects, one per language.
 2. Computer writes `/input.json` and `/program.txt` to SQLite.
-3. The host reads those files and calls `createSandbox(binding).runCode(code, { envVars })`.
+3. The host reads those files and calls `getSandbox(binding, id).runCode(code, { envVars })`.
 4. The host saves the full execution envelope as `/result.json` and reads it back into the response.
 
 The fixed fixture and filenames keep this public demo's storage bounded. Each object's read/execute/write cycle is serialized. No credentials or user files are stored. Request bodies are not used: edit the fixture and language programs in `src/index.ts` to change the example.

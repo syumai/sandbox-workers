@@ -103,14 +103,15 @@ try {
 // `userMode` is the mode the user picked; Ruby has no session mode, so the
 // *effective* mode (effectiveMode()) forces "script" there without losing
 // the user's preference for the other languages. `sessionIds` maps each
-// language to one Playground-generated session id, persisted so the same
-// browser reuses it across visits. `transcripts` (in-memory only, cleared on
-// New session / Reset) maps a session id to its last MAX_TRANSCRIPT
+// language to one Playground-generated sandbox id, persisted (under
+// `sandboxIds`; the old `sessionIds` key is ignored) so the same browser
+// reuses it across visits. `transcripts` (in-memory only, cleared on New
+// session / Reset) maps a sandbox id to its last MAX_TRANSCRIPT
 // {code, text, isError} entries.
 let userMode = saved?.mode === "session" ? "session" : "script";
 let sessionIds =
-  saved?.sessionIds && typeof saved.sessionIds === "object" && !Array.isArray(saved.sessionIds)
-    ? { ...saved.sessionIds }
+  saved?.sandboxIds && typeof saved.sandboxIds === "object" && !Array.isArray(saved.sandboxIds)
+    ? { ...saved.sandboxIds }
     : {};
 let transcripts = {};
 let workspaceOpenPath = null;
@@ -162,7 +163,7 @@ function persist() {
         code: editor.state.doc.toString(),
         envVars: $("env-vars").value,
         mode: userMode,
-        sessionIds,
+        sandboxIds: sessionIds,
       }),
     );
   } catch {}
@@ -337,7 +338,7 @@ async function run() {
   const sessionMode = effectiveMode() === "session";
   const code = editor.state.doc.toString();
   const url = sessionMode
-    ? `/languages/${$("language").value}/sessions/${sessionIdFor(language)}/execute`
+    ? `/languages/${$("language").value}/sandboxes/${sessionIdFor(language)}/execute`
     : `/execute/${$("language").value}`;
   try {
     const res = await fetch(url, {
@@ -420,7 +421,7 @@ function syncSessionUI() {
 }
 
 function sessionBaseUrl() {
-  return `/languages/${language}/sessions/${sessionIdFor(language)}`;
+  return `/languages/${language}/sandboxes/${sessionIdFor(language)}`;
 }
 
 async function refreshSessionInfo() {
@@ -455,10 +456,11 @@ function renderSessionStrip(info) {
     $("session-expires").textContent = "";
     return;
   }
-  $("session-executions").textContent = String(info.executions ?? 0);
-  $("session-cwd").textContent = info.cwd || "/workspace";
-  $("session-snapshot").textContent = info.snapshot
-    ? `${info.snapshot.pages} snapshot page(s)${info.snapshot.stale ? " (stale)" : ""}`
+  const ctx = info.contexts?.[0];
+  $("session-executions").textContent = String(ctx?.executions ?? 0);
+  $("session-cwd").textContent = ctx?.cwd || "/workspace";
+  $("session-snapshot").textContent = ctx?.snapshot
+    ? `${ctx.snapshot.pages} snapshot page(s)${ctx.snapshot.stale ? " (stale)" : ""}`
     : "no snapshot yet";
   $("session-expires").textContent =
     typeof info.expiresAt === "number" ? `expires ${relativeTime(info.expiresAt)}` : "";
@@ -502,7 +504,7 @@ $("session-new").onclick = async () => {
   const old = sessionIds[language];
   if (old) {
     try {
-      await fetch(`/languages/${language}/sessions/${old}`, { method: "DELETE" });
+      await fetch(`/languages/${language}/sandboxes/${old}`, { method: "DELETE" });
     } catch {}
     delete transcripts[old];
   }
@@ -518,7 +520,12 @@ $("session-new").onclick = async () => {
 $("session-reset").onclick = async () => {
   const id = sessionIdFor(language);
   try {
-    await fetch(`${sessionBaseUrl()}/reset`, { method: "POST" });
+    const res = await fetch(`${sessionBaseUrl()}/contexts`);
+    const { contexts } = await res.json();
+    for (const context of contexts ?? [])
+      await fetch(`${sessionBaseUrl()}/contexts/${encodeURIComponent(context.id)}`, {
+        method: "DELETE",
+      });
   } catch {}
   transcripts[id] = [];
   workspaceOpenPath = null;
@@ -536,7 +543,7 @@ async function sessionFilesOp(body) {
     body: JSON.stringify(body),
   });
   const json = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(json?.error?.message ?? `HTTP ${res.status}`);
+  if (!res.ok) throw new Error(json?.message ?? `HTTP ${res.status}`);
   return json;
 }
 
@@ -598,7 +605,7 @@ async function loadWorkspace() {
   list.textContent = "Loading…";
   try {
     const result = await sessionFilesOp({ op: "list", path: "/workspace", recursive: true });
-    renderWorkspaceList(result.entries ?? []);
+    renderWorkspaceList(result.files ?? []);
   } catch (error) {
     list.textContent = `Could not load workspace: ${error.message}`;
   }
@@ -619,8 +626,8 @@ function renderWorkspaceList(entries) {
     row.className = "workspace-entry";
     const name = document.createElement("button");
     name.className = "workspace-entry-name";
-    name.textContent = entry.path + (entry.type === "directory" ? "/" : "");
-    if (entry.type === "file") name.onclick = () => openWorkspaceFile(entry.path);
+    name.textContent = entry.absolutePath + (entry.type === "directory" ? "/" : "");
+    if (entry.type === "file") name.onclick = () => openWorkspaceFile(entry.absolutePath);
     else name.disabled = true;
     const size = document.createElement("span");
     size.className = "workspace-entry-size";

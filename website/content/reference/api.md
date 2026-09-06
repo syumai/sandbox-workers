@@ -93,33 +93,71 @@ Only the key/value pairs passed in `envVars` are visible; nothing from the host 
 | Status | Meaning                                                                             |
 | ------ | ------------------------------------------------------------------------------------ |
 | 200    | Every execution: success, a guest error, or a fuel/output/result limit — check `error` |
-| 400    | Invalid JSON, an unsupported `/execute/<language>` gateway path, invalid `envVars`, or an `input`/`language` key in the body |
-| 405    | Wrong HTTP method                                                                     |
-| 413    | Request or code too large                                                            |
-| 415    | Unsupported Content-Type                                                             |
-| 502    | Gateway could not call a Service Binding                                            |
+| 400    | Invalid JSON, an unsupported `/execute/<language>` gateway path, invalid `envVars`, or an `input`/`language` key in the body (`VALIDATION_FAILED`) |
+| 405    | Wrong HTTP method (`VALIDATION_FAILED`)                                              |
+| 413    | Request or code too large (`VALIDATION_FAILED`)                                      |
+| 415    | Unsupported Content-Type (`VALIDATION_FAILED`)                                       |
+| 502    | Gateway could not call a Service Binding (`INTERNAL_ERROR`)                          |
 
-Only request/transport failures (400, 405, 413, 415, 502) use a non-200 status, with the body `{ "error": { "name": "ApiError", "message": "..." } }`. There is no `ok` field and no 422 status — fuel exhaustion and output/result limits are reported as a 200 response with `error.name` set to `"ExecutionLimitError"`.
+Only request/transport failures (400, 405, 413, 415, 502) use a non-200 status, with the body shaped as an `ErrorResponse` — `{ "code": "VALIDATION_FAILED", "message": "...", "context": {}, "httpStatus": 400, "timestamp": "..." }` (see [Sandboxes](#sandboxes) for the full `code` list). There is no `ok` field and no 422 status — fuel exhaustion and output/result limits are reported as a 200 response with `error.name` set to `"ExecutionLimitError"`.
 
 Always check the `error` field, not the HTTP status, to see whether guest code succeeded.
 
-## Sessions
+## Sandboxes
 
-A **session** is a named, durable REPL backed by a Durable Object — see the [sessions guide](/guides/sessions) for the full contract, the files API, and per-language semantics. Sessions are supported for JavaScript, Python, and Perl; every `/sessions/*` route on a Ruby runtime Worker returns 400 `Sessions are not supported for ruby`. Session ids match `^[A-Za-z0-9._-]{1,128}$`.
+A **sandbox** is a Durable Object, keyed by a caller-chosen id, that owns a shared `/workspace` and one or more named **code contexts** — durable REPLs. See the [sandboxes and code contexts guide](/guides/sessions) for the full contract, the files API, and per-language semantics. Code contexts are supported for JavaScript, Python, and Perl; on a Ruby runtime Worker every `/sandboxes/:id/*` route answers 400 `Code contexts are not supported for ruby`, except a context-less `execute`, which runs statelessly. Sandbox ids match `^[A-Za-z0-9._-]{1,128}$`.
 
 | Method and path | Body | Response |
 | --- | --- | --- |
-| `POST /sessions/:id/execute` | `{code, envVars?, cwd?}` | The `/execute` result plus `session: {id, cwd, executions, snapshotMs?, expiresAt?}`; always 200 |
-| `GET /sessions/:id` | | `{id, language, engine, cwd, createdAt, lastUsed, executions, workspace: {files, bytes}, snapshot, expiresAt}` |
-| `DELETE /sessions/:id` | | `{ok: true}` |
-| `POST /sessions/:id/reset` | | `{ok: true}` |
-| `POST /sessions/:id/files` | `{op, path, newPath?, content?, encoding?, recursive?, force?}` | Per operation — see the sessions guide |
+| `POST /sandboxes/:id/execute` | `{code, contextId?, language?, envVars?}` | The `/execute` result plus `context: {id, cwd, executions, snapshotMs?, expiresAt?}`; always 200 for guest errors |
+| `POST /sandboxes/:id/contexts` | `{language?, cwd?, envVars?}` | `{id, language, cwd, createdAt, lastUsed}` (201) |
+| `GET /sandboxes/:id/contexts` | | `{contexts: [{id, language, cwd, createdAt, lastUsed}]}` |
+| `DELETE /sandboxes/:id/contexts/:contextId` | | `{success: true}`; 404 `CONTEXT_NOT_FOUND` |
+| `POST /sandboxes/:id/env` | `{envVars: Record<string, string \| null>}` (`null` unsets a key) | `{success: true}` |
+| `POST /sandboxes/:id/files` | `{op, path, newPath?, content?, encoding?, recursive?, force?, includeHidden?}` | Per operation — see the guide |
+| `GET /sandboxes/:id` | | `SandboxInfo`: `{id, language, engine, createdAt, lastUsed, envVars, contexts, workspace: {files, bytes}, expiresAt}` |
+| `DELETE /sandboxes/:id` | | `{success: true}` — wipes storage and drops every context |
 
-`snapshot` is `{build, pages, bytes, takenAt, stale}` once a session has taken at least one memory snapshot (surviving Durable Object eviction, hibernation, and redeploys — see the sessions guide's "Memory snapshots" section for when a snapshot is skipped, `stale`, and how `reset` compacts), or `null` before the first one / right after `reset`. `session.snapshotMs` on the execute response is present only on an execution that actually wrote a snapshot. `expiresAt` is the epoch-millisecond deadline of the session's idle-expiry Durable Object alarm — every request that touches the session (re)arms it, and it deletes the session when it fires unused, the same as `DELETE`; it is `null` when the runtime Worker's `SESSION_IDLE_TTL_MS` env var disables expiry (`"0"`), and the execute response's `session.expiresAt` is then omitted instead. See the sessions guide's "Idle expiry" section. File operation failures return a 4xx status with `{error: {name: "FileError", code, message}}`; other transport and validation errors on these routes use the same `{error: {name: "ApiError", message}}` shape as `/execute`.
+Each entry of `contexts` (in `GET /sandboxes/:id`) is `{id, language, cwd, createdAt, lastUsed, executions, snapshot}`. `snapshot` is `{build, pages, bytes, takenAt, stale}` once that context has taken at least one memory snapshot (surviving Durable Object eviction, hibernation, and redeploys — see the guide's "Memory snapshots" section for when a snapshot is skipped, `stale`, and how deleting a context compacts it), or `null` before its first one. `context.snapshotMs` on the execute response is present only on an execution that actually wrote a snapshot. `expiresAt` is the epoch-millisecond deadline of the sandbox's idle-expiry Durable Object alarm — every request that touches the sandbox (re)arms it, and it deletes the whole sandbox (all contexts and files) when it fires unused, the same as `DELETE`; it is `null` when the runtime Worker's `SESSION_IDLE_TTL_MS` env var disables expiry (`"0"`), and the execute response's `context.expiresAt` is then omitted instead. See the guide's "Idle expiry" section.
+
+### Files API
+
+`op` is `read`, `write`, `mkdir`, `delete`, `rename`, `move`, `list`, or `exists`. `rename` and `move` are the same operation; `move` additionally requires the destination's parent directory to exist.
+
+| `op` | Extra fields | Response |
+| --- | --- | --- |
+| `read` | `encoding?` | `{success, path, content, encoding, isBinary, mimeType, size, timestamp}` |
+| `write` | `content`, `encoding?` | `{success, path, timestamp}` |
+| `mkdir` | `recursive?` | `{success, path, recursive, timestamp}` |
+| `delete` | `recursive?`, `force?` | `{success, path, timestamp}` — a directory needs `recursive: true`; `force: true` ignores a missing path |
+| `rename` / `move` | `newPath` | `{success, path, newPath, timestamp}` |
+| `list` | `recursive?`, `includeHidden?` | `{success, path, files: FileInfo[], count, timestamp}` |
+| `exists` | | `{success, path, exists, timestamp}` |
+
+### Errors
+
+Every non-200 response on `/sandboxes/*` (and, since this change, on `/execute`) is an `ErrorResponse`: `{code, message, context, httpStatus, timestamp, operation?}`.
+
+| `code` | HTTP status | Meaning |
+| --- | --- | --- |
+| `FILE_NOT_FOUND` | 404 | Path does not exist |
+| `FILE_EXISTS` | 409 | Path already exists (`rename`/`move` destination, non-`force` conflicts) |
+| `PERMISSION_DENIED` | 403 | Path escapes `/workspace`, or the underlying `EACCES` |
+| `IS_DIRECTORY` | 400 | Expected a file, found a directory |
+| `NOT_DIRECTORY` | 400 | Expected a directory, found a file |
+| `FILE_TOO_LARGE` | 413 | Exceeds the 1 MiB per-file or 16 MiB per-workspace limit |
+| `NO_SPACE` | 507 | Workspace entry-count limit (4096) reached |
+| `FILESYSTEM_ERROR` | 400 | `ENOTEMPTY` or any other filesystem error |
+| `CONTEXT_NOT_FOUND` | 404 | Unknown `contextId` |
+| `VALIDATION_FAILED` | 400 | Malformed request (also used with 413/415/405 for request-shape failures) |
+| `CODE_EXECUTION_ERROR` | 500 | The engine failed before producing a result |
+| `INTERNAL_ERROR` | 500 | Anything else, or a non-JSON response |
+
+File-operation errors carry `context.errno`, the Node-style code (`ENOENT`, `EEXIST`, `EACCES`, `EISDIR`, `ENOTDIR`, `EFBIG`, `ENOSPC`, `ENOTEMPTY`, …) alongside the mapped `code` above.
 
 ### Gateway path
 
-The Playground gateway forwards `/languages/:language/sessions/:id` and any further sub-path (for example `/languages/:language/sessions/:id/execute` or `/languages/:language/sessions/:id/files`) to the matching runtime binding's `/sessions/:id[/...]`, for `GET`, `POST`, and `DELETE`, preserving the body and status code. An unsupported `:language` returns 400, the same as `/execute`.
+The Playground gateway forwards `/languages/:language/sandboxes/:id` and any further sub-path (for example `/languages/:language/sandboxes/:id/execute` or `/languages/:language/sandboxes/:id/files`) to the matching runtime binding's `/sandboxes/:id[/...]`, for `GET`, `POST`, and `DELETE`, preserving the body and status code. An unsupported `:language` returns 400, the same as `/execute`.
 
 ## GET /languages
 
@@ -131,9 +169,15 @@ The request URL may use any placeholder hostname; the binding determines the des
 
 ## Differences from the Cloudflare Sandbox SDK
 
-This protocol mirrors the shape of the Cloudflare Sandbox SDK's code interpreter (`runCode`, `ExecutionResult`, `logs`/`results`/`error`), with a few differences:
+`@sandbox-workers/core`'s `getSandbox`, `createCodeContext`, `runCode`, the file methods, and the error classes match [`@cloudflare/sandbox`](https://github.com/cloudflare/sandbox-sdk) (checked against 0.12.9) in name, argument order, and return shape, so code written against that SDK ports with few changes. Differences that remain:
 
-- **No persistent context.** Every call boots a fresh Wasm instance; there is no `createCodeContext`/`context` concept and no state carries over between calls.
-- **No `exec`/files.** There is no shell execution or filesystem access from guest code.
-- **`envVars` values must be strings.** Pass complex data as a JSON string and parse it in guest code if needed.
-- **TypeScript needs no `language` option.** The Cloudflare Sandbox SDK requires `language: "typescript"` to transpile TypeScript separately. The JavaScript runtime here strips types automatically: it always parses submitted code as JavaScript first, so valid JavaScript never changes meaning, and only falls back to stripping TypeScript-only syntax when that parse fails.
+- **Entry point.** `getSandbox(env.SANDBOX, id)` takes a **Service Binding** to a separate runtime Worker, or a **Durable Object namespace** bound with `script_name` to it — never a same-Worker DO class the caller defines itself.
+- **One language per runtime Worker.** `language` is validated against the runtime's own language rather than selecting it; `typescript` is accepted on the JavaScript runtime (TypeScript-only syntax is stripped automatically, not transpiled on request).
+- **`results` entries are `text`/`json` only.** No `html`, `png`, or `chart` formats.
+- **`error.name` is the real guest error class** (for example a Python `ZeroDivisionError`), not a normalized SDK error name.
+- **No streaming.** `onStdout`/`onStderr`/`onResult`/`onError` all fire after the response arrives; there is no `runCodeStream`.
+- **`timeout`/`signal` bound the request, not the guest.** The Wasm engine's own fuel budget is what actually stops runaway guest code.
+- **No `exec`, processes, git, ports, buckets, backups, terminals, or `createSession`** (a shell session — unrelated to this API's own "sandbox").
+- **Files live only under `/workspace`.** No `readFileStream`, `watch`, or `checkChanges`.
+- **`deleteFile` accepts `{ recursive, force }`**; the SDK refuses to delete directories at all.
+- **Extensions not in the SDK:** `sandbox.getInfo()`; `ExecutionResult.context`, `.usage`, and `.durationMs`; `error.context.errno`; a hard cap of 8 code contexts per sandbox, with one interpreter resident in memory at a time.
