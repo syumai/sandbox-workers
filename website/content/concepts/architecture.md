@@ -14,7 +14,7 @@ Caller Worker (your app, or the Playground gateway)
   ├── getSandbox(env.Sandbox, "user-42")            @sandbox-workers/core client
   └── Sandbox Durable Object  (class from @sandbox-workers/core, no Wasm)
         owns: /workspace (files + directories), envVars, context registry, idle expiry
-        │  env[context.binding].fetch("/interpreters/<key>/execute", { code, envVars, workspace diff })
+        │  env[context.binding].executeInContext(key, { code, envVars, workspace manifest }, getFiles)  (RPC)
         ▼
 Runtime Worker, one per language   (@sandbox-workers/<language>, deployed privately)
   ├── POST /execute                stateless, unchanged
@@ -25,16 +25,17 @@ Runtime Worker, one per language   (@sandbox-workers/<language>, deployed privat
 
 **`Sandbox`** is a plain TypeScript class exported by `@sandbox-workers/core` — it does not extend `cloudflare:workers`'s `DurableObject` and has no build-time dependency on Workers types. Your own Worker re-exports it (`export { Sandbox } from "@sandbox-workers/core"`) and binds it with `durable_objects`; `getSandbox(env.Sandbox, id)` returns a typed client for one instance, keyed by the caller-chosen `id`. It owns `/workspace` (files and, since this design, empty directories too), `envVars`, the registry of code contexts, and idle expiry — but no Wasm engine at all: every code context is bound to a runtime Worker by the **name of a Service Binding** in your own environment, and every execution is proxied there.
 
-**`Interpreter`** is each runtime Worker's own Durable Object class (renamed in place from the earlier `Sandbox`), keyed by **the caller's `Sandbox` Durable Object's own id** — so two callers using the same sandbox id against the same runtime Worker never collide. It owns per-context memory snapshots and an in-memory-only mirror of `/workspace`, reconciled from a sync payload at the top of every execute call. There is no `files` table on this side any more: `/workspace` has exactly one source of truth, the caller's `Sandbox`.
+**`Interpreter`** is each runtime Worker's own Durable Object class (renamed in place from the earlier `Sandbox`), keyed by **the caller's `Sandbox` Durable Object's own id** — so two callers using the same sandbox id against the same runtime Worker never collide. It owns per-context memory snapshots and an in-memory-only mirror of `/workspace`, reconciled at the top of every `executeInContext` call by pulling whatever it's missing back from the `Sandbox` over a Workers RPC callback. There is no `files` table on this side any more: `/workspace` has exactly one source of truth, the caller's `Sandbox`.
 
 ## Request flow
 
-A code execution in a context makes two hops: your Worker calls its own `Sandbox` (over the Durable Object binding), which resolves the context, builds a workspace diff since the last call to that binding, and calls the binding's runtime Worker at `POST /interpreters/<key>/execute`. The runtime Worker forwards that to its own `Interpreter` (keyed by `<key>`, the sandbox's id), which reconciles its mirror, runs the code, snapshots memory, and reports a workspace diff back. The `Sandbox` applies that diff to its own tree and answers your Worker. A stateless call — stateless mode's free `runCode` against a Service Binding directly, or the stateful-mode fallback (`sandbox.interpreter.runCode({ binding })` against a `contexts: false` binding) — skips the `Interpreter` and the workspace mirror entirely: it's a single hop to the runtime Worker's plain `POST /execute`.
+A code execution in a context makes two hops, over Workers RPC rather than HTTP: your Worker calls its own `Sandbox` (over the Durable Object binding), which resolves the context and calls the binding's runtime Worker's `executeInContext(key, args, getFiles)` RPC method — `args.workspace` is only the *shape* of `/workspace` (directories and file hashes), and `getFiles` is a callback the runtime Worker forwards, still as an RPC stub, to its own `Interpreter` (keyed by `<key>`, the sandbox's id). The `Interpreter` reconciles its mirror (calling `getFiles` back for whatever content it's missing), runs the code, snapshots memory, and returns a workspace diff. The `Sandbox` applies that diff to its own tree and answers your Worker. A stateless call — stateless mode's free `runCode` against a Service Binding directly, or the stateful-mode fallback (`sandbox.interpreter.runCode({ binding })` against a `contexts: false` binding) — skips the `Interpreter` and the workspace mirror entirely: it's a single HTTP hop to the runtime Worker's plain `POST /execute`.
 
 ```text
 Your Worker → Sandbox DO → runtime Worker → Interpreter DO → Wasm engine
                   (context resolution,          (workspace mirror,
-                   workspace diff)                snapshot restore/save)
+                   RPC: executeInContext)         pull via getFiles,
+                                                   snapshot restore/save)
 ```
 
 Each runtime Worker (`engine/index.ts` and its per-language variants) re-exports a language package under `packages/<language>/src`. On the host side, that package transforms or prepares the submitted code — for example, JavaScript's `runtime/javascript.mjs` wraps the submitted code in an async IIFE before evaluation — and drives the engine through a small runtime layer in `runtime/*.mjs`. A stateless execution gets its own Wasm instance and linear memory every time; a code-context execution restores the engine from its stored snapshot instead of booting fresh (see [Code contexts](/concepts/code-contexts)).

@@ -346,6 +346,7 @@ test("applySync with a manifest deletes files not listed and reports a hash mism
   // b.txt wasn't in the manifest, so it's deleted; a.txt's hash matched, so it's kept.
   assert.deepEqual(ws.exists("/workspace/b.txt", "/workspace"), { exists: false });
   assert.equal(ws.read("/workspace/a.txt", "/workspace").content, "one");
-  // c.txt is named in the manifest but the mirror never received it -> resync.
+  // c.txt is named in the manifest but the mirror never received it -> the
+  // interpreter would pull it from the sandbox via getFiles.
   assert.deepEqual(result.missing, ["/workspace/c.txt"]);
 });

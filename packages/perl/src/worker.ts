@@ -1,5 +1,6 @@
 import wasm from "./engine.wasm";
 import build from "./engine-build.json";
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { ExecutionLimitError } from "../../../runtime/wasi.mjs";
 import archive from "./stdlib.bin";
 import {
@@ -8,7 +9,15 @@ import {
   restoreEmbeddedSession,
 } from "../../../runtime/embedded.mjs";
 import { createInterpreterClass } from "../../../runtime/interpreter.mjs";
-import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
+import {
+  ApiError,
+  errorBody,
+  errorResponse,
+  readExecution,
+  type GetWorkspaceFiles,
+  type InterpreterExecuteArgs,
+  type InterpreterExecuteRpcResult,
+} from "@sandbox-workers/core";
 
 const ENGINE_NAME = "Perl 5.42.2 / goccy v0.2.1";
 // Message for an /interpreters/:key/* route this Worker can't serve when it
@@ -36,6 +45,18 @@ export const Interpreter = createInterpreterClass({
 interface Env {
   INTERPRETER?: DurableObjectNamespace;
 }
+
+// The Interpreter Durable Object stub, as seen for the `executeInContext`
+// RPC method: `DurableObjectNamespace.get()` is untyped here (see `Env`
+// above), so this is asserted at the one call site that needs it rather than
+// threaded through the ambient ~`DurableObjectStub` type.
+type InterpreterStub = Fetcher & {
+  executeInContext(
+    key: string,
+    args: InterpreterExecuteArgs,
+    getFiles: GetWorkspaceFiles,
+  ): Promise<InterpreterExecuteRpcResult>;
+};
 
 const INTERPRETER_ROUTE = /^\/interpreters\/([^/]+)(\/.*)?$/;
 
@@ -78,8 +99,9 @@ async function handleExecute(request: Request): Promise<Response> {
   }
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+export default class extends WorkerEntrypoint<Env> {
+  async fetch(request: Request): Promise<Response> {
+    const env = this.env;
     const url = new URL(request.url);
     if (url.pathname === "/interpreter") {
       return Response.json(
@@ -116,5 +138,31 @@ export default {
     } catch (error) {
       return errorResponse(error);
     }
-  },
-} satisfies ExportedHandler<Env>;
+  }
+
+  // RPC method called by the `Sandbox` Durable Object (over the Service
+  // Binding to this Worker) for the context execute path -- see
+  // docs/sandbox-1-0-design.md, "Workspace mirror and sync protocol". Errors
+  // are returned as `{ ok: false, status, body }` rather than thrown (Workers
+  // RPC only serializes `name`/`message`/`stack` off a thrown `Error`, which
+  // would drop the `code`/`details`/HTTP status the sandbox relies on).
+  async executeInContext(
+    key: string,
+    args: InterpreterExecuteArgs,
+    getFiles: GetWorkspaceFiles,
+  ): Promise<InterpreterExecuteRpcResult> {
+    if (!INTERPRETER_KEY.test(key)) {
+      const { status, body } = errorBody(new ApiError(400, "Invalid interpreter key"));
+      return { ok: false, status, body };
+    }
+    if (!this.env.INTERPRETER) {
+      const { status, body } = errorBody(new ApiError(400, NO_INTERPRETER_BINDING));
+      return { ok: false, status, body };
+    }
+    const stub = this.env.INTERPRETER.get(this.env.INTERPRETER.idFromName(key)) as unknown as InterpreterStub;
+    // Forwarded directly: a stub received over RPC (`getFiles`, from the
+    // `Sandbox` Durable Object) may be forwarded over RPC again to another
+    // Worker/Durable Object, per Cloudflare's RPC contract.
+    return stub.executeInContext(key, args, getFiles);
+  }
+}

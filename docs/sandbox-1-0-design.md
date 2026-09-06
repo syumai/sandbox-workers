@@ -42,7 +42,7 @@ Caller Worker (your app, or the Playground gateway)
   ├── getSandbox(env.Sandbox, "user-42")            @sandbox-workers/core client
   └── Sandbox Durable Object  (class from @sandbox-workers/core, no Wasm)
         owns: /workspace (files + directories), envVars, context registry, idle expiry
-        │  env[context.binding].fetch("/interpreters/<key>/execute", { code, envVars, workspace diff })
+        │  env[context.binding].executeInContext(key, { code, envVars, workspace manifest }, getFiles)  (RPC)
         ▼
 Runtime Worker, one per language   (@sandbox-workers/<language>, deployed privately)
   ├── POST /execute                stateless, unchanged
@@ -140,66 +140,110 @@ default context for a binding is the oldest existing context with that
 `/workspace` has one source of truth: the sandbox Durable Object. Each
 interpreter keeps a mirror in memory so guest code sees ordinary files
 through WASI / the JS `fs` host functions, exactly as before. The mirror is
-brought up to date **inside every execute request** and the guest's
-changes flow back in the response. Directories are part of the sync (the
+brought up to date **inside every `executeInContext` call** and the guest's
+changes flow back in the result. Directories are part of the sync (the
 `Workspace` class gains directory support in `manifest()`/`serialize()`/
 `load()`, see "Workspace module").
 
-Request payload (`workspace` field of `POST /interpreters/:key/execute`):
+The context execute path is a **pull over Workers RPC**, not an HTTP push:
+the sandbox never sends file contents unless the interpreter asks for them.
+This replaces the earlier push-plus-resync handshake (the sandbox tracking a
+`sent: Map<binding, manifest>` of what each interpreter was last known to
+hold, sending only the diff, and retrying once on a `resync` response) with
+something simpler and race-free, made possible by three facts about Workers
+RPC: a function passed as an RPC argument becomes a stub the callee can call
+back during that call (auto-disposed once the call returns); a stub received
+over RPC may be forwarded over RPC again to another Worker/Durable Object;
+and `Uint8Array` is directly serializable, so file contents need no base64
+transcoding on the wire.
+
+`Sandbox.handleExecute` calls the binding directly as an RPC method:
 
 ```ts
-{
-  dirs: string[];                        // every directory under /workspace (absolute paths), full list
-  manifest: Record<string, string>;      // every file: absolute path -> content hash (Workspace.hashBytes)
-  files: Array<{ path: string; data: string /* base64 */; updatedAt: number }>;  // contents the interpreter may not have
+target.executeInContext(key, { contextId, code, envVars, workspace }, getFiles)
+```
+
+`workspace` (`WorkspaceManifest`) is the **shape** of `/workspace`, never its
+contents:
+
+```ts
+interface WorkspaceManifest {
+  dirs: string[];                    // every directory under /workspace (absolute paths), full list
+  manifest: Record<string, string>;  // every file: absolute path -> content hash (Workspace.hashBytes)
 }
 ```
 
-The sandbox keeps, **in memory only**, `sent: Map<binding, manifest>` — the
-manifest that binding's interpreter is known to hold after the last
-successful execute. `files` carries every file whose hash differs from (or
-is missing in) `sent.get(binding)`; after eviction `sent` is empty and the
-first execute per binding carries the whole workspace (≤ 16 MiB, base64 in
-JSON — accepted).
+`getFiles` is a plain closure over the sandbox's in-memory `workspace`:
+`(paths: string[]) => WorkspaceFileEntry[]`, `WorkspaceFileEntry` being
+`{ path, data: Uint8Array, updatedAt }`. It does a synchronous raw byte read
+per requested path and omits any path it doesn't recognize (never throws);
+it touches no Durable Object storage. Because `Sandbox.fetch` serializes
+every request through its own promise chain, the workspace cannot change
+while an `executeInContext` call is in flight, so `getFiles` is race-free
+without any locking of its own.
 
 The interpreter reconciles its mirror **before** running anything:
 
-1. create every directory in `dirs` (recursive), then apply `files`
-   (write), then delete every file in the mirror that is not in `manifest`,
-   then delete every directory in the mirror that is not in `dirs`
-   (deepest first);
-2. if `manifest` still names a path whose hash the mirror does not match
-   (the interpreter was evicted, or the sandbox's `sent` was wrong), answer
-   200 `{ resync: true, missing: string[] }` **without executing**; the
-   sandbox resends the same request with those files added (one retry; a
-   second `resync` is an `INTERNAL_ERROR`).
+1. create every directory in `dirs` (recursive), then delete every file in
+   the mirror that is not in `manifest`, then delete every directory in the
+   mirror that is not in `dirs` (deepest first) — via
+   `Workspace.applySync({ dirs, files: [], manifest })`, which also returns
+   `missing`: every manifest path whose hash still doesn't match;
+2. if `missing` is non-empty (a fresh interpreter, or one evicted since its
+   last execute), call `getFiles(missing)` once, validate what comes back
+   (each entry's `path` must be one of the requested paths, `data` a
+   `Uint8Array`, `updatedAt` a number), and apply it with a second
+   `applySync`. If paths are *still* missing after that — the sandbox itself
+   failed to provide them — the call fails with `INTERNAL_ERROR` (there is no
+   retry: the sandbox is the interpreter's only source of truth for
+   `/workspace`, so a second gap is a bug, not a race).
 
-Response payload after a run:
+`executeInContext`'s result (`InterpreterExecuteRpcResult`) reports errors as
+values, not thrown exceptions:
+
+```ts
+type InterpreterExecuteRpcResult =
+  | { ok: true; result: InterpreterExecuteResponse }
+  | { ok: false; status: number; body: Record<string, unknown> };
+```
+
+This is a direct consequence of how Workers RPC serializes a thrown `Error`:
+only `name`/`message`/`stack` survive the trip, which would silently drop
+the `code`/`details`/HTTP status the sandbox relies on to decide what to do
+next (`errorBody`/`errnoErrorBody` in `packages/core/src/protocol.ts` build
+the same `{ status, body }` shape the HTTP error responses use, so both
+transports share one source of truth for error shaping). On `ok: false`,
+`CONTEXT_NOT_FOUND` makes the sandbox drop the registry row and answer 404;
+every other error is relayed unchanged (the same status and body the HTTP
+protocol would have produced).
+
+A successful result's `InterpreterExecuteResponse.workspace`
+(`InterpreterSyncResponse`) is the diff produced by the run:
 
 ```ts
 {
   ...ExecutionResult,                    // code, language, engine, durationMs, logs, results, error?, usage?
   context: { id, cwd, executions, snapshotMs?, snapshot: SnapshotInfo | null },
   workspace: {
-    dirs: string[];                      // full directory list after the run
-    files: Array<{ path; data; updatedAt }>;  // created or updated by the run
-    deleted: string[];                   // files removed by the run
+    dirs: string[];                             // full directory list after the run
+    files: Array<{ path; data: Uint8Array; updatedAt }>;  // created or updated by the run
+    deleted: string[];                          // files removed by the run
   }
 }
 ```
 
-The sandbox applies `workspace` to its own tree (same order as above),
-persists the resulting file/directory diff in one transaction together
-with the context row, and sets `sent.set(binding, <its manifest now>)`. A
-guest error already makes the interpreter roll its mirror back to the
-pre-run state (`Workspace.restoreFrom`, unchanged), so the response then
-carries no changes. Interpreter execution is serialized per Durable Object
-and sandbox execution per sandbox, so a binding's mirror can only diverge
-by eviction, which the `resync` handshake covers.
+The sandbox applies `workspace` to its own tree (same order as above) and
+persists the resulting file/directory diff in one transaction together with
+the context row. A guest error already makes the interpreter roll its mirror
+back to the pre-run state (`Workspace.restoreFrom`, unchanged), so the
+result then carries no changes. Interpreter execution is serialized per
+Durable Object and sandbox execution per sandbox, so nothing but eviction
+can make an interpreter's mirror diverge from the manifest — which the
+`getFiles` pull covers, every time, without a dedicated retry protocol.
 
 File operations through `sandbox.writeFile()` and friends touch only the
-sandbox's tree; the next execute on each binding carries the diff. Nothing
-is pushed eagerly.
+sandbox's tree; the next execute on each binding pulls whatever that
+binding's interpreter turns out to be missing. Nothing is pushed eagerly.
 
 ## Wire protocol: client → sandbox Durable Object
 
@@ -252,17 +296,23 @@ execute.
 2. Resolve the context: by `contextId` (404 `CONTEXT_NOT_FOUND`), else by
    `binding` (default context, see above; for a `contexts: false` binding
    go to the stateless path and return), else 400.
-3. Build the sync payload from `sent.get(context.binding)`.
-4. `POST /interpreters/<key>/execute`; on `resync` retry once with the
-   missing files; on 404 `CONTEXT_NOT_FOUND` delete the registry row and
-   rethrow as 404 `CONTEXT_NOT_FOUND`; any other non-2xx `ErrorResponse`
-   is relayed unchanged (same status and body).
+3. Build the workspace manifest (`{ dirs, manifest }`, no contents) and a
+   `getFiles` closure over the sandbox's own workspace (see "Workspace
+   mirror and sync protocol").
+4. Call `target.executeInContext(key, { contextId, code, envVars, workspace }, getFiles)`
+   as an RPC method on the binding. A thrown error (transport failure, or the
+   binding predates `executeInContext`) becomes 502 `INTERNAL_ERROR`
+   ("Binding 'X' failed: ..."). An `{ ok: false }` result with
+   `CONTEXT_NOT_FOUND` deletes the registry row and rethrows as 404
+   `CONTEXT_NOT_FOUND`; any other `{ ok: false }` is relayed unchanged (same
+   status and body an HTTP `ErrorResponse` would carry).
 5. Apply `workspace`, update the context row (`cwd`, `executions`,
    `lastUsed`, `snapshot`), persist, touch the alarm, respond.
 
 ## Wire protocol: sandbox Durable Object → runtime Worker
 
-Over `env[binding].fetch(new Request("https://sandbox.internal<path>", ...))`.
+Every route except the context execute path is still
+`env[binding].fetch(new Request("https://sandbox.internal<path>", ...))`.
 The runtime Worker forwards `/interpreters/:key/...` to
 `env.INTERPRETER.get(idFromName(key))` with the prefix stripped and header
 `x-interpreter-key: <key>` (`key` must match `/^[A-Za-z0-9._-]{1,128}$/`).
@@ -273,28 +323,41 @@ Every route answers `ErrorResponse` on failure.
 | `GET /interpreter` | | `{ language, engine, contexts: boolean }` — served by every runtime Worker, no Durable Object involved. `contexts` is `false` for Ruby and for a Worker without an `INTERPRETER` binding |
 | `POST /interpreters/:key/contexts` | `{ id, cwd }` | `{ id, cwd, createdAt }` (201); 400 when over 8 contexts |
 | `DELETE /interpreters/:key/contexts/:id` | | `{ success: true }`; 404 `CONTEXT_NOT_FOUND` |
-| `POST /interpreters/:key/execute` | `{ contextId, code, envVars, workspace }` | see "Workspace mirror and sync protocol"; 404 `CONTEXT_NOT_FOUND` |
 | `DELETE /interpreters/:key` | | `{ success: true }` — wipes snapshots and contexts |
 | `POST /execute` | `{ code, envVars?, language? }` | unchanged stateless execution |
 
+The context execute path is **not** one of these HTTP routes: it is the RPC
+method `executeInContext(key, args, getFiles)`, called directly on the
+binding (`target.executeInContext(...)`, where `target` is the same
+Service Binding used for `fetch` above) and forwarded, unchanged, by the
+runtime Worker's `WorkerEntrypoint.executeInContext` to
+`env.INTERPRETER.get(idFromName(key)).executeInContext(key, args, getFiles)`
+— the `getFiles` stub travels across both hops. `args` is
+`InterpreterExecuteArgs` (`{ contextId, code, envVars, workspace }`); the
+result is `InterpreterExecuteRpcResult` (`{ ok: true, result } | { ok: false,
+status, body }`), detailed in "Workspace mirror and sync protocol" above.
+Because it is an RPC method rather than an HTTP route, there is no
+dedicated request-size cap for it — Workers RPC's own 32 MiB serialized
+message limit comfortably covers a 16 MiB workspace.
+
 A runtime Worker without an `INTERPRETER` binding (Ruby always; others
-with `--stateless`) answers every `/interpreters/*` request with 400
+with `--stateless`) answers every `/interpreters/*` HTTP request with 400
 `VALIDATION_FAILED` ("Code contexts are not supported for ruby" /
 "Code contexts are not supported: this Worker has no INTERPRETER Durable
-Object binding"). The old `/sandboxes/:id/*` routes, the context-less
-stateless `execute` under them, `handleStatelessSandboxRoute`, and
-`readExecution`'s `rejectContextId` option are removed. The request size
-cap for `/interpreters/:key/execute` is `MAX_FILES_REQUEST_BYTES`-scale at
-minimum; use a dedicated `MAX_SYNC_REQUEST_BYTES = 24 MiB` (16 MiB of
-files as base64 plus manifest) for that route only.
+Object binding"), and its `executeInContext` RPC method returns the same
+error as `{ ok: false, status: 400, body }`. The old `/sandboxes/:id/*`
+routes, the context-less stateless `execute` under them,
+`handleStatelessSandboxRoute`, and `readExecution`'s `rejectContextId`
+option are removed.
 
-The interpreter's `POST /execute` handler keeps everything `runtime/sandbox.mjs`'s
-`_execute` did (ensure instance, restore from chunks, run, snapshot, chunk
-diff, persist in one transaction) minus the `files` table, plus the mirror
-reconciliation before the run and the workspace diff (via
-`Workspace.changes(since)` against the post-sync manifest) in the response.
-`cwd` reported by the guest is persisted in the interpreter's context row
-and echoed to the sandbox, which mirrors it.
+The interpreter's `executeInContext` method keeps everything
+`runtime/sandbox.mjs`'s old `_execute` did (ensure instance, restore from
+chunks, run, snapshot, chunk diff, persist in one transaction) minus the
+`files` table, plus the mirror reconciliation (create dirs, pull whatever's
+missing via `getFiles`, delete what's no longer wanted) before the run and
+the workspace diff (via `Workspace.changes(since)` against the post-sync
+manifest) in the result. `cwd` reported by the guest is persisted in the
+interpreter's context row and echoed to the sandbox, which mirrors it.
 
 ## Workspace module
 
@@ -476,12 +539,14 @@ UI (`ui/main.js`): no protocol change is needed (`GET` info still has
   substitute is not available — implement a minimal fake of
   `storage.sql.exec` over a `Map`, or use `node:sqlite` (`DatabaseSync`,
   Node ≥ 22.5) behind the same `exec(query, ...params)` shape) and fake
-  runtime bindings that record `/interpreter`, `/interpreters/...`
-  requests and reply with canned bodies: context creation and registry,
-  default context per binding, stateless fallback for `contexts: false`,
-  sync payload contents (`sent` diffing, `resync` retry, response
-  application), `CONTEXT_NOT_FOUND` propagation, unknown binding, expiry
-  cleanup calling `DELETE /interpreters/<key>`.
+  runtime bindings that record `/interpreter`, `/interpreters/...` HTTP
+  requests plus each `executeInContext`/`getFiles` RPC call: context
+  creation and registry, default context per binding, stateless fallback
+  for `contexts: false`, the `getFiles` pull (one call per execute only
+  when something's missing, exactly the missing paths, nothing after
+  eviction with no simulated resync), a short `getFiles` answer producing
+  `INTERNAL_ERROR`, `CONTEXT_NOT_FOUND` propagation from an `{ ok: false }`
+  result, unknown binding, expiry cleanup calling `DELETE /interpreters/<key>`.
 - `tests/sandboxes.mjs` (gateway, `wrangler dev`): same scenarios through
   the same URLs, `SandboxInfo` shape updated, plus a **cross-language**
   scenario: one id via `/languages/javascript/...` and `/languages/python/...`;

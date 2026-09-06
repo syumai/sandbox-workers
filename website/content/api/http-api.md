@@ -105,26 +105,34 @@ These routes exist only when the runtime Worker has an `INTERPRETER` Durable Obj
 | --- | --- | --- |
 | `POST /interpreters/:key/contexts` | `{ id, cwd }` | `{ id, cwd, createdAt }` (201); 400 when over 8 contexts |
 | `DELETE /interpreters/:key/contexts/:id` | | `{ success: true }`; 404 `CONTEXT_NOT_FOUND` |
-| `POST /interpreters/:key/execute` | `{ contextId, code, envVars, workspace }` | see [Workspace sync payload](#workspace-sync-payload) below; 404 `CONTEXT_NOT_FOUND` |
 | `DELETE /interpreters/:key` | | `{ success: true }` — wipes this interpreter's snapshots and contexts |
 
-Context ids are minted by the sandbox and passed in on create — the interpreter never generates its own. `envVars` on `POST /interpreters/:key/execute` arrives flat and already merged (sandbox-level, context-level, and call-level `envVars`, computed by the sandbox) — the interpreter applies it as-is.
+Context ids are minted by the sandbox and passed in on create — the interpreter never generates its own.
 
-#### Workspace sync payload
+Running code in a context is **not** an HTTP route: it's the Workers RPC method `executeInContext(key, args, getFiles)`, called directly on the runtime Worker binding and forwarded unchanged to `env.INTERPRETER.get(idFromName(key)).executeInContext(key, args, getFiles)`. `args.envVars` arrives flat and already merged (sandbox-level, context-level, and call-level `envVars`, computed by the sandbox) — the interpreter applies it as-is. See [Workspace sync: a pull over RPC](#workspace-sync-a-pull-over-rpc) below.
 
-`/workspace` has one source of truth, the `Sandbox` Durable Object; each interpreter keeps an in-memory mirror, reconciled on every `POST /interpreters/:key/execute` call. The request's `workspace` field:
+#### Workspace sync: a pull over RPC
+
+`/workspace` has one source of truth, the `Sandbox` Durable Object; each interpreter keeps an in-memory mirror, reconciled on every `executeInContext` call. `args.workspace` carries the **shape** of `/workspace`, never its contents:
 
 ```ts
-{
-  dirs: string[];                        // every directory under /workspace (absolute paths), full list
-  manifest: Record<string, string>;      // every file: absolute path -> content hash
-  files: Array<{ path: string; data: string /* base64 */; updatedAt: number }>;  // contents the interpreter may not have
+interface WorkspaceManifest {
+  dirs: string[];                    // every directory under /workspace (absolute paths), full list
+  manifest: Record<string, string>;  // every file: absolute path -> content hash
 }
 ```
 
-The interpreter reconciles its mirror before running anything: create every directory in `dirs`, apply `files`, delete anything in the mirror that isn't in `manifest`/`dirs`. If `manifest` still names a path the interpreter can't match (it was evicted, or the sandbox's view was stale), it answers 200 with `{ resync: true, missing: string[] }` **without executing**; the sandbox resends the same request with those files added. A second `resync` on the retry is `INTERNAL_ERROR`.
+The interpreter reconciles its mirror before running anything: create every directory in `dirs`, delete anything in the mirror that isn't in `manifest`/`dirs`. If `manifest` still names a path the interpreter can't match (it was evicted, or never held this workspace), it calls back `getFiles(missing)` — an RPC stub the sandbox passed as an argument — to pull exactly those paths' contents, then reconciles again. A path still missing after that is `INTERNAL_ERROR`: the sandbox is the interpreter's only source of truth for `/workspace`, so this means the sandbox itself failed to answer `getFiles` correctly, not a race to retry.
 
-A successful (non-`resync`) response carries `ExecutionResult`'s fields, the interpreter's own view of the context, and the workspace diff:
+`executeInContext` never throws to report an application error — Workers RPC only serializes `name`/`message`/`stack` off a thrown `Error`, which would drop the `code`/details/HTTP status the sandbox needs. Its result is always one of:
+
+```ts
+type InterpreterExecuteRpcResult =
+  | { ok: true; result: InterpreterExecuteResponse }
+  | { ok: false; status: number; body: Record<string, unknown> };  // same shape an ErrorResponse would carry
+```
+
+A successful result's `InterpreterExecuteResponse` carries `ExecutionResult`'s fields, the interpreter's own view of the context, and the workspace diff:
 
 ```ts
 {
@@ -132,14 +140,14 @@ A successful (non-`resync`) response carries `ExecutionResult`'s fields, the int
   executionCount: number,
   context: { id, cwd, executions, snapshotMs?, snapshot: SnapshotInfo | null },
   workspace: {
-    dirs: string[];                      // full directory list after the run
-    files: Array<{ path; data; updatedAt }>;  // created or updated by the run
-    deleted: string[];                   // files removed by the run
+    dirs: string[];                             // full directory list after the run
+    files: Array<{ path; data: Uint8Array; updatedAt }>;  // created or updated by the run
+    deleted: string[];                          // files removed by the run
   }
 }
 ```
 
-The `Sandbox` Durable Object applies `workspace` to its own tree, persists the diff, and strips `workspace` (and replaces `context`/`executionCount` with its own registry's view) before answering the caller — see `ExecutionResult.context` in [Code interpreter](/api/interpreter#types) for the shape the client actually sees. This route has its own, larger request-size cap (24 MiB) to accommodate a full workspace re-sync after eviction.
+The `Sandbox` Durable Object applies `workspace` to its own tree, persists the diff, and strips `workspace` (and replaces `context`/`executionCount` with its own registry's view) before answering the caller — see `ExecutionResult.context` in [Code interpreter](/api/interpreter#types) for the shape the client actually sees. Because this is an RPC call rather than an HTTP request, there's no dedicated request-size cap for it — Workers RPC's own 32 MiB serialized-message limit comfortably covers the 16 MiB workspace, and `Uint8Array` file contents need no base64 transcoding on the wire.
 
 ## Wire protocol: client → `Sandbox` Durable Object
 

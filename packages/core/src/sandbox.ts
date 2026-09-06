@@ -5,9 +5,13 @@
 // directories), envVars, the context registry, and idle expiry -- but no
 // Wasm: code contexts are bound to a runtime Worker (one language each) by
 // the name of a Service Binding in the caller's own environment, and every
-// execution is proxied to that binding's interpreter Durable Object
-// (`runtime/interpreter.mjs`), which mirrors `/workspace` in memory and
-// reconciles it on every request (see "Workspace mirror and sync protocol").
+// execution calls that binding's `executeInContext` RPC method, forwarded to
+// its interpreter Durable Object (`runtime/interpreter.mjs`), which mirrors
+// `/workspace` in memory and reconciles it on every call by pulling whatever
+// it's missing back from this sandbox over the `getFiles` RPC callback (see
+// "Workspace mirror and sync protocol"). There is no push and no HTTP resync
+// handshake: this sandbox never sends file contents unless the interpreter
+// asks for them.
 //
 // This is a plain class -- it does not extend `cloudflare:workers`'s
 // `DurableObject` and does not import from `cloudflare:workers` at all, so
@@ -20,9 +24,13 @@ import {
   MAX_CODE_BYTES,
   MAX_FILES_REQUEST_BYTES,
   MAX_REQUEST_BYTES,
+  type GetWorkspaceFiles,
+  type InterpreterExecuteArgs,
   type InterpreterExecuteResponse,
+  type InterpreterExecuteRpcResult,
   type InterpreterInfo,
-  type InterpreterSyncRequest,
+  type InterpreterWorkspaceManifest,
+  type WorkspaceFileEntry,
 } from "./protocol.js";
 import { ErrorCode, Operation, type OperationType } from "./errors.js";
 import { Workspace, WorkspaceError, type SerializedRow } from "./workspace.js";
@@ -61,6 +69,23 @@ export interface SandboxEnv {
 }
 
 type Fetcher = { fetch(request: Request): Promise<Response> };
+/**
+ * A runtime Worker binding as seen for the context execute path: a Service
+ * Binding (`fetch`, used by every other route) that also exposes the
+ * `executeInContext` RPC method (Workers RPC promise-pipelines every method
+ * call through the binding, so `target.executeInContext(...)` needs no
+ * feature probe -- see the "Unknown binding" check below, which still goes
+ * through `fetch` alone). Not declared `extends Fetcher` structurally
+ * further than that: a real Service Binding to a Worker exporting a
+ * `WorkerEntrypoint` subclass satisfies this at runtime.
+ */
+type RuntimeBinding = Fetcher & {
+  executeInContext(
+    key: string,
+    args: InterpreterExecuteArgs,
+    getFiles: GetWorkspaceFiles,
+  ): Promise<InterpreterExecuteRpcResult>;
+};
 
 // --- constants -----------------------------------------------------------
 
@@ -279,8 +304,6 @@ export class Sandbox {
   private changesSince: Map<string, string> | undefined;
   /** Directory paths last written to the `files` table, kept in memory so a directory diff never needs a read. */
   private persistedDirs: Set<string> | null = null;
-  /** In-memory only: per-binding file manifest ({path: hash}) that binding's interpreter is known to hold after the last successful execute. Empty after eviction. */
-  private sent: Map<string, Record<string, string>> = new Map();
   private alarmAt: number | null = null;
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -455,15 +478,24 @@ export class Sandbox {
     return this.state.id.toString();
   }
 
+  // The only "does this binding exist" check anywhere on the execute path:
+  // a real Service Binding always reads every property as a function (RPC
+  // promise pipelining), so this checks `fetch` specifically rather than
+  // feature-detecting `executeInContext` -- see `RuntimeBinding` above.
+  private resolveBinding(binding: string): RuntimeBinding {
+    const target = this.env[binding] as RuntimeBinding | undefined;
+    if (!target || typeof target.fetch !== "function")
+      throw new ApiError(400, `Unknown binding '${binding}'`);
+    return target;
+  }
+
   private async fetchBinding(
     binding: string,
     method: string,
     path: string,
     body?: unknown,
   ): Promise<Response> {
-    const target = this.env[binding] as Fetcher | undefined;
-    if (!target || typeof target.fetch !== "function")
-      throw new ApiError(400, `Unknown binding '${binding}'`);
+    const target = this.resolveBinding(binding);
     const init: RequestInit = { method };
     if (body !== undefined) {
       init.headers = { "content-type": "application/json" };
@@ -638,7 +670,6 @@ export class Sandbox {
     this.workspace = null;
     this.changesSince = undefined;
     this.persistedDirs = null;
-    this.sent = new Map();
     this.alarmAt = null;
   }
 
@@ -659,7 +690,8 @@ export class Sandbox {
 
   // Requests are serialized with a promise chain: fetch() would otherwise
   // interleave at any await point, racing two executions against the same
-  // in-memory workspace/sent state.
+  // in-memory workspace -- this is also what makes `getFiles` (see
+  // `handleExecute`) race-free.
   async fetch(request: Request): Promise<Response> {
     const run = () => this.handle(request);
     const next = this.queue.then(run, run);
@@ -840,40 +872,56 @@ export class Sandbox {
     const workspace = this.ensureWorkspace();
     const envVars = computeExecutionEnv(sandboxMeta.envVars, context.envVars, callEnvVars);
     const key = this.interpreterKey();
+    const target = this.resolveBinding(context.binding);
+    const payload = this.buildSyncPayload(workspace);
 
-    let payload = this.buildSyncPayload(workspace, context.binding);
-    let response = await this.fetchBinding(context.binding, "POST", `/interpreters/${key}/execute`, {
-      contextId: context.id,
-      code: body.code,
-      envVars,
-      workspace: payload,
-    });
-    let data = await this.readInterpreterResponse(response, context);
+    // `getFiles` is passed as an RPC argument to `target.executeInContext`;
+    // Workers RPC turns it into a stub the interpreter can call back during
+    // this call (auto-disposed once the call returns), and that stub may
+    // itself be forwarded over RPC again (runtime Worker entrypoint ->
+    // Interpreter Durable Object) -- see docs/sandbox-1-0-design.md. It
+    // reads the in-memory workspace directly (no Durable Object storage
+    // touched) and is race-free: `Sandbox.fetch` serializes every request
+    // through `this.queue`, so nothing else can mutate `workspace` while
+    // this RPC call is in flight.
+    const getFiles: GetWorkspaceFiles = (paths) => {
+      const entries: WorkspaceFileEntry[] = [];
+      for (const path of paths) {
+        try {
+          const { data, updatedAt } = workspace.readBytes(path, "/workspace");
+          entries.push({ path, data, updatedAt });
+        } catch {
+          // Unknown path: omitted, not an error (see `GetWorkspaceFiles`'s contract).
+        }
+      }
+      return entries;
+    };
 
-    if ("resync" in data && data.resync) {
-      const missingFiles = (data.missing as string[]).map((path) => {
-        const read = workspace.read(path, "/workspace", { encoding: "base64" });
-        return { path, data: read.content, updatedAt: read.updatedAt };
-      });
-      payload = { ...payload, files: [...payload.files, ...missingFiles] };
-      response = await this.fetchBinding(context.binding, "POST", `/interpreters/${key}/execute`, {
-        contextId: context.id,
-        code: body.code,
-        envVars,
-        workspace: payload,
-      });
-      data = await this.readInterpreterResponse(response, context);
-      if ("resync" in data && data.resync)
-        throw new ApiError(500, "Interpreter requested a second resync", ErrorCode.INTERNAL_ERROR);
+    let rpcResult: InterpreterExecuteRpcResult;
+    try {
+      rpcResult = await target.executeInContext(
+        key,
+        { contextId: context.id, code: body.code, envVars, workspace: payload },
+        getFiles,
+      );
+    } catch (error) {
+      // A thrown error means the RPC call itself failed (transport failure,
+      // or `executeInContext` missing on an old runtime deployment) -- not
+      // an application-level error, which the interpreter returns as
+      // `{ ok: false, ... }` instead of throwing (see `InterpreterExecuteRpcResult`).
+      throw new ApiError(
+        502,
+        `Binding '${context.binding}' failed: ${error instanceof Error ? error.message : String(error)}`,
+        ErrorCode.INTERNAL_ERROR,
+      );
     }
+    const result = this.applyInterpreterResult(rpcResult, context);
 
-    const result = data as unknown as InterpreterExecuteResponse;
     workspace.applySync({
       dirs: result.workspace.dirs,
       files: result.workspace.files,
       deleted: result.workspace.deleted,
     });
-    this.sent.set(context.binding, workspace.manifest().files);
 
     context.executions++;
     context.lastUsed = new Date().toISOString();
@@ -896,54 +944,31 @@ export class Sandbox {
     });
   }
 
-  private buildSyncPayload(workspace: Workspace, binding: string): InterpreterSyncRequest {
+  // The shape of /workspace, no contents -- everything the interpreter
+  // needs to reconcile its mirror before pulling whatever it's missing via
+  // `getFiles` (see docs/sandbox-1-0-design.md, "Workspace mirror and sync
+  // protocol").
+  private buildSyncPayload(workspace: Workspace): InterpreterWorkspaceManifest {
     const manifest = workspace.manifest();
-    const sentManifest = this.sent.get(binding);
-    const files: InterpreterSyncRequest["files"] = [];
-    for (const [path, hash] of Object.entries(manifest.files)) {
-      if (!sentManifest || sentManifest[path] !== hash) {
-        const read = workspace.read(path, "/workspace", { encoding: "base64" });
-        files.push({ path, data: read.content, updatedAt: read.updatedAt });
-      }
-    }
-    return { dirs: manifest.dirs, manifest: manifest.files, files };
+    return { dirs: manifest.dirs, manifest: manifest.files };
   }
 
-  // Parses the interpreter's execute response, handling the two non-2xx
-  // cases the sandbox understands itself (CONTEXT_NOT_FOUND: drop the
-  // registry row and re-throw as 404; anything else: relay unchanged) before
-  // returning the parsed body (a `resync` payload or an `InterpreterExecuteResponse`).
-  private async readInterpreterResponse(
-    response: Response,
+  // Unwraps `executeInContext`'s RPC result, handling the one non-success
+  // case the sandbox understands itself (CONTEXT_NOT_FOUND: drop the
+  // registry row and re-throw as 404) before relaying anything else
+  // unchanged (same status and body the HTTP protocol would have produced).
+  private applyInterpreterResult(
+    rpcResult: InterpreterExecuteRpcResult,
     context: ContextRecord,
-  ): Promise<Record<string, unknown>> {
-    const text = await response.text();
-    let data: Record<string, unknown>;
-    try {
-      data = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      throw new RelayedResponse(
-        new Response(text, {
-          status: response.status,
-          headers: { "content-type": "application/json", "cache-control": "no-store" },
-        }),
-      );
+  ): InterpreterExecuteResponse {
+    if (rpcResult.ok) return rpcResult.result;
+    if (rpcResult.body.code === ErrorCode.CONTEXT_NOT_FOUND) {
+      this.deleteContextRow(context.id);
+      throw new ApiError(404, `Code context '${context.id}' not found`, ErrorCode.CONTEXT_NOT_FOUND, {
+        contextId: context.id,
+      });
     }
-    if (!response.ok) {
-      if (data.code === ErrorCode.CONTEXT_NOT_FOUND) {
-        this.deleteContextRow(context.id);
-        throw new ApiError(404, `Code context '${context.id}' not found`, ErrorCode.CONTEXT_NOT_FOUND, {
-          contextId: context.id,
-        });
-      }
-      throw new RelayedResponse(
-        new Response(text, {
-          status: response.status,
-          headers: { "content-type": "application/json", "cache-control": "no-store" },
-        }),
-      );
-    }
-    return data;
+    throw new RelayedResponse(json(rpcResult.body, { status: rpcResult.status }));
   }
 
   private async handleFiles(request: Request, sandboxMeta: SandboxMeta): Promise<Response> {

@@ -10,14 +10,6 @@ import {
 export const MAX_REQUEST_BYTES = 96 * 1024;
 /** Session file operations carry up to a 1 MiB file as base64, so they get a larger cap. */
 export const MAX_FILES_REQUEST_BYTES = 2 * 1024 * 1024;
-/**
- * `POST /interpreters/:key/execute`'s workspace sync payload carries up to
- * the full 16 MiB workspace as base64 (~21 MiB) plus its manifest, so it gets
- * a dedicated, larger cap than every other route (see
- * docs/sandbox-1-0-design.md, "Wire protocol: sandbox Durable Object ->
- * runtime Worker").
- */
-export const MAX_SYNC_REQUEST_BYTES = 24 * 1024 * 1024;
 export const MAX_CODE_BYTES = 64 * 1024;
 const ENV_VAR_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -93,29 +85,70 @@ export interface ExecutionResult {
 }
 
 /**
- * The `workspace` field of `POST /interpreters/:key/execute`'s request body
- * (see docs/sandbox-1-0-design.md, "Workspace mirror and sync protocol").
+ * Sent by the `Sandbox` Durable Object on every context execute: the shape
+ * of `/workspace`, no contents (see docs/sandbox-1-0-design.md, "Workspace
+ * mirror and sync protocol"). Named `InterpreterWorkspaceManifest` rather
+ * than `WorkspaceManifest` to avoid a clash with `workspace.ts`'s
+ * `WorkspaceManifest` (`{ dirs, files: Record<string, string> }`), whose
+ * `files` field holds the same content as this type's `manifest` under a
+ * different key -- not the same shape.
  */
-export interface InterpreterSyncRequest {
+export interface InterpreterWorkspaceManifest {
   /** Every directory under /workspace (absolute paths), full list. */
   dirs: string[];
   /** Every file: absolute path -> content hash (`Workspace.hashBytes`). */
   manifest: Record<string, string>;
-  /** Contents the interpreter may not have yet. */
-  files: Array<{ path: string; data: string; updatedAt: number }>;
+}
+
+/** One file's contents on the RPC wire: raw bytes, no base64 transcoding. */
+export interface WorkspaceFileEntry {
+  path: string;
+  data: Uint8Array;
+  updatedAt: number;
 }
 
 /**
- * The `workspace` field of `POST /interpreters/:key/execute`'s response body.
+ * Callback the `Sandbox` Durable Object passes over RPC to
+ * `executeInContext`; the interpreter calls it once, before executing, for
+ * the paths whose hash it doesn't hold. Returns only the paths it could
+ * read -- unknown paths are omitted, not erroring.
+ */
+export type GetWorkspaceFiles = (
+  paths: string[],
+) => WorkspaceFileEntry[] | Promise<WorkspaceFileEntry[]>;
+
+/** Arguments to the runtime Worker entrypoint's `executeInContext` RPC method. */
+export interface InterpreterExecuteArgs {
+  contextId: string;
+  code: string;
+  envVars: Record<string, string>;
+  workspace: InterpreterWorkspaceManifest;
+}
+
+/**
+ * The `workspace` field of `executeInContext`'s successful result.
  */
 export interface InterpreterSyncResponse {
   /** Full directory list after the run. */
   dirs: string[];
   /** Files created or updated by the run. */
-  files: Array<{ path: string; data: string; updatedAt: number }>;
+  files: WorkspaceFileEntry[];
   /** Files removed by the run. */
   deleted: string[];
 }
+
+/**
+ * Result of the `executeInContext` RPC method (runtime Worker entrypoint and
+ * interpreter Durable Object). Workers RPC serializes only `name`/`message`/
+ * `stack` of a thrown `Error`, which would drop the `code`/`details`/HTTP
+ * status the `Sandbox` Durable Object relies on -- so errors are returned as
+ * values instead of thrown. `CONTEXT_NOT_FOUND` makes the sandbox drop the
+ * registry row and answer 404; every other error is relayed unchanged (same
+ * status and body the HTTP protocol would have produced).
+ */
+export type InterpreterExecuteRpcResult =
+  | { ok: true; result: InterpreterExecuteResponse }
+  | { ok: false; status: number; body: Record<string, unknown> };
 
 /**
  * Body of `GET /interpreter`, served by every runtime Worker without a
@@ -130,9 +163,9 @@ export interface InterpreterInfo {
 }
 
 /**
- * The runtime-side body of a successful (non-`resync`) `POST
- * /interpreters/:key/execute` response: `ExecutionResult`'s fields (minus
- * its caller-facing `context`) plus the interpreter's own `context` (which
+ * The runtime-side `result` of a successful `executeInContext` RPC call
+ * (see `InterpreterExecuteRpcResult`): `ExecutionResult`'s fields (minus its
+ * caller-facing `context`) plus the interpreter's own `context` (which
  * carries `snapshot`, unlike `ExecutionResult.context`) and the `workspace`
  * diff. See docs/sandbox-1-0-design.md, "Workspace mirror and sync
  * protocol". Consumed by the `Sandbox` Durable Object (`sandbox.ts`), which
@@ -348,8 +381,17 @@ export async function readBody(
   return data;
 }
 
-/** Emits `ErrorResponse` (see docs/sdk-parity-design.md, "Errors"). */
-export function errorResponse(error: unknown): Response {
+/**
+ * Builds the `{ status, body }` an `ErrorResponse` would carry (see
+ * docs/sdk-parity-design.md, "Errors"), without wrapping it in a `Response`.
+ * Shared by the HTTP path (`errorResponse`, below) and the RPC path
+ * (`executeInContext`'s `{ ok: false, status, body }`, see
+ * docs/sandbox-1-0-design.md): Workers RPC only serializes `name`/`message`/
+ * `stack` off a thrown `Error`, so an RPC method that wants to report
+ * `code`/`details`/HTTP status must return them as a plain value instead of
+ * throwing, using this same shape.
+ */
+export function errorBody(error: unknown): { status: number; body: Record<string, unknown> } {
   let payload: ErrorResponse;
   if (error instanceof ApiError) {
     payload = {
@@ -371,26 +413,32 @@ export function errorResponse(error: unknown): Response {
       timestamp: new Date().toISOString(),
     };
   }
-  return Response.json(payload, {
-    status: payload.httpStatus,
+  return { status: payload.httpStatus, body: payload as unknown as Record<string, unknown> };
+}
+
+/** Emits `ErrorResponse` (see docs/sdk-parity-design.md, "Errors"). */
+export function errorResponse(error: unknown): Response {
+  const { status, body } = errorBody(error);
+  return Response.json(body, {
+    status,
     headers: { "cache-control": "no-store" },
   });
 }
 
 /**
- * Builds an `ErrorResponse` for a workspace errno (see
- * docs/sdk-parity-design.md, "Errors"). Used by the runtime Durable Object
- * to report filesystem failures without depending on `ApiError`/`SandboxError`.
+ * Builds the `{ status, body }` an errno `ErrorResponse` would carry -- the
+ * `errorBody` counterpart for workspace errno failures (see `errnoErrorResponse`
+ * below for the HTTP wrapper and docs/sdk-parity-design.md, "Errors").
  * `codeOverride`, when given, replaces the errno's usual `errorCodeForErrno`
  * mapping (used by `mkdir`, whose failures are always `FILESYSTEM_ERROR` per
  * the SDK, while `context.errno` still carries the Node-style code).
  */
-export function errnoErrorResponse(
+export function errnoErrorBody(
   errno: string,
   message: string,
   context: { path?: string; operation?: OperationType; [key: string]: unknown },
   codeOverride?: ErrorCode,
-): Response {
+): { status: number; body: Record<string, unknown> } {
   const code = codeOverride ?? errorCodeForErrno(errno);
   const httpStatus = httpStatusForCode(code);
   const payload: ErrorResponse = {
@@ -401,8 +449,23 @@ export function errnoErrorResponse(
     timestamp: new Date().toISOString(),
     ...(context.operation !== undefined ? { operation: context.operation } : {}),
   };
-  return Response.json(payload, {
-    status: httpStatus,
+  return { status: httpStatus, body: payload as unknown as Record<string, unknown> };
+}
+
+/**
+ * Builds an `ErrorResponse` for a workspace errno (see
+ * docs/sdk-parity-design.md, "Errors"). Used by the runtime Durable Object
+ * to report filesystem failures without depending on `ApiError`/`SandboxError`.
+ */
+export function errnoErrorResponse(
+  errno: string,
+  message: string,
+  context: { path?: string; operation?: OperationType; [key: string]: unknown },
+  codeOverride?: ErrorCode,
+): Response {
+  const { status, body } = errnoErrorBody(errno, message, context, codeOverride);
+  return Response.json(body, {
+    status,
     headers: { "cache-control": "no-store" },
   });
 }
