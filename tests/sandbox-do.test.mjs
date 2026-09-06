@@ -93,14 +93,23 @@ function errorResponse(status, code, message, context = {}) {
 /**
  * A fake runtime Worker + interpreter Durable Object for one language:
  * serves GET /interpreter, POST/DELETE /interpreters/<key>/contexts[/:id],
- * POST /interpreters/<key>/execute (with the same mirror-reconciliation /
- * resync contract as runtime/interpreter.mjs, reusing the real `Workspace`
- * class), DELETE /interpreters/<key>, and POST /execute (stateless).
+ * DELETE /interpreters/<key>, and POST /execute (stateless) over `fetch` --
+ * plus the `executeInContext(key, args, getFiles)` RPC method the real
+ * runtime Worker forwards to its Interpreter Durable Object (see
+ * runtime/interpreter.mjs), reusing the real `Workspace` class for the
+ * mirror-reconciliation / pull contract. `calls` records HTTP calls;
+ * `executeCalls` records each `executeInContext` call's `args`;
+ * `getFilesCalls` records the `paths` array passed to each `getFiles` call.
  */
 function makeInterpreter({ language, engine, contexts = true }) {
   let mirror = new Workspace();
   const contextsById = new Map();
   const calls = [];
+  const executeCalls = [];
+  const getFilesCalls = [];
+  // Hook for the "getFiles returns fewer entries than asked" test: applied
+  // to whatever `getFiles` returns before the interpreter validates/applies it.
+  let transformPulled = (pulled) => pulled;
 
   async function fetch(request) {
     const url = new URL(request.url);
@@ -144,54 +153,6 @@ function makeInterpreter({ language, engine, contexts = true }) {
       return jsonResponse({ success: true });
     }
 
-    const executeMatch = /^\/interpreters\/[^/]+\/execute$/.exec(path);
-    if (method === "POST" && executeMatch) {
-      const context = contextsById.get(body.contextId);
-      if (!context)
-        return errorResponse(404, "CONTEXT_NOT_FOUND", `Code context '${body.contextId}' not found`, {
-          contextId: body.contextId,
-        });
-      const { missing } = mirror.applySync({
-        dirs: body.workspace.dirs,
-        files: body.workspace.files,
-        manifest: body.workspace.manifest,
-      });
-      if (missing.length > 0) return jsonResponse({ resync: true, missing });
-
-      const since = mirror.changes().snapshot;
-      // The "guest program" is a tiny JSON command interpreted directly
-      // against the mirror, so tests can drive concrete workspace mutations
-      // without a real Wasm engine.
-      const command = JSON.parse(body.code);
-      const results = [];
-      if (command.op === "write") {
-        mirror.write(command.path, "/workspace", command.content ?? "");
-      } else if (command.op === "mkdir") {
-        mirror.mkdir(command.path, "/workspace", { recursive: !!command.recursive });
-      } else if (command.op === "read") {
-        results.push({ text: mirror.read(command.path, "/workspace").content });
-      } else if (command.op === "noop") {
-        // nothing
-      }
-      const fileDiff = mirror.changes(since);
-      context.executions++;
-      const files = [...fileDiff.created, ...fileDiff.updated].map((p) => {
-        const read = mirror.read(p, "/workspace", { encoding: "base64" });
-        return { path: p, data: read.content, updatedAt: read.updatedAt };
-      });
-      return jsonResponse({
-        code: body.code,
-        language,
-        engine,
-        durationMs: 0,
-        logs: { stdout: [], stderr: [] },
-        results,
-        executionCount: context.executions,
-        context: { id: body.contextId, cwd: context.cwd, executions: context.executions, snapshot: null },
-        workspace: { dirs: mirror.manifest().dirs, files, deleted: fileDiff.deleted },
-      });
-    }
-
     const deleteMatch = /^\/interpreters\/[^/]+$/.exec(path);
     if (method === "DELETE" && deleteMatch) {
       contextsById.clear();
@@ -202,9 +163,100 @@ function makeInterpreter({ language, engine, contexts = true }) {
     return errorResponse(404, "VALIDATION_FAILED", "Not found");
   }
 
+  // Mirrors runtime/interpreter.mjs's `_executeInContext`: reconcile against
+  // the manifest, pull whatever's missing via `getFiles`, run the "guest
+  // program" (a tiny JSON command interpreted directly against the mirror,
+  // so tests can drive concrete workspace mutations without a real Wasm
+  // engine), and return `{ ok, ... }` -- never throws.
+  async function executeInContext(key, args, getFiles) {
+    executeCalls.push({ key, args });
+    const context = contextsById.get(args.contextId);
+    if (!context) {
+      return {
+        ok: false,
+        status: 404,
+        body: errorBody(404, "CONTEXT_NOT_FOUND", `Code context '${args.contextId}' not found`, {
+          contextId: args.contextId,
+        }),
+      };
+    }
+    let { missing } = mirror.applySync({
+      dirs: args.workspace.dirs,
+      files: [],
+      manifest: args.workspace.manifest,
+    });
+    if (missing.length > 0) {
+      getFilesCalls.push(missing);
+      const pulled = transformPulled(await getFiles(missing));
+      ({ missing } = mirror.applySync({ dirs: args.workspace.dirs, files: pulled, manifest: args.workspace.manifest }));
+      if (missing.length > 0) {
+        return {
+          ok: false,
+          status: 500,
+          body: errorBody(500, "INTERNAL_ERROR", `Sandbox did not provide ${missing.length} workspace file(s)`),
+        };
+      }
+    }
+
+    const since = mirror.changes().snapshot;
+    const command = JSON.parse(args.code);
+    const results = [];
+    if (command.op === "write") {
+      mirror.write(command.path, "/workspace", command.content ?? "");
+    } else if (command.op === "mkdir") {
+      mirror.mkdir(command.path, "/workspace", { recursive: !!command.recursive });
+    } else if (command.op === "read") {
+      results.push({ text: mirror.read(command.path, "/workspace").content });
+    } else if (command.op === "error") {
+      return { ok: true, result: buildGuestErrorResult(args, context) };
+    } else if (command.op === "noop") {
+      // nothing
+    }
+    const fileDiff = mirror.changes(since);
+    context.executions++;
+    const files = [...fileDiff.created, ...fileDiff.updated].map((p) => {
+      const { data, updatedAt } = mirror.readBytes(p, "/workspace");
+      return { path: p, data, updatedAt };
+    });
+    return {
+      ok: true,
+      result: {
+        code: args.code,
+        language,
+        engine,
+        durationMs: 0,
+        logs: { stdout: [], stderr: [] },
+        results,
+        executionCount: context.executions,
+        context: { id: args.contextId, cwd: context.cwd, executions: context.executions, snapshot: null },
+        workspace: { dirs: mirror.manifest().dirs, files, deleted: fileDiff.deleted },
+      },
+    };
+  }
+
+  // A guest-level error (no throw): the response carries no workspace
+  // changes at all (mirroring runtime/interpreter.mjs's restoreFrom(before)).
+  function buildGuestErrorResult(args, context) {
+    return {
+      code: args.code,
+      language,
+      engine,
+      durationMs: 0,
+      logs: { stdout: [], stderr: [] },
+      results: [],
+      error: { name: "EngineError", message: "guest error", traceback: [] },
+      executionCount: context.executions,
+      context: { id: args.contextId, cwd: context.cwd, executions: context.executions, snapshot: null },
+      workspace: { dirs: mirror.manifest().dirs, files: [], deleted: [] },
+    };
+  }
+
   return {
     fetch,
+    executeInContext,
     calls,
+    executeCalls,
+    getFilesCalls,
     contextsById,
     resetMirror() {
       mirror = new Workspace();
@@ -212,7 +264,14 @@ function makeInterpreter({ language, engine, contexts = true }) {
     forgetContext(id) {
       contextsById.delete(id);
     },
+    setPulledFilesTransform(fn) {
+      transformPulled = fn;
+    },
   };
+}
+
+function errorBody(status, code, message, context = {}) {
+  return { code, message, context, httpStatus: status, timestamp: new Date().toISOString() };
 }
 
 /** A binding whose GET /interpreter answers non-JSON: not a sandbox-workers runtime Worker. */
@@ -232,6 +291,9 @@ function mkdirCmd(path, recursive) {
 }
 function noopCmd() {
   return JSON.stringify({ op: "noop" });
+}
+function errorCmd() {
+  return JSON.stringify({ op: "error" });
 }
 
 // ---- request helper ---------------------------------------------------------
@@ -327,53 +389,83 @@ test("contexts: false binding: runCode falls back to stateless /execute, no cont
   assert.deepEqual(statelessCall.body.envVars, { GREETING: "hi" });
 });
 
-test("execute sync payload: full manifest on first call, only changed files on the next; empty files when nothing changed", async () => {
+test("first execute after a fresh sandbox pulls every file exactly once", async () => {
   const js = makeInterpreter({ language: "javascript", engine: "SpiderMonkey" });
   const { sandbox } = makeSandbox({ env: { JAVASCRIPT: js } });
   const ctx = (await call(sandbox, "POST", "/contexts", { binding: "JAVASCRIPT" })).body;
-
   await call(sandbox, "POST", "/files", { op: "write", path: "/workspace/a.txt", content: "hello" });
-
-  await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
-  const firstExec = js.calls.find((c) => /\/execute$/.test(c.path));
-  assert.deepEqual(Object.keys(firstExec.body.workspace.manifest), ["/workspace/a.txt"]);
-  assert.equal(firstExec.body.workspace.files.length, 1);
-  assert.equal(firstExec.body.workspace.files[0].path, "/workspace/a.txt");
-
-  js.calls.length = 0;
-  await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
-  const secondExec = js.calls.find((c) => /\/execute$/.test(c.path));
-  assert.deepEqual(secondExec.body.workspace.files, []);
-  assert.deepEqual(Object.keys(secondExec.body.workspace.manifest), ["/workspace/a.txt"]);
-
-  js.calls.length = 0;
   await call(sandbox, "POST", "/files", { op: "write", path: "/workspace/b.txt", content: "world" });
-  await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
-  const thirdExec = js.calls.find((c) => /\/execute$/.test(c.path));
-  assert.equal(thirdExec.body.workspace.files.length, 1);
-  assert.equal(thirdExec.body.workspace.files[0].path, "/workspace/b.txt");
-});
 
-test("resync retry: interpreter reports missing files, sandbox resends with them added", async () => {
-  const js = makeInterpreter({ language: "javascript", engine: "SpiderMonkey" });
-  const { sandbox } = makeSandbox({ env: { JAVASCRIPT: js } });
-  const ctx = (await call(sandbox, "POST", "/contexts", { binding: "JAVASCRIPT" })).body;
-  await call(sandbox, "POST", "/files", { op: "write", path: "/workspace/a.txt", content: "hello" });
-  // Establish `sent` for this binding.
-  await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
-
-  // Simulate the interpreter losing its mirror (eviction) while the sandbox
-  // still believes it holds /workspace/a.txt.
-  js.resetMirror();
-  js.calls.length = 0;
   const res = await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
   assert.equal(res.status, 200);
+  assert.equal(js.getFilesCalls.length, 1, "exactly one getFiles call");
+  assert.deepEqual(
+    js.getFilesCalls[0].slice().sort(),
+    ["/workspace/a.txt", "/workspace/b.txt"],
+    "the one call lists every file",
+  );
+  // The manifest sent alongside is always the shape of /workspace, not its contents.
+  const sentArgs = js.executeCalls.at(-1).args;
+  assert.deepEqual(Object.keys(sentArgs.workspace.manifest).sort(), ["/workspace/a.txt", "/workspace/b.txt"]);
+  assert.equal(sentArgs.workspace.files, undefined, "no file contents travel with the manifest");
+});
 
-  const execCalls = js.calls.filter((c) => /\/execute$/.test(c.path));
-  assert.equal(execCalls.length, 2, "one resync response, one retry with the missing file");
-  assert.deepEqual(execCalls[0].body.workspace.files, []);
-  assert.equal(execCalls[1].body.workspace.files.length, 1);
-  assert.equal(execCalls[1].body.workspace.files[0].path, "/workspace/a.txt");
+test("a second execute with nothing changed makes no getFiles call", async () => {
+  const js = makeInterpreter({ language: "javascript", engine: "SpiderMonkey" });
+  const { sandbox } = makeSandbox({ env: { JAVASCRIPT: js } });
+  const ctx = (await call(sandbox, "POST", "/contexts", { binding: "JAVASCRIPT" })).body;
+  await call(sandbox, "POST", "/files", { op: "write", path: "/workspace/a.txt", content: "hello" });
+  await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
+
+  js.getFilesCalls.length = 0;
+  const res = await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
+  assert.equal(res.status, 200);
+  assert.equal(js.getFilesCalls.length, 0);
+});
+
+test("writeFile of one file then execute pulls only that path", async () => {
+  const js = makeInterpreter({ language: "javascript", engine: "SpiderMonkey" });
+  const { sandbox } = makeSandbox({ env: { JAVASCRIPT: js } });
+  const ctx = (await call(sandbox, "POST", "/contexts", { binding: "JAVASCRIPT" })).body;
+  await call(sandbox, "POST", "/files", { op: "write", path: "/workspace/a.txt", content: "hello" });
+  await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
+
+  js.getFilesCalls.length = 0;
+  await call(sandbox, "POST", "/files", { op: "write", path: "/workspace/b.txt", content: "world" });
+  const res = await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
+  assert.equal(res.status, 200);
+  assert.equal(js.getFilesCalls.length, 1);
+  assert.deepEqual(js.getFilesCalls[0], ["/workspace/b.txt"]);
+});
+
+test("simulated interpreter eviction: the next execute pulls everything again, with no state on the sandbox side", async () => {
+  const js = makeInterpreter({ language: "javascript", engine: "SpiderMonkey" });
+  const { sandbox } = makeSandbox({ env: { JAVASCRIPT: js } });
+  const ctx = (await call(sandbox, "POST", "/contexts", { binding: "JAVASCRIPT" })).body;
+  await call(sandbox, "POST", "/files", { op: "write", path: "/workspace/a.txt", content: "hello" });
+  await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
+
+  // The interpreter's own mirror is lost (e.g. its Durable Object was
+  // evicted); the sandbox has no "sent" cache to invalidate -- it always
+  // sends the manifest and lets the interpreter ask for what it's missing.
+  js.resetMirror();
+  js.getFilesCalls.length = 0;
+  const res = await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
+  assert.equal(res.status, 200);
+  assert.equal(js.getFilesCalls.length, 1, "a single getFiles call, no retry/resync round trip");
+  assert.deepEqual(js.getFilesCalls[0], ["/workspace/a.txt"]);
+});
+
+test("getFiles returning fewer entries than asked -> 500 INTERNAL_ERROR", async () => {
+  const js = makeInterpreter({ language: "javascript", engine: "SpiderMonkey" });
+  const { sandbox } = makeSandbox({ env: { JAVASCRIPT: js } });
+  const ctx = (await call(sandbox, "POST", "/contexts", { binding: "JAVASCRIPT" })).body;
+  await call(sandbox, "POST", "/files", { op: "write", path: "/workspace/a.txt", content: "hello" });
+
+  js.setPulledFilesTransform(() => []);
+  const res = await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
+  assert.equal(res.status, 500);
+  assert.equal(res.body.code, "INTERNAL_ERROR");
 });
 
 test("response workspace is applied, visible through POST /files, and persisted across a fresh Sandbox instance", async () => {
@@ -399,6 +491,24 @@ test("response workspace is applied, visible through POST /files, and persisted 
   const { sandbox: sandbox2 } = makeSandbox({ env: { JAVASCRIPT: js }, db });
   const read2 = await call(sandbox2, "POST", "/files", { op: "read", path: "/workspace/out.txt" });
   assert.equal(read2.body.content, "produced by the guest");
+});
+
+test("a guest error still leaves the sandbox's tree unchanged", async () => {
+  const js = makeInterpreter({ language: "javascript", engine: "SpiderMonkey" });
+  const { sandbox } = makeSandbox({ env: { JAVASCRIPT: js } });
+  const ctx = (await call(sandbox, "POST", "/contexts", { binding: "JAVASCRIPT" })).body;
+  await call(sandbox, "POST", "/files", { op: "write", path: "/workspace/before.txt", content: "before" });
+  await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: ctx.id });
+
+  const execRes = await call(sandbox, "POST", "/execute", { code: errorCmd(), contextId: ctx.id });
+  assert.equal(execRes.status, 200);
+  assert.ok(execRes.body.error);
+
+  const list = await call(sandbox, "POST", "/files", { op: "list", path: "/workspace" });
+  assert.deepEqual(
+    list.body.files.map((f) => f.absolutePath),
+    ["/workspace/before.txt"],
+  );
 });
 
 test("CONTEXT_NOT_FOUND from the runtime -> 404, and the context disappears from GET /contexts", async () => {
@@ -430,8 +540,8 @@ test("envVars merge order: sandbox, then context, then call; null/undefined unse
     contextId: ctx.id,
     envVars: { C: null, D: "call-d" },
   });
-  const execCall = js.calls.find((c) => /\/execute$/.test(c.path));
-  assert.deepEqual(execCall.body.envVars, { A: "sandbox-a", B: "context-b", D: "call-d" });
+  const execCall = js.executeCalls.at(-1);
+  assert.deepEqual(execCall.args.envVars, { A: "sandbox-a", B: "context-b", D: "call-d" });
 });
 
 test("GET / info shape", async () => {
@@ -491,8 +601,8 @@ test("an empty directory created by mkdir reaches the sync payload's dirs on the
   // guest-created empty directory.
   const pyCtx = (await call(sandbox, "POST", "/contexts", { binding: "PYTHON" })).body;
   await call(sandbox, "POST", "/execute", { code: noopCmd(), contextId: pyCtx.id });
-  const pyExec = py.calls.find((c) => /\/execute$/.test(c.path));
-  assert.ok(pyExec.body.workspace.dirs.includes("/workspace/emptydir"));
+  const pyExec = py.executeCalls.at(-1);
+  assert.ok(pyExec.args.workspace.dirs.includes("/workspace/emptydir"));
 
   // Also visible through the files API.
   const list = await call(sandbox, "POST", "/files", { op: "list", path: "/workspace" });

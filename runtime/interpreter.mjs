@@ -5,20 +5,26 @@
 // per-context memory snapshots (the `chunks` table, unchanged from
 // docs/sessions-design.md/docs/snapshot-cost-design.md) and an in-memory-only
 // mirror of the sandbox's /workspace, reconciled at the top of every
-// execute() from the sync payload the sandbox sends. There is no `files`
-// table any more -- /workspace has exactly one source of truth, the sandbox
-// Durable Object (`packages/core/src/sandbox.ts`) -- and no default-context
-// resolution or per-context envVars/language: context ids are minted by the
-// sandbox and passed in, and the execution env arrives flat, already merged.
+// executeInContext() call: the sandbox sends a manifest of the workspace's
+// shape (dirs + file hashes, no contents) over Workers RPC, and the
+// interpreter pulls whatever content it's missing by calling back the
+// `getFiles` stub the sandbox passed as an RPC argument -- there is no push
+// and no HTTP resync handshake any more (see docs/sandbox-1-0-design.md,
+// "Workspace mirror and sync protocol"). There is no `files` table any more
+// -- /workspace has exactly one source of truth, the sandbox Durable Object
+// (`packages/core/src/sandbox.ts`) -- and no default-context resolution or
+// per-context envVars/language: context ids are minted by the sandbox and
+// passed in, and the execution env arrives flat, already merged.
 import { DurableObject } from "cloudflare:workers";
 import {
   ApiError,
   ErrorCode,
+  errnoErrorBody,
+  errorBody,
   errnoErrorResponse,
   errorResponse,
   MAX_CODE_BYTES,
   MAX_REQUEST_BYTES,
-  MAX_SYNC_REQUEST_BYTES,
   Workspace,
   WorkspaceError,
 } from "@sandbox-workers/core";
@@ -86,12 +92,14 @@ function validateEnvVars(raw) {
   return raw;
 }
 
-// Validates the `workspace` field of a `/execute` request (see
-// docs/sandbox-1-0-design.md, "Workspace mirror and sync protocol").
-function validateWorkspacePayload(raw) {
+// Validates the `workspace` field of an `executeInContext` RPC call (see
+// docs/sandbox-1-0-design.md, "Workspace mirror and sync protocol"): the
+// shape of /workspace only, no contents -- those are pulled separately via
+// `getFiles`.
+function validateWorkspaceManifest(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     throw new ApiError(400, "workspace is required");
-  const { dirs, manifest, files } = raw;
+  const { dirs, manifest } = raw;
   if (!Array.isArray(dirs) || !dirs.every((d) => typeof d === "string"))
     throw new ApiError(400, "workspace.dirs must be an array of strings");
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest))
@@ -100,18 +108,30 @@ function validateWorkspacePayload(raw) {
     if (typeof path !== "string" || typeof hash !== "string")
       throw new ApiError(400, "workspace.manifest must map string paths to string hashes");
   }
-  if (!Array.isArray(files)) throw new ApiError(400, "workspace.files must be an array");
-  for (const file of files) {
+  return { dirs, manifest };
+}
+
+// Validates what `getFiles(missing)` returned: an array of
+// `{ path, data, updatedAt }` entries, `data` a `Uint8Array` (the RPC wire
+// format carries raw bytes, not base64), and `path` one of the paths that
+// were actually requested -- the interpreter never trusts the sandbox to
+// answer only what was asked, but an entry for anything else would still be
+// silently wrong to apply.
+function validatePulledFiles(pulled, requested) {
+  if (!Array.isArray(pulled))
+    throw new ApiError(500, "Sandbox returned an invalid workspace file list", ErrorCode.INTERNAL_ERROR);
+  const allowed = new Set(requested);
+  for (const entry of pulled) {
     if (
-      !file ||
-      typeof file !== "object" ||
-      typeof file.path !== "string" ||
-      typeof file.data !== "string" ||
-      typeof file.updatedAt !== "number"
+      !entry ||
+      typeof entry !== "object" ||
+      typeof entry.path !== "string" ||
+      !(entry.data instanceof Uint8Array) ||
+      typeof entry.updatedAt !== "number" ||
+      !allowed.has(entry.path)
     )
-      throw new ApiError(400, "workspace.files entries must be {path, data, updatedAt}");
+      throw new ApiError(500, "Sandbox returned an invalid workspace file entry", ErrorCode.INTERNAL_ERROR);
   }
-  return { dirs, manifest, files };
 }
 
 // Builds the response `workspace` diff (docs/sandbox-1-0-design.md): `dirs`
@@ -122,8 +142,8 @@ function buildWorkspaceResponse(workspace, fileDiff) {
   const dirs = workspace.manifest().dirs;
   if (!fileDiff) return { dirs, files: [], deleted: [] };
   const files = [...fileDiff.created, ...fileDiff.updated].map((path) => {
-    const read = workspace.read(path, "/workspace", { encoding: "base64" });
-    return { path, data: read.content, updatedAt: read.updatedAt };
+    const { data, updatedAt } = workspace.readBytes(path, "/workspace");
+    return { path, data, updatedAt };
   });
   return { dirs, files, deleted: fileDiff.deleted };
 }
@@ -544,18 +564,27 @@ export function createInterpreterClass(engine) {
       await this._destroy();
     }
 
-    // --- HTTP surface --------------------------------------------------
+    // --- HTTP surface and RPC entrypoint --------------------------------
 
-    // Requests are serialized with a promise chain: the Durable Object
-    // otherwise interleaves fetch() calls at any await point, which would
+    // Both fetch() and executeInContext() (the RPC method the runtime
+    // Worker's `executeInContext` forwards to, see docs/sandbox-1-0-
+    // design.md) are serialized through the same promise chain: the Durable
+    // Object otherwise interleaves calls at any await point, which would
     // race two executions against the same in-memory workspace/instance.
-    async fetch(request) {
-      const run = () => this._handle(request);
+    _enqueue(run) {
       const next = this.queue.then(run, run);
-      // Keep the queue alive even if this request's handler rejects, and
-      // never let one request observe another's unrelated rejection.
+      // Keep the queue alive even if this call rejects, and never let one
+      // caller observe another's unrelated rejection.
       this.queue = next.catch(() => {});
       return next;
+    }
+
+    async fetch(request) {
+      return this._enqueue(() => this._handle(request));
+    }
+
+    async executeInContext(key, args, getFiles) {
+      return this._enqueue(() => this._executeInContext(key, args, getFiles));
     }
 
     async _handle(request) {
@@ -579,7 +608,6 @@ export function createInterpreterClass(engine) {
           await this._touchAlarm(meta);
           return json({ success: true });
         }
-        if (method === "POST" && path === "/execute") return await this._execute(request, meta);
 
         throw new ApiError(404, "Not found", ErrorCode.VALIDATION_FAILED);
       } catch (error) {
@@ -606,39 +634,84 @@ export function createInterpreterClass(engine) {
       return json({ id: context.id, cwd: context.cwd, createdAt: context.createdAt }, { status: 201 });
     }
 
-    async _execute(request, meta) {
-      const body = await readJsonBody(request, MAX_SYNC_REQUEST_BYTES);
-      if (typeof body.code !== "string" || !body.code.trim())
-        throw new ApiError(400, "Non-empty code is required");
-      if (new TextEncoder().encode(body.code).length > MAX_CODE_BYTES)
-        throw new ApiError(413, "Code exceeds 64 KiB");
-      const envVars = validateEnvVars(body.envVars) ?? {};
-      if (typeof body.contextId !== "string" || !body.contextId)
-        throw new ApiError(400, "contextId must be a non-empty string");
-      const workspacePayload = validateWorkspacePayload(body.workspace);
+    // RPC method the runtime Worker's `executeInContext` forwards to (see
+    // docs/sandbox-1-0-design.md, "Workspace mirror and sync protocol").
+    // `args` is `InterpreterExecuteArgs` (contextId, code, envVars, a
+    // manifest-only `workspace`, no file contents); `getFiles` is the
+    // sandbox's own RPC stub, called back at most once, for exactly the
+    // paths this interpreter's mirror is missing after reconciling against
+    // the manifest. Errors are returned as `{ ok: false, status, body }`
+    // rather than thrown -- Workers RPC only serializes an Error's
+    // `name`/`message`/`stack`, which would drop `code`/`details`/HTTP
+    // status the sandbox relies on (see `errorBody` in packages/core/src/
+    // protocol.ts).
+    async _executeInContext(key, args, getFiles) {
+      try {
+        if (!ID_PATTERN.test(key)) throw new ApiError(400, "Invalid interpreter key");
+        const meta = this._ensureInterpreterMeta(key);
 
-      const context = this._loadContextRow(body.contextId);
-      if (!context)
-        throw new ApiError(404, `Code context '${body.contextId}' not found`, ErrorCode.CONTEXT_NOT_FOUND, {
-          contextId: body.contextId,
+        if (typeof args?.code !== "string" || !args.code.trim())
+          throw new ApiError(400, "Non-empty code is required");
+        if (new TextEncoder().encode(args.code).length > MAX_CODE_BYTES)
+          throw new ApiError(413, "Code exceeds 64 KiB");
+        const envVars = validateEnvVars(args?.envVars) ?? {};
+        if (typeof args?.contextId !== "string" || !args.contextId)
+          throw new ApiError(400, "contextId must be a non-empty string");
+        const workspaceManifest = validateWorkspaceManifest(args?.workspace);
+
+        const context = this._loadContextRow(args.contextId);
+        if (!context)
+          throw new ApiError(404, `Code context '${args.contextId}' not found`, ErrorCode.CONTEXT_NOT_FOUND, {
+            contextId: args.contextId,
+          });
+
+        // Reconcile the mirror before running anything (docs/sandbox-1-0-
+        // design.md, "Workspace mirror and sync protocol"): create dirs,
+        // delete whatever the manifest no longer names, and note any file
+        // whose hash still doesn't match (this interpreter was evicted, or
+        // never held this workspace at all). Pull exactly those paths from
+        // the sandbox over `getFiles`, apply them, and re-check -- the
+        // sandbox is the source of truth, so a still-missing path after that
+        // means the sandbox itself failed to provide it.
+        let { missing } = this.workspace.applySync({
+          dirs: workspaceManifest.dirs,
+          files: [],
+          manifest: workspaceManifest.manifest,
         });
+        if (missing.length > 0) {
+          const pulled = await getFiles(missing);
+          validatePulledFiles(pulled, missing);
+          ({ missing } = this.workspace.applySync({
+            dirs: workspaceManifest.dirs,
+            files: pulled,
+            manifest: workspaceManifest.manifest,
+          }));
+          if (missing.length > 0)
+            throw new ApiError(
+              500,
+              `Sandbox did not provide ${missing.length} workspace file(s)`,
+              ErrorCode.INTERNAL_ERROR,
+            );
+        }
 
-      // Reconcile the mirror before running anything (docs/sandbox-1-0-
-      // design.md, "Workspace mirror and sync protocol"): create dirs, write
-      // files, delete what's no longer wanted. If the mirror still doesn't
-      // match the manifest afterwards (this interpreter was evicted, or the
-      // sandbox's own idea of what it holds was stale), answer `resync`
-      // instead of executing; the sandbox retries once with the missing
-      // files added.
-      const { missing } = this.workspace.applySync({
-        dirs: workspacePayload.dirs,
-        files: workspacePayload.files,
-        manifest: workspacePayload.manifest,
-      });
-      if (missing.length > 0) {
+        const result = this._run(context, meta, args.code, envVars);
         await this._touchAlarm(meta);
-        return json({ resync: true, missing });
+        return { ok: true, result };
+      } catch (error) {
+        if (error instanceof WorkspaceError) {
+          const { status, body } = errnoErrorBody(error.code, error.message, {});
+          return { ok: false, status, body };
+        }
+        const { status, body } = errorBody(error);
+        return { ok: false, status, body };
       }
+    }
+
+    // The post-reconciliation body of what used to be `_execute`'s HTTP
+    // handler: run the guest code, snapshot memory, and build the response
+    // object (still consumed by `_executeInContext` above, wrapped as
+    // `{ ok: true, result }`). Synchronous -- nothing here awaits.
+    _run(context, meta, code, envVars) {
       // The response `workspace` diff is taken from right after
       // reconciliation, not from whatever this context's mirror looked like
       // before -- reconciliation itself is not "this execution's changes".
@@ -650,7 +723,7 @@ export function createInterpreterClass(engine) {
       let result;
       let threw = false;
       try {
-        result = instance.execute({ code: body.code, envVars });
+        result = instance.execute({ code, envVars });
       } catch (error) {
         threw = true;
         // The JS engine throws here for a fuel-exhaustion interrupt (the
@@ -754,9 +827,10 @@ export function createInterpreterClass(engine) {
         this._persist(null, { context, chunkWrites: null, snapshotRecord: staleRecord });
       }
 
-      await this._touchAlarm(meta);
-      return json({
-        code: body.code,
+      // `_touchAlarm` (async) and the `{ ok: true, result }` wrapping happen
+      // back in `_executeInContext`, which called this synchronous helper.
+      return {
+        code,
         // ExecutionResult.language/engine are the runtime's own.
         language: engine.language,
         engine: engine.engineName,
@@ -771,7 +845,7 @@ export function createInterpreterClass(engine) {
           snapshot: context.snapshot ? snapshotInfo(context.snapshot) : null,
         },
         workspace: buildWorkspaceResponse(this.workspace, fileDiff),
-      });
+      };
     }
   };
 }

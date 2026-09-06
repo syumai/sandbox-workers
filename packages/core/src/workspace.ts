@@ -245,8 +245,14 @@ export interface WorkspaceManifest {
 }
 export interface SyncFileEntry {
   path: string;
-  /** base64-encoded file contents (the sync wire format; see docs/sandbox-1-0-design.md). */
-  data: string;
+  /**
+   * File contents: a base64 string (used by callers still on that
+   * transcoding, e.g. `restoreFrom`'s row shape) or raw bytes (the RPC wire
+   * format; see docs/sandbox-1-0-design.md, "Workspace mirror and sync
+   * protocol"). `toBytes` passes a `Uint8Array` through unchanged regardless
+   * of `encoding`.
+   */
+  data: string | Uint8Array;
   updatedAt: number;
 }
 export interface ApplySyncPayload {
@@ -265,7 +271,9 @@ export interface ApplySyncPayload {
    * Full path->hash manifest of what the workspace should hold once synced.
    * When given, every file not named here is deleted, and the returned
    * `missing` array lists any manifest path whose post-sync hash still
-   * doesn't match (the resync handshake, see docs/sandbox-1-0-design.md).
+   * doesn't match -- the interpreter pulls those paths from the sandbox over
+   * the `getFiles` RPC callback before executing (see
+   * docs/sandbox-1-0-design.md).
    */
   manifest?: Record<string, string>;
 }
@@ -375,6 +383,19 @@ export class Workspace {
       isBinary: looksBinary(bytes),
       updatedAt: file.updatedAt ?? 0,
     };
+  }
+
+  // Raw byte read, with none of `read()`'s utf-8/base64 transcoding -- used
+  // by the RPC wire format (docs/sandbox-1-0-design.md, "Workspace mirror
+  // and sync protocol"), where file contents travel as `Uint8Array` directly
+  // rather than as a JSON string.
+  readBytes(path: string, cwd: string): { data: Uint8Array; updatedAt: number } {
+    const { segments } = this.normalize(path, cwd);
+    const node = segments.length === 0 ? (this.root as Inode) : this._lookup(segments);
+    if (!node) throw new WorkspaceError("ENOENT", `No such file: ${path}`);
+    if (node instanceof Directory) throw new WorkspaceError("EISDIR", `Is a directory: ${path}`);
+    const file = node as WorkspaceFile;
+    return { data: file.data, updatedAt: file.updatedAt ?? 0 };
   }
 
   write(path: string, cwd: string, content: string | Uint8Array, options: WriteOptions = {}): WriteResult {
@@ -720,8 +741,8 @@ export class Workspace {
   // Deletions: when `manifest` is given (the interpreter's own reconciliation
   // of an incoming request), every current file whose path isn't a key of
   // `manifest` is deleted, and the returned `missing` array lists any
-  // manifest path whose post-sync hash still doesn't match (triggering the
-  // `resync` handshake). Without `manifest` (the sandbox applying an
+  // manifest path whose post-sync hash still doesn't match (triggering a
+  // `getFiles` RPC pull from the sandbox). Without `manifest` (the sandbox applying an
   // interpreter's response `workspace` diff), the explicit `deleted` list is
   // used instead, and `missing` is always empty.
   applySync(payload: ApplySyncPayload): ApplySyncResult {
