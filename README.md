@@ -135,7 +135,7 @@ Python and Perl release downloads are verified against pinned SHA-256 digests. R
 
 Code is a **script**: the value of the last top-level expression is the result; a top-level `return` is not part of the supported contract. Data is passed with `envVars` (string values only) and read as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby). No context persists between calls — every call boots a fresh Wasm instance. ES module imports, Node/npm resolution, and external networking are unsupported. The editor includes language-specific examples, syntax highlighting, output tabs, local draft storage, and Cmd/Ctrl+Enter execution.
 
-The editor toolbar has a **Script**/**Session (REPL)** mode toggle. Script is the stateless behavior above. REPL mode posts to the default code context of a durable, per-browser Playground sandbox (see [Sandboxes and code contexts](#sandboxes-and-code-contexts)) instead, so top-level state and a `/workspace` directory persist between runs; the result pane then also shows a transcript of recent runs, sandbox status (executions, cwd, snapshot size, time until idle expiry), and a Workspace tab for browsing/editing/deleting files. Ruby has no REPL mode, since code contexts aren't supported for Ruby.
+The editor toolbar has a **Script**/**REPL** mode toggle. Script is the stateless behavior above. REPL turns the editor into a real, line-at-a-time REPL: a fixed-height, one-line prompt (pre-filled with a declaration template, and per-language SNIPPETS to insert without evaluating) submits each line against the default code context of a durable, per-browser Playground sandbox (see [Sandboxes and code contexts](#sandboxes-and-code-contexts)), appending its result to a scrolling log above the prompt — both keep a constant height as the log or a multi-line entry grows, scrolling internally instead — so top-level state and a `/workspace` directory persist between lines; the result pane then also shows sandbox status (executions, cwd, snapshot size, time until idle expiry) and a Workspace tab for browsing/editing/deleting files. Ruby has no REPL mode, since code contexts aren't supported for Ruby.
 
 The JavaScript runtime also accepts TypeScript automatically: no `language` option, no separate mode — code is parsed as JavaScript first, and only code that fails to parse falls back to stripping TypeScript-only syntax (types, `interface`, generics, `as`/`satisfies`, `enum`) before running. Types are stripped, not checked, so a type error still runs like any other JavaScript mistake. `import`/`export` remain unsupported.
 
@@ -193,7 +193,3 @@ Create `packages/<language>` with an independent Worker, Wasm engine, and metada
 ## License
 
 Original sandbox-workers code is licensed under the [MIT License](LICENSE), copyright (c) 2026 syumai. Bundled interpreters and third-party components retain their upstream licenses; see each runtime package's `THIRD_PARTY_NOTICES.md` and `licenses/` directory.
-
-## Cloudflare Computer example
-
-Use Computer’s SQLite filesystem with all four runtime Service Bindings: [example and deployment instructions](examples/cloudflare-computer/README.md). The example persists code, env vars, and results without requiring containers or an AI provider.

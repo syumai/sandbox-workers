@@ -3,7 +3,6 @@ export default {
   pages: [
     "service-bindings",
     "sessions",
-    "cloudflare-computer",
     "playground",
     "local-development",
     "upgrades",

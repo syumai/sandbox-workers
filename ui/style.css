@@ -250,6 +250,9 @@ nav button {
   font-size: 11px;
   padding: 11px 8px;
   border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 nav button.active {
   background: #dcf99212;
@@ -338,6 +341,51 @@ kbd {
 #editor {
   height: 348px;
   font-size: 12px;
+}
+/*
+ * REPL prompt: a single fixed-height line, never taller — a multi-line doc
+ * (Shift+Enter, or an unfinished statement) scrolls inside the CodeMirror
+ * scroller instead of growing the box. This keeps .editor-pane's total
+ * height identical to Script mode's at every breakpoint: #repl-log below
+ * takes the rest of the space #editor would otherwise occupy (see
+ * .repl-log's max-height, which mirrors #editor's height here minus
+ * --repl-prompt-h at each breakpoint).
+ */
+.editor-pane.repl {
+  --repl-prompt-h: 44px;
+}
+.editor-pane.repl #editor {
+  flex: 0 0 auto;
+  height: var(--repl-prompt-h);
+  position: relative;
+}
+.editor-pane.repl #editor::before {
+  content: "›";
+  position: absolute;
+  left: 10px;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  color: var(--lime);
+  font: 13px monospace;
+  pointer-events: none;
+  z-index: 1;
+}
+.editor-pane.repl .cm-editor {
+  height: 100% !important;
+}
+.editor-pane.repl .cm-scroller {
+  overflow-y: auto !important;
+}
+.editor-pane.repl .cm-gutters {
+  display: none !important;
+}
+.editor-pane.repl .cm-content {
+  padding: 10px 0 !important;
+}
+.editor-pane.repl .cm-line {
+  padding-left: 24px !important;
 }
 .cm-editor {
   height: 100%;
@@ -485,32 +533,103 @@ kbd {
   margin-left: auto;
   font-size: 18px;
 }
-.transcript {
-  max-height: 160px;
-  overflow: auto;
+.repl-log {
+  flex: 1 1 auto;
+  /*
+   * Pinned to exactly #editor's height at this breakpoint (348px) minus the
+   * prompt's fixed height — min and max are equal on purpose, so this never
+   * grows past it (30+ cells scroll instead of inflating .editor-pane) and
+   * never shrinks below it either (so .editor-pane's own natural height
+   * matches Script mode's even in layouts with no cross-pane stretch to
+   * fall back on, e.g. the stacked mobile layout).
+   */
+  min-height: calc(348px - var(--repl-prompt-h, 44px));
+  max-height: calc(348px - var(--repl-prompt-h, 44px));
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 15px;
   border-bottom: 1px solid var(--border);
-  padding: 6px 17px;
-  flex-shrink: 0;
 }
-.transcript-entry {
-  padding: 6px 0;
-  border-bottom: 1px solid #1c2129;
+.repl-empty {
+  margin: auto;
+  text-align: center;
+  font-size: 11px;
 }
-.transcript-entry:last-child {
-  border-bottom: 0;
-}
-.transcript-entry summary {
+.repl-cell {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 9px 11px;
+  background: #12161b;
   cursor: pointer;
-  font-size: 10px;
-  color: #9aa4b1;
-  font-family: "SFMono-Regular", Consolas, monospace;
 }
-.transcript-entry.error summary {
-  color: #d78888;
+.repl-cell:hover {
+  border-color: #454f5c;
 }
-.transcript-entry pre {
-  font-size: 10px;
-  margin-top: 6px;
+.repl-cell.selected {
+  border-color: var(--lime);
+  background: #171d15;
+}
+.repl-cell-prompt {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+}
+.repl-gutter {
+  color: var(--lime);
+  font: 11px monospace;
+  flex-shrink: 0;
+  line-height: 1.6;
+}
+.repl-code {
+  font:
+    11px/1.6 "SFMono-Regular",
+    Consolas,
+    monospace;
+  color: #d6dde6;
+}
+.repl-stdout,
+.repl-stderr {
+  margin: 4px 0 0 20px;
+  font:
+    10px/1.6 "SFMono-Regular",
+    Consolas,
+    monospace;
+}
+.repl-stdout {
+  color: var(--muted);
+}
+.repl-stderr {
+  color: #ff9c9c;
+}
+.repl-result {
+  margin: 6px 0 0 20px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font:
+    11px/1.6 "SFMono-Regular",
+    Consolas,
+    monospace;
+}
+.repl-result pre {
+  margin: 0;
+  flex: 1;
+}
+.repl-result .repl-value {
+  color: var(--lime);
+}
+.repl-result.pending {
+  color: var(--muted);
+  font-style: italic;
+}
+.repl-duration {
+  margin-left: auto;
+  font-size: 9px;
+  color: #6f7e8e;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 #output {
   height: 422px;
@@ -561,7 +680,10 @@ kbd {
   background: transparent;
   border: 0;
   color: #c3cbd6;
-  font: 10px/1.6 "SFMono-Regular", Consolas, monospace;
+  font:
+    10px/1.6 "SFMono-Regular",
+    Consolas,
+    monospace;
   padding: 8px 12px;
   overflow-wrap: anywhere;
 }
@@ -779,6 +901,10 @@ footer > span:last-child {
 @media (min-width: 1500px) {
   #editor {
     height: 408px;
+  }
+  .repl-log {
+    min-height: calc(408px - var(--repl-prompt-h, 44px));
+    max-height: calc(408px - var(--repl-prompt-h, 44px));
   }
   #output {
     height: 482px;
