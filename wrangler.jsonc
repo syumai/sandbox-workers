@@ -3,6 +3,10 @@
   "name": "sandbox-workers",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-04",
+  "workers_dev": false,
+  "preview_urls": false,
+  // Served on the custom domain only; the workers.dev subdomain is disabled.
+  "routes": [{ "pattern": "sandbox-workers.syumai.dev", "custom_domain": true }],
   "assets": {
     "directory": "dist/ui",
     "binding": "ASSETS",
