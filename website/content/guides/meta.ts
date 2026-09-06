@@ -1,11 +1,5 @@
 export default {
-  title: "Guides",
-  pages: [
-    "service-bindings",
-    "sessions",
-    "playground",
-    "local-development",
-    "upgrades",
-  ],
-  order: 2,
+  title: "How-to guides",
+  pages: ["index", "deploy", "execute-code", "code-contexts", "manage-files"],
+  order: 3,
 };

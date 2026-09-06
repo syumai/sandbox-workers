@@ -15,7 +15,7 @@ Or, after npm publication:
 pnpm dlx @sandbox-workers/cli init ruby my-sandbox
 ```
 
-See [deployment setup](/getting-started/deploy) and [Service Bindings](/guides/service-bindings). The template requires a Paid plan and creates no public URL.
+See [deployment setup](/guides/deploy) and [Service Bindings](/configuration/wrangler). The template requires a Paid plan and creates no public URL.
 
 ## Example
 
@@ -33,7 +33,7 @@ puts "Hello from Ruby!"
 {message: "Hello, #{name}!", squares: (0..5).map { |x| x*x }}
 ```
 
-Every request gets a fresh engine instance. State does not persist between executions. Consult [limits](/reference/limits) for fuel, memory, and output budgets.
+Every request gets a fresh engine instance. State does not persist between executions. Consult [limits](/platform/limits) for fuel, memory, and output budgets.
 
 ## License notice
 

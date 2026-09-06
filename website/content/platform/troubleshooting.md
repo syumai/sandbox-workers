@@ -5,7 +5,7 @@ description: Diagnose deployment, binding, and execution failures.
 
 ## Deploy button shows a missing repository
 
-Cloudflare's button requires a public repository. Confirm that the template exists on the referenced branch and the source repository is public. Private GitHub access in your browser does not give anonymous Workers Builds downloads access.
+Cloudflare's button requires a public repository. Confirm that the template exists on the referenced branch and the source repository is public. Private GitHub access in your browser does not give anonymous Workers Builds downloads access. See [Deploy a runtime Worker](/guides/deploy) for the expected flow.
 
 ## Source checksum mismatch
 
@@ -13,15 +13,15 @@ Do not bypass verification. Confirm that `runtime-source.json` points to the int
 
 ## Build cannot find a workspace package
 
-Deploy the complete isolated `templates/<language>` directory. Do not point a button directly at `packages/<language>`: it depends on build-time workspace source. For npm-based deployment, wait for publication or install a locally packed runtime.
+Deploy the complete isolated `templates/<language>` directory. Do not point a button directly at `packages/<language>`: it depends on build-time workspace source. For npm-based deployment, wait for publication or install a locally packed runtime. See [Deploy a runtime Worker](/guides/deploy) for the deploy-button and CLI paths.
 
 ## The runtime has no public URL
 
-This is expected. Public and preview URLs are disabled. Call it through a Service Binding in another Worker.
+This is expected. Public and preview URLs are disabled. Call it through a Service Binding in another Worker — see [Wrangler configuration](/configuration/wrangler).
 
 ## Binding unavailable or wrong language
 
-Check the deployed Worker name and account. In local development, ensure the engine's Wrangler process is running. A Service Binding always targets exactly one runtime Worker — there is no `language` field in the request to route it elsewhere. If you need another language, bind to that runtime's Worker (or, on the Playground gateway, call `/execute/<language>`).
+Check the deployed Worker name and account against your [Wrangler configuration](/configuration/wrangler). In local development, ensure the engine's Wrangler process is running. A Service Binding always targets exactly one runtime Worker — there is no `language` field in the request to route it elsewhere. If you need another language, bind to that runtime's Worker (or, on the Playground gateway, call `/execute/<language>`).
 
 ## Execution fuel exhausted
 

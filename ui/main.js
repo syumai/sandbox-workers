@@ -138,7 +138,7 @@ try {
 // persisted `code` field in local storage is always this draft (see
 // persist()), never the REPL prompt.
 let scriptDraft = typeof saved?.code === "string" ? saved.code : hello;
-// REPL mode (see website/content/guides/playground.md "REPL mode").
+// REPL mode: line-at-a-time evaluation against a durable sandbox code context.
 // `userMode` is the mode the user picked ("script" or "repl"); Ruby has no
 // REPL mode, so the *effective* mode (effectiveMode()) forces "script" there
 // without losing the user's preference for the other languages. `sessionIds`
@@ -640,8 +640,8 @@ async function runScript() {
 }
 
 // ---- REPL mode --------------------------------------------------------
-// See website/content/guides/playground.md "REPL mode" and
-// website/content/guides/sessions.md for the underlying HTTP contract.
+// Each submitted line runs against the default code context of a per-browser
+// sandbox; see website/content/api/http-api.md for the underlying HTTP contract.
 
 function setMode(next) {
   if ($("mode-session").disabled) next = "script";

@@ -6,7 +6,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "limits": { "cpu_ms": 2000 },
-  // Sandbox idle expiry (docs/sdk-parity-design.md, website/content/guides/sessions.md):
+  // Sandbox idle expiry (docs/sdk-parity-design.md, website/content/configuration/environment-variables.md):
   // a Durable Object alarm deletes a sandbox after this many idle milliseconds.
   // "0" disables expiry. Short here so the public Playground reclaims sandboxes quickly.
   "vars": { "SESSION_IDLE_TTL_MS": "3600000" },
