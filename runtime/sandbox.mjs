@@ -19,7 +19,16 @@ import {
   MAX_REQUEST_BYTES,
 } from "@sandbox-workers/core";
 import { Workspace, WorkspaceError } from "./workspace.mjs";
-import { PAGE_BYTES, hashMemory, diffPages } from "./snapshot.mjs";
+import {
+  PAGE_BYTES,
+  CHUNK_PAGES,
+  CHUNK_BYTES,
+  chunkOf,
+  readChunk,
+  chunksToWrite,
+  hashMemory,
+  diffPages,
+} from "./snapshot.mjs";
 
 const ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 const ENV_VAR_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -177,13 +186,18 @@ function toFileInfo(entry, baseAbsolute, sandboxCreatedAt) {
   };
 }
 
-// Shapes the stored `snapshot:<contextId>` meta record for GET /sandboxes/:id,
-// per docs/sessions-design.md: `{build, pages: pageCount, bytes, takenAt, stale}`.
+// Shapes the context row's embedded `snapshot` record for GET /sandboxes/:id,
+// per docs/snapshot-cost-design.md: `{build, pages: pageCount, bytes,
+// storedBytes, takenAt, stale}`. `pages`/`bytes` keep meaning live data (the
+// snapshot's non-zero 64 KiB pages and their size); `storedBytes` is the
+// actual on-disk footprint (`chunkCount * CHUNK_BYTES`), which is larger
+// because a chunk that has any non-zero page is stored whole.
 function snapshotInfo(snapshotMeta) {
   return {
     build: snapshotMeta.build,
     pages: snapshotMeta.pageCount,
     bytes: snapshotMeta.bytes,
+    storedBytes: snapshotMeta.chunkCount * CHUNK_BYTES,
     takenAt: snapshotMeta.takenAt,
     stale: !!snapshotMeta.stale,
   };
@@ -199,8 +213,15 @@ export function createSandboxClass(engine) {
       this.changesSince = undefined;
       // At most one interpreter instance is kept resident per Durable
       // Object (MAX_RESIDENT_CONTEXTS = 1): { contextId, instance,
-      // prevPageHashes } for whichever context last executed, or null.
+      // prevPageHashes, chunkIds } for whichever context last executed, or
+      // null. `chunkIds` is the Set<chunk> currently stored in the `chunks`
+      // table for that context, maintained incrementally so `snapshot.
+      // chunkCount` (see snapshotInfo/_execute) never needs an extra read.
       this.resident = null;
+      // In-memory cache of the armed alarm deadline (docs/snapshot-cost-
+      // design.md, "Alarm policy"); may be lost on eviction, in which case
+      // _touchAlarm/alarm() fall back to storage.getAlarm().
+      this.alarmAt = null;
       this.queue = Promise.resolve();
       ctx.blockConcurrencyWhile(async () => {
         await this._ensureSchema();
@@ -213,26 +234,44 @@ export function createSandboxClass(engine) {
       );
       this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
       this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS contexts (id TEXT PRIMARY KEY, value TEXT)");
+      // WITHOUT ROWID: an INSERT counts 1 row written instead of the 2 a
+      // rowid table with a composite TEXT primary key costs (table + implicit
+      // index) — see docs/snapshot-cost-design.md, "Problem"/"Storage layout".
       this.ctx.storage.sql.exec(
-        "CREATE TABLE IF NOT EXISTS pages (context_id TEXT, page INTEGER, data BLOB, PRIMARY KEY (context_id, page))",
+        "CREATE TABLE IF NOT EXISTS chunks (context_id TEXT, chunk INTEGER, data BLOB, PRIMARY KEY (context_id, chunk)) WITHOUT ROWID",
       );
     }
 
-    // A `meta` row under the old key `session`, or a `pages` table that
-    // predates the context column (CREATE TABLE IF NOT EXISTS above is a
-    // no-op against an existing table, so an old install's `pages` never
-    // gains `context_id` on its own), means this Durable Object predates the
-    // context model. There is no migration path for either — wipe and start
-    // clean rather than guess at how to map one REPL onto a context.
+    // Storage format 3 (docs/snapshot-cost-design.md, "Storage layout"): 1 MiB
+    // chunk rows replace the old per-page `pages` table, and a context's
+    // snapshot record lives inside its own `contexts` row instead of a
+    // separate `meta` key. A `pages` table (format ≤ 2), a `meta` row under
+    // the old key `session` (the pre-context single-REPL format), a `meta`
+    // table with no `chunks` table next to it (format 1/2 always created
+    // `meta`; a brand-new Durable Object has neither and takes the "nothing
+    // to wipe" path below), or an explicit `format < 3` in `meta.sandbox` all
+    // mean this Durable Object predates the chunked layout. There is no
+    // migration from page rows to chunk rows — wipe and start clean, exactly
+    // as format 2 wiped format 1.
     async _ensureSchema() {
-      this._createTables();
-      const legacy = [...this.ctx.storage.sql.exec("SELECT 1 FROM meta WHERE key = 'session'")].length > 0;
-      const pageColumns = [...this.ctx.storage.sql.exec("PRAGMA table_info(pages)")];
-      const hasContextColumn = pageColumns.some((column) => column.name === "context_id");
-      if (legacy || !hasContextColumn) {
+      const tableExists = (name) =>
+        [
+          ...this.ctx.storage.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", name),
+        ].length > 0;
+      const hasPagesTable = tableExists("pages");
+      const hasChunksTable = tableExists("chunks");
+      const hasMetaTable = tableExists("meta");
+      const legacySessionKey =
+        hasMetaTable && [...this.ctx.storage.sql.exec("SELECT 1 FROM meta WHERE key = 'session'")].length > 0;
+      const sandboxRow = hasMetaTable
+        ? [...this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'sandbox'")]
+        : [];
+      const format = sandboxRow.length ? JSON.parse(sandboxRow[0].value).format : undefined;
+      const oldFormat = format !== undefined && format < 3;
+      if (hasPagesTable || (hasMetaTable && !hasChunksTable) || legacySessionKey || oldFormat) {
         await this.ctx.storage.deleteAll();
-        this._createTables();
       }
+      this._createTables();
     }
 
     // --- sandbox meta ---------------------------------------------------
@@ -254,7 +293,7 @@ export function createSandboxClass(engine) {
       if (!meta) {
         const now = new Date().toISOString();
         meta = {
-          format: 2,
+          format: 3,
           id,
           language: engine.language,
           build: engine.build,
@@ -319,6 +358,9 @@ export function createSandboxClass(engine) {
         createdAt: now,
         lastUsed: now,
         executions: 0,
+        // null until the first successful snapshot; see _execute and
+        // snapshotInfo (docs/snapshot-cost-design.md's folded-in record).
+        snapshot: null,
       };
       this._saveContext(context);
       return context;
@@ -344,34 +386,43 @@ export function createSandboxClass(engine) {
         this.resident.instance.close?.();
         this.resident = null;
       }
-      this._dropStoredSnapshot(contextId);
+      // The row is about to be deleted outright, so there's no point
+      // clearing and resaving its `snapshot` field first.
+      this._dropStoredSnapshot(contextId, { saveRow: false });
       this._deleteContextRow(contextId);
     }
 
     // --- per-context snapshots ---------------------------------------------
+    //
+    // The snapshot record used to live under its own `snapshot:<contextId>`
+    // meta key (docs/sessions-design.md); docs/snapshot-cost-design.md folds
+    // it into the context row's own `snapshot` field instead — it was being
+    // written on every execute for no reason the context row can't serve,
+    // and folding it in saves a row per execute. `_loadContextRow`/
+    // `_saveContext` (above) already carry it as part of the context's JSON.
 
-    _loadContextSnapshotMeta(contextId) {
-      const rows = [
-        ...this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = ?", `snapshot:${contextId}`),
-      ];
-      return rows.length ? JSON.parse(rows[0].value) : null;
-    }
-
-    _saveContextSnapshotMeta(contextId, snapshot) {
-      this.ctx.storage.sql.exec(
-        "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
-        `snapshot:${contextId}`,
-        JSON.stringify(snapshot),
-      );
-    }
-
-    // Drops a context's stored snapshot (its pages + its `snapshot:<id>` meta
-    // record) — used both when a stored snapshot's `build` no longer matches
-    // the current engine and when the context itself is deleted.
-    _dropStoredSnapshot(contextId) {
+    // Drops a context's stored snapshot (its chunk rows plus the embedded
+    // `snapshot` field on its context row) — used both when a stored
+    // snapshot's `build` no longer matches the current engine and when the
+    // context itself is deleted. `saveRow: false` skips the load-and-resave
+    // of the context row for callers that are about to delete or re-save it
+    // themselves right after (`_deleteContext`, `_ensureInstance`'s
+    // stale-build branch): saving it here too would be a wasted row write.
+    // With no row read/write left to keep atomic with the DELETE, a bare
+    // `.sql.exec()` (a single statement, already atomic) replaces
+    // `transactionSync`.
+    _dropStoredSnapshot(contextId, { saveRow = true } = {}) {
+      if (!saveRow) {
+        this.ctx.storage.sql.exec("DELETE FROM chunks WHERE context_id = ?", contextId);
+        return;
+      }
       this.ctx.storage.transactionSync(() => {
-        this.ctx.storage.sql.exec("DELETE FROM pages WHERE context_id = ?", contextId);
-        this.ctx.storage.sql.exec("DELETE FROM meta WHERE key = ?", `snapshot:${contextId}`);
+        this.ctx.storage.sql.exec("DELETE FROM chunks WHERE context_id = ?", contextId);
+        const context = this._loadContextRow(contextId);
+        if (context && context.snapshot) {
+          context.snapshot = null;
+          this._saveContext(context);
+        }
       });
     }
 
@@ -394,49 +445,72 @@ export function createSandboxClass(engine) {
       const onCwdChange = (cwd) => {
         context.cwd = cwd;
       };
-      const snapshotMeta = this._loadContextSnapshotMeta(context.id);
+      const snapshot = context.snapshot;
       let instance;
       let prevPageHashes;
-      if (snapshotMeta && snapshotMeta.build === engine.build) {
-        // Restore: read every stored page once up front (Durable Object
+      let chunkIds;
+      if (snapshot && snapshot.build === engine.build) {
+        // Restore: read every stored chunk once up front (Durable Object
         // SQLite reads are cheap — see docs/sessions-design.md's measured
         // 5 ms/16 MiB, 19 ms/64 MiB) into a plain Map so `readPage` below is
         // synchronous, matching runtime/{javascript,embedded}.mjs's restore
-        // contract.
+        // contract. A page with no row in its chunk's stored bytes (the
+        // chunk itself has no row at all, meaning all 16 of its pages were
+        // zero when the snapshot was taken) reads back as `undefined`,
+        // which the restore functions already treat as "leave zero".
         const rows = [
-          ...this.ctx.storage.sql.exec("SELECT page, data FROM pages WHERE context_id = ?", context.id),
+          ...this.ctx.storage.sql.exec("SELECT chunk, data FROM chunks WHERE context_id = ?", context.id),
         ];
-        const byPage = new Map(
-          rows.map((row) => [row.page, row.data instanceof Uint8Array ? row.data : new Uint8Array(row.data)]),
+        const byChunk = new Map(
+          rows.map((row) => [row.chunk, row.data instanceof Uint8Array ? row.data : new Uint8Array(row.data)]),
         );
         instance = engine.restore(this.workspace, context.cwd, onCwdChange, {
           // Stored as a decimal string (JSON can't carry a BigInt); see
           // runtime/protobuf.mjs's varint() which does BigInt(value)
           // internally, so passing the string straight back as `handle`
           // works unchanged.
-          handle: BigInt(snapshotMeta.handle),
-          extra: snapshotMeta.extra,
-          memoryPages: snapshotMeta.memoryPages,
-          readPage: (page) => byPage.get(page),
+          handle: BigInt(snapshot.handle),
+          extra: snapshot.extra,
+          memoryPages: snapshot.memoryPages,
+          readPage: (page) => {
+            const chunk = byChunk.get(chunkOf(page));
+            if (!chunk) return undefined;
+            const offset = (page % CHUNK_PAGES) * PAGE_BYTES;
+            return chunk.subarray(offset, offset + PAGE_BYTES);
+          },
         });
         // The restored instance's memory isn't necessarily identical to what
         // was stored (restore only replays non-zero pages) — hash it once so
         // the next diff is exact.
         prevPageHashes = hashMemory(instance.snapshot().memory);
+        chunkIds = new Set(byChunk.keys());
       } else {
-        if (snapshotMeta) this._dropStoredSnapshot(context.id); // stale build: boot fresh, replay nothing
+        if (snapshot) {
+          // stale build: boot fresh, replay nothing. `context.snapshot` is
+          // cleared in memory here and the row is saved later (by _persist,
+          // once this execute() completes), so the drop itself doesn't need
+          // to touch the row.
+          this._dropStoredSnapshot(context.id, { saveRow: false });
+          context.snapshot = null;
+        }
         instance = engine.boot(this.workspace, context.cwd, onCwdChange);
         prevPageHashes = new Map();
+        chunkIds = new Set();
       }
-      this.resident = { contextId: context.id, instance, prevPageHashes };
+      this.resident = { contextId: context.id, instance, prevPageHashes, chunkIds };
       return instance;
     }
 
-    // Writes sandbox meta, the workspace file diff (if any), and — for
-    // execute() — the resident context's row plus its memory page diff and
-    // snapshot record, all in one transaction (docs/sessions-design.md step
-    // 4, extended per context). `contextWrite` is omitted for plain file
-    // operations, which are sandbox-level, not tied to any context.
+    // Writes the workspace file diff (if any), the resident context's row
+    // (with its embedded snapshot record) plus its memory chunk diff for
+    // execute(), and sandbox meta -- all in one transaction
+    // (docs/sessions-design.md step 4, extended per context and per
+    // docs/snapshot-cost-design.md's chunked write unit). `contextWrite` is
+    // omitted for plain file operations, which are sandbox-level, not tied
+    // to any context. `sandboxMeta` is only written when the caller passes
+    // one: most callers now route their `lastUsed` update through the
+    // throttled `_touchAlarm` (decision 3) instead of writing it here on
+    // every call.
     _persist(sandboxMeta, fileDiff, contextWrite) {
       const byPath = fileDiff ? new Map(this.workspace.serialize().map((f) => [f.path, f])) : null;
       this.ctx.storage.transactionSync(() => {
@@ -454,26 +528,25 @@ export function createSandboxClass(engine) {
           }
         }
         if (contextWrite) {
-          const { context, pageDiff, snapshotRecord } = contextWrite;
-          if (pageDiff) {
-            // All-zero pages (the page went back to zero, or a stale row
-            // outlives a page count the current snapshot no longer reaches)
-            // are deleted rather than stored.
-            for (const page of pageDiff.removed)
-              this.ctx.storage.sql.exec("DELETE FROM pages WHERE context_id = ?1 AND page = ?2", context.id, page);
-            for (const [page, data] of pageDiff.changed) {
+          const { context, chunkWrites, snapshotRecord } = contextWrite;
+          if (chunkWrites) {
+            // A chunk that went entirely back to zero is deleted rather than
+            // stored (same rule format ≤ 2 applied per page).
+            for (const chunk of chunkWrites.remove)
+              this.ctx.storage.sql.exec("DELETE FROM chunks WHERE context_id = ?1 AND chunk = ?2", context.id, chunk);
+            for (const [chunk, data] of chunkWrites.upsert) {
               this.ctx.storage.sql.exec(
-                "INSERT INTO pages (context_id, page, data) VALUES (?1, ?2, ?3) ON CONFLICT(context_id, page) DO UPDATE SET data = ?3",
+                "INSERT INTO chunks (context_id, chunk, data) VALUES (?1, ?2, ?3) ON CONFLICT(context_id, chunk) DO UPDATE SET data = ?3",
                 context.id,
-                page,
+                chunk,
                 data,
               );
             }
           }
-          if (snapshotRecord) this._saveContextSnapshotMeta(context.id, snapshotRecord);
+          if (snapshotRecord) context.snapshot = snapshotRecord;
           this._saveContext(context);
         }
-        this._saveSandboxMeta(sandboxMeta);
+        if (sandboxMeta) this._saveSandboxMeta(sandboxMeta);
       });
     }
 
@@ -487,23 +560,60 @@ export function createSandboxClass(engine) {
     }
 
     // Called after every request that touches this sandbox (everything but
-    // DELETE, which has nothing left to expire). Returns the new
-    // `expiresAt` timestamp, or null when expiry is disabled
+    // DELETE, which has nothing left to expire). Returns the armed
+    // `expiresAt` deadline, or null when expiry is disabled
     // (`SESSION_IDLE_TTL_MS` is `"0"`), in which case any previously armed
     // alarm is cleared.
-    async _touchAlarm() {
+    //
+    // docs/snapshot-cost-design.md decision 3: re-arming the alarm and
+    // rewriting `meta.sandbox.lastUsed` are each their own row write
+    // (`setAlarm` and an UPDATE via ON CONFLICT DO UPDATE both count 1), so
+    // both are throttled to only happen when the new deadline (`want`) is
+    // more than `TTL / 10` later than the deadline actually armed right now
+    // — a sandbox may then be deleted after as little as 0.9 x TTL of
+    // inactivity instead of exactly TTL, which is documented. `this.alarmAt`
+    // is an in-memory cache of the armed deadline that can be lost on
+    // eviction; `storage.getAlarm()` (a read, effectively free) is the
+    // fallback so the throttling decision is still correct after a cold
+    // start. `metaAlreadyWritten` is for callers that already wrote
+    // `meta.sandbox` this request for their own reason (setEnvVars): they
+    // keep writing `lastUsed` for free and this function should only handle
+    // the alarm, not write the row a second time.
+    //
+    // Deviation from the design doc's pseudocode: it returns `armed ?? want`,
+    // which -- once any alarm has ever been armed -- returns the stale
+    // `armed` value even on a call that just re-armed to `want` (`??` only
+    // falls through when the left side is null/undefined, and `armed` isn't
+    // once one exists). That would make `expiresAt` stop advancing after the
+    // first arm. Returning `want` on the branch that actually re-arms (and
+    // `armed` otherwise) is the fix that matches the doc's own comment ("the
+    // deadline actually armed").
+    async _touchAlarm(sandboxMeta, { metaAlreadyWritten = false } = {}) {
       const ttl = this._idleTtlMs();
       if (ttl === 0) {
-        await this.ctx.storage.deleteAlarm();
+        const armed = this.alarmAt ?? (await this.ctx.storage.getAlarm());
+        if (armed != null) await this.ctx.storage.deleteAlarm();
+        this.alarmAt = null;
         return null;
       }
-      const expiresAt = Date.now() + ttl;
-      await this.ctx.storage.setAlarm(expiresAt);
-      return expiresAt;
+      const now = Date.now();
+      const armed = this.alarmAt ?? (await this.ctx.storage.getAlarm());
+      this.alarmAt = armed; // cache a cold-start storage.getAlarm() read even if we don't rearm below
+      const want = now + ttl;
+      if (armed == null || want - armed > ttl / 10) {
+        await this.ctx.storage.setAlarm(want);
+        this.alarmAt = want;
+        if (!metaAlreadyWritten) {
+          sandboxMeta.lastUsed = new Date(now).toISOString();
+          this._saveSandboxMeta(sandboxMeta);
+        }
+        return want; // the deadline actually armed
+      }
+      return armed; // unchanged: still the deadline actually armed
     }
 
     // Shared by DELETE /sandboxes/:id and the alarm handler below: wipe all
-    // Durable Object storage (files, meta, contexts, pages) and drop the
+    // Durable Object storage (files, meta, contexts, chunks) and drop the
     // in-memory instance/workspace so a later request starts completely
     // fresh.
     async _destroy() {
@@ -514,12 +624,26 @@ export function createSandboxClass(engine) {
       this.resident = null;
       this.workspace = null;
       this.changesSince = undefined;
+      this.alarmAt = null;
     }
 
-    // Durable Object alarm handler: fires when no request has touched this
-    // sandbox since the last `_touchAlarm()` call. Expiry deletes the whole
-    // sandbox — same effect as a caller's `DELETE /sandboxes/:id`.
+    // Durable Object alarm handler: fires at whatever deadline was last
+    // armed. Because the alarm is throttled (see _touchAlarm above), that
+    // deadline can be stale by up to `TTL / 10` -- so before destroying
+    // anything, re-check the real deadline computed from the persisted
+    // `lastUsed` and, if activity since the last arm pushed it into the
+    // future, re-arm to that time instead of expiring early
+    // (docs/snapshot-cost-design.md, "Alarm policy").
     async alarm() {
+      const meta = this._loadSandboxMeta();
+      const ttl = this._idleTtlMs();
+      if (meta == null || ttl === 0) return;
+      const deadline = Date.parse(meta.lastUsed) + ttl;
+      if (deadline > Date.now()) {
+        await this.ctx.storage.setAlarm(deadline);
+        this.alarmAt = deadline;
+        return;
+      }
       await this._destroy();
     }
 
@@ -554,11 +678,11 @@ export function createSandboxClass(engine) {
         if (method === "GET" && path === "/") return await this._info(sandboxMeta);
         if (method === "POST" && path === "/execute") return await this._execute(request, sandboxMeta);
         if (method === "POST" && path === "/contexts") return await this._createContext(request, sandboxMeta);
-        if (method === "GET" && path === "/contexts") return await this._listContexts();
+        if (method === "GET" && path === "/contexts") return await this._listContexts(sandboxMeta);
         const contextMatch = /^\/contexts\/([^/]+)$/.exec(path);
         if (method === "DELETE" && contextMatch) {
           this._deleteContext(decodeURIComponent(contextMatch[1]));
-          await this._touchAlarm();
+          await this._touchAlarm(sandboxMeta);
           return json({ success: true });
         }
         if (method === "POST" && path === "/env") return await this._setEnv(request, sandboxMeta);
@@ -574,7 +698,7 @@ export function createSandboxClass(engine) {
     async _info(sandboxMeta) {
       this._ensureWorkspace();
       const contexts = this._loadAllContexts().sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      const expiresAt = await this._touchAlarm();
+      const expiresAt = await this._touchAlarm(sandboxMeta);
       return json({
         id: sandboxMeta.id,
         language: sandboxMeta.language,
@@ -582,18 +706,15 @@ export function createSandboxClass(engine) {
         createdAt: sandboxMeta.createdAt,
         lastUsed: sandboxMeta.lastUsed,
         envVars: sandboxMeta.envVars,
-        contexts: contexts.map((context) => {
-          const snapshotMeta = this._loadContextSnapshotMeta(context.id);
-          return {
-            id: context.id,
-            language: context.language,
-            cwd: context.cwd,
-            createdAt: context.createdAt,
-            lastUsed: context.lastUsed,
-            executions: context.executions,
-            snapshot: snapshotMeta ? snapshotInfo(snapshotMeta) : null,
-          };
-        }),
+        contexts: contexts.map((context) => ({
+          id: context.id,
+          language: context.language,
+          cwd: context.cwd,
+          createdAt: context.createdAt,
+          lastUsed: context.lastUsed,
+          executions: context.executions,
+          snapshot: context.snapshot ? snapshotInfo(context.snapshot) : null,
+        })),
         workspace: this.workspace.stats(),
         expiresAt,
       });
@@ -614,9 +735,7 @@ export function createSandboxClass(engine) {
       }
       const envVars = validateEnvVars(body.envVars) ?? {};
       const context = this._createContextRecord({ language, cwd, envVars });
-      sandboxMeta.lastUsed = context.createdAt;
-      this._saveSandboxMeta(sandboxMeta);
-      await this._touchAlarm();
+      await this._touchAlarm(sandboxMeta);
       return json(
         {
           id: context.id,
@@ -629,9 +748,9 @@ export function createSandboxClass(engine) {
       );
     }
 
-    async _listContexts() {
+    async _listContexts(sandboxMeta) {
       const contexts = this._loadAllContexts().sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      await this._touchAlarm();
+      await this._touchAlarm(sandboxMeta);
       return json({
         contexts: contexts.map((context) => ({
           id: context.id,
@@ -655,7 +774,11 @@ export function createSandboxClass(engine) {
       sandboxMeta.envVars = nextEnv;
       sandboxMeta.lastUsed = new Date().toISOString();
       this._saveSandboxMeta(sandboxMeta);
-      await this._touchAlarm();
+      // envVars changed, so meta.sandbox is already being written this
+      // request -- lastUsed rides along for free (docs/snapshot-cost-
+      // design.md, "Alarm policy"); only the alarm itself still needs
+      // deciding.
+      await this._touchAlarm(sandboxMeta, { metaAlreadyWritten: true });
       return json({ success: true });
     }
 
@@ -715,7 +838,10 @@ export function createSandboxClass(engine) {
 
       context.executions++;
       context.lastUsed = new Date().toISOString();
-      sandboxMeta.lastUsed = context.lastUsed;
+      // sandboxMeta.lastUsed is no longer set here: it now goes through the
+      // throttled _touchAlarm below (docs/snapshot-cost-design.md decision
+      // 3), which writes it only when the alarm actually re-arms. The
+      // context row above still gets an exact lastUsed on every execute.
       if (result.session?.cwd) context.cwd = result.session.cwd;
       delete result.session;
 
@@ -749,13 +875,29 @@ export function createSandboxClass(engine) {
       if (live && live.canSnapshot()) {
         const start = performance.now();
         const snap = live.snapshot();
+        const memoryPages = Math.round(snap.memory.buffer.byteLength / PAGE_BYTES);
         const pageDiff = diffPages(snap.memory, resident.prevPageHashes);
         resident.prevPageHashes = pageDiff.hashes;
+        // Page diff -> chunk writes (docs/snapshot-cost-design.md decision
+        // 1): only the chunks containing a changed or removed page are
+        // touched, and `resident.chunkIds` (the running set of chunks
+        // actually stored for this context) is updated incrementally so
+        // `chunkCount` below never needs its own read.
+        const { upsert, remove } = chunksToWrite(pageDiff, pageDiff.hashes);
+        for (const chunk of remove) resident.chunkIds.delete(chunk);
+        for (const chunk of upsert) resident.chunkIds.add(chunk);
+        const chunkWrites = {
+          upsert: upsert.map((chunk) => [chunk, readChunk(snap.memory, chunk, memoryPages)]),
+          remove,
+        };
         const snapshotRecord = {
           build: engine.build,
-          memoryPages: Math.round(snap.memory.buffer.byteLength / PAGE_BYTES),
+          memoryPages,
           pageCount: pageDiff.hashes.size,
           bytes: pageDiff.hashes.size * PAGE_BYTES,
+          // Storage footprint, not live-data size (see snapshotInfo): a
+          // chunk with any non-zero page is stored whole.
+          chunkCount: resident.chunkIds.size,
           // `snap.handle` is a BigInt; JSON can't serialize it -- store it as
           // a decimal string (see the matching comment in _ensureInstance).
           handle: String(snap.handle),
@@ -763,7 +905,7 @@ export function createSandboxClass(engine) {
           takenAt: Date.now(),
           stale: false,
         };
-        this._persist(sandboxMeta, fileDiff, { context, pageDiff, snapshotRecord });
+        this._persist(null, fileDiff, { context, chunkWrites, snapshotRecord });
         snapshotMs = performance.now() - start;
       } else {
         // canSnapshot() is false (the guest still holds an open file
@@ -771,12 +913,12 @@ export function createSandboxClass(engine) {
         // stands, but restoring the on-disk snapshot later would replay an
         // older memory image than what this execution produced. Flag it so
         // GET reports `snapshot.stale: true`.
-        const existing = live ? this._loadContextSnapshotMeta(context.id) : null;
+        const existing = live ? context.snapshot : null;
         const staleRecord = existing && !existing.stale ? { ...existing, stale: true } : null;
-        this._persist(sandboxMeta, fileDiff, { context, pageDiff: null, snapshotRecord: staleRecord });
+        this._persist(null, fileDiff, { context, chunkWrites: null, snapshotRecord: staleRecord });
       }
 
-      const expiresAt = await this._touchAlarm();
+      const expiresAt = await this._touchAlarm(sandboxMeta);
       return json({
         code: body.code,
         language: context.language,
@@ -858,10 +1000,12 @@ export function createSandboxClass(engine) {
         if (["write", "mkdir", "delete", "rename", "move"].includes(body.op)) {
           const diff = this.workspace.changes(this.changesSince);
           this.changesSince = diff.snapshot;
-          sandboxMeta.lastUsed = timestamp;
-          this._persist(sandboxMeta, diff);
+          // lastUsed goes through the throttled _touchAlarm below rather
+          // than an unconditional sandboxMeta write (docs/snapshot-cost-
+          // design.md decision 3).
+          this._persist(null, diff);
         }
-        await this._touchAlarm();
+        await this._touchAlarm(sandboxMeta);
         return response;
       } catch (error) {
         if (error instanceof WorkspaceError)

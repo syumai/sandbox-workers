@@ -35,7 +35,9 @@ The timeout is the runtime Worker's own `SESSION_IDLE_TTL_MS` env var (a string,
 }
 ```
 
-`GET /sandboxes/:id` reports the current deadline as `expiresAt` (epoch milliseconds, or `null` when expiry is disabled), and a successful `POST /sandboxes/:id/execute` reports the same value in `context.expiresAt` — both reflect the alarm that request itself just (re)armed, so a caller can show "time remaining" without a separate `GET`.
+Re-arming the alarm (and the `lastUsed` bookkeeping that goes with it) is throttled: a touching request only moves the deadline when doing so would push it more than a tenth of the TTL further out, which keeps a busy sandbox from re-arming and rewriting its own metadata on every single request. In exchange, a sandbox can go idle for as little as **0.9× the configured TTL** before it's deleted, not exactly the full TTL — the alarm handler always re-checks the real `lastUsed` before deleting anything, so a sandbox is never destroyed while it's still within its TTL, only potentially a bit before the nominal deadline.
+
+`GET /sandboxes/:id` reports the current deadline as `expiresAt` (epoch milliseconds, or `null` when expiry is disabled), and a successful `POST /sandboxes/:id/execute` reports the same value in `context.expiresAt` — both report whichever deadline is actually armed right now, which (per the throttling above) may be from an earlier request than the one being answered, so it's always exact even though it doesn't necessarily move on every call.
 
 ## Enable sandboxes in your Worker
 
@@ -113,7 +115,7 @@ Every route is under `/sandboxes/:id` on the runtime Worker (or `/languages/:lan
 | `GET /sandboxes/:id` | | `SandboxInfo` (below) |
 | `DELETE /sandboxes/:id` | | `{success: true}` — deletes storage and drops every context |
 
-`SandboxInfo` (the `GET /sandboxes/:id` response) is `{id, language, engine, createdAt, lastUsed, envVars, contexts, workspace: {files, bytes}, expiresAt}`, where each entry of `contexts` is `{id, language, cwd, createdAt, lastUsed, executions, snapshot}`. `snapshot` is `{build, pages, bytes, takenAt, stale}` once that context has snapshotted at least once (`pages`/`bytes` describe the stored linear-memory pages, `takenAt` is a timestamp, `stale` is `true` when the most recent execution couldn't be snapshotted — see "Memory snapshots" above), or `null` before its first snapshot. `context.snapshotMs` (on the execute response) is present only on an execution that actually wrote a snapshot. `expiresAt` is the epoch-millisecond deadline of the sandbox's idle-expiry Durable Object alarm (see "Idle expiry" above), or `null` when expiry is disabled; the execute response's `context.expiresAt` is omitted the same way.
+`SandboxInfo` (the `GET /sandboxes/:id` response) is `{id, language, engine, createdAt, lastUsed, envVars, contexts, workspace: {files, bytes}, expiresAt}`, where each entry of `contexts` is `{id, language, cwd, createdAt, lastUsed, executions, snapshot}`. `snapshot` is `{build, pages, bytes, storedBytes, takenAt, stale}` once that context has snapshotted at least once (`pages`/`bytes` describe the stored linear-memory pages — live data — `takenAt` is a timestamp, `stale` is `true` when the most recent execution couldn't be snapshotted — see "Memory snapshots" above), or `null` before its first snapshot. `storedBytes` is the actual on-disk footprint, always a multiple of 1 MiB and at least `bytes`: snapshots are stored in 1 MiB chunks, so a chunk containing even one non-zero page is written whole. `context.snapshotMs` (on the execute response) is present only on an execution that actually wrote a snapshot. `expiresAt` is the epoch-millisecond deadline of the sandbox's idle-expiry Durable Object alarm (see "Idle expiry" above), or `null` when expiry is disabled; the execute response's `context.expiresAt` is omitted the same way.
 
 ### The files API
 
@@ -178,4 +180,4 @@ Sessions created before this change are discarded — the on-disk storage format
 
 ## See also
 
-[`docs/sdk-parity-design.md`](https://github.com/syumai/sandbox-workers/blob/main/docs/sdk-parity-design.md) in the repository is the full design document for this API surface. [`docs/sessions-design.md`](https://github.com/syumai/sandbox-workers/blob/main/docs/sessions-design.md) documents the Durable Object's internal storage layout and the memory-snapshot mechanism described above, which this change left unchanged apart from keying pages by context.
+[`docs/sdk-parity-design.md`](https://github.com/syumai/sandbox-workers/blob/main/docs/sdk-parity-design.md) in the repository is the full design document for this API surface. [`docs/sessions-design.md`](https://github.com/syumai/sandbox-workers/blob/main/docs/sessions-design.md) documents the Durable Object's internal storage layout and the memory-snapshot mechanism described above, which this change left unchanged apart from keying pages by context. [`docs/snapshot-cost-design.md`](https://github.com/syumai/sandbox-workers/blob/main/docs/snapshot-cost-design.md) documents the later storage-cost changes summarized above (1 MiB chunk rows, the folded-in snapshot record, and throttled idle expiry).

@@ -9,7 +9,14 @@ contexts (`/sandboxes/:id/...`, `Sandbox`, `SANDBOX`). The storage and
 memory-snapshot mechanics documented here — the Durable Object tables, the
 linear-memory snapshot format, idle expiry — are unchanged and still apply;
 only the `pages` table gained a context column, keying each stored snapshot
-page by context id instead of by session. This document is the specification
+page by context id instead of by session. **Further amended 2026-09-06 by
+`docs/snapshot-cost-design.md`**: the `pages` table (one row per changed
+64 KiB page) was replaced by a `chunks` table (one row per changed 1 MiB
+unit), the per-context `snapshot` record moved from its own `meta` key into
+the context's own row, and `lastUsed`/the expiry alarm are now throttled
+instead of rewritten on every touching request — see that document for the
+row-cost rationale; the storage table below reflects the current
+(post-amendment) shape. This document is the specification
 for the session layer that keeps sandbox state in Durable Objects. It follows
 the split used by Cloudflare's Sandbox SDK: a session is a Durable Object that
 owns durable state, while the interpreter instance held in memory is a cache
@@ -197,8 +204,8 @@ Storage (SQLite-backed Durable Object; `new_sqlite_classes` migration):
 | --- | --- |
 | `meta` | `{id, language, build, cwd, createdAt, lastUsed, executions, lifetime}` |
 | `files` table | `path TEXT PRIMARY KEY, data BLOB, updated_at INTEGER` |
-| `pages` table | `page INTEGER PRIMARY KEY, data BLOB` (64 KiB pages, deflated with fflate) |
-| `snapshot` | `{build, pages, bytes, handle, extra}`; `extra` holds engine integers such as the interrupt addresses |
+| `chunks` table | `context_id TEXT, chunk INTEGER, data BLOB, PRIMARY KEY (context_id, chunk)) WITHOUT ROWID` (1 MiB chunks of 16 pages each, stored raw — see `runtime/snapshot.mjs`'s "stored RAW, not deflated" note; unchanged by this amendment, only the write unit grew from one page to one chunk; see `docs/snapshot-cost-design.md`) |
+| `snapshot` | `{build, pages, bytes, storedBytes, handle, extra}`, embedded in the owning context's own row rather than a separate key; `extra` holds engine integers such as the interrupt addresses |
 
 `lifetime` is rotated on `DELETE` so in-flight work started before a destroy
 cannot write into the new session (the Sandbox SDK's lifetime-id idea).

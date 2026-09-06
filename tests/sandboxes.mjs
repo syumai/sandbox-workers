@@ -488,6 +488,13 @@ function uniqueId(prefix) {
   assert.equal(snap.stale, false);
   assert.equal(typeof snap.build, "string");
   assert.equal(typeof snap.takenAt, "number");
+  // docs/snapshot-cost-design.md: storage is chunked in 1 MiB units, so the
+  // on-disk footprint is a multiple of 1 MiB and at least as large as the
+  // live (non-zero-page) byte count it's built from.
+  const CHUNK_BYTES = 1024 * 1024;
+  assert.equal(typeof snap.storedBytes, "number");
+  assert.equal(snap.storedBytes % CHUNK_BYTES, 0);
+  assert.ok(snap.storedBytes >= snap.bytes);
 
   await deleteContext("javascript", id, after.contexts[0].id);
   const afterDelete = await info("javascript", id);
@@ -601,6 +608,56 @@ function uniqueId(prefix) {
     assert.ok(after.expiresAt > before, "GET / expiresAt should be in the future");
   }
   console.log("javascript: sandbox idle expiry (expiresAt) is present and in the future");
+}
+
+// ---- idle expiry throttling (docs/snapshot-cost-design.md decision 3) -----
+//
+// Re-arming the alarm and rewriting meta.sandbox.lastUsed only happen when
+// the new deadline is more than TTL/10 later than the one actually armed;
+// two executes moments apart are always well within TTL/10 for any TTL this
+// deployment would plausibly use, so expiresAt must not move between them.
+
+{
+  const id = uniqueId("js-throttle-still");
+  const r1 = await execute("javascript", id, { code: "1" });
+  const r2 = await execute("javascript", id, { code: "2" });
+  if (r1.context.expiresAt !== undefined && r2.context.expiresAt !== undefined) {
+    assert.equal(
+      r2.context.expiresAt,
+      r1.context.expiresAt,
+      "expiresAt should not move between two executes well within TTL/10 of each other",
+    );
+  }
+  console.log("javascript: expiresAt does not move between two quick executes (throttled re-arm)");
+}
+
+// The "does move" half of decision 3 needs to wait past TTL/10, which is too
+// slow to do against this deployment's real TTL (SESSION_IDLE_TTL_MS is
+// 3600000 in engine/wrangler*.jsonc, so TTL/10 is 6 minutes). Run this case
+// against a second dev server with a short TTL and point this file at it:
+//
+//   pnpm exec wrangler dev -c wrangler.jsonc -c engine/wrangler.jsonc \
+//     -c engine/wrangler-python.jsonc -c engine/wrangler-perl.jsonc \
+//     -c engine/wrangler-ruby.jsonc --var SESSION_IDLE_TTL_MS:20000 --port 8797
+//   SANDBOX_URL=http://localhost:8797 TEST_IDLE_TTL_MS=20000 node tests/sandboxes.mjs
+if (process.env.TEST_IDLE_TTL_MS) {
+  const ttl = Number(process.env.TEST_IDLE_TTL_MS);
+  const id = uniqueId("js-throttle-moves");
+  const r1 = await execute("javascript", id, { code: "1" });
+  assert.equal(typeof r1.context.expiresAt, "number");
+  await new Promise((resolve) => setTimeout(resolve, ttl / 10 + 1000));
+  const r2 = await execute("javascript", id, { code: "2" });
+  assert.ok(
+    r2.context.expiresAt > r1.context.expiresAt,
+    `expiresAt should move after waiting past TTL/10 (${r1.context.expiresAt} -> ${r2.context.expiresAt})`,
+  );
+  checks++;
+  console.log(`javascript: expiresAt moves after TTL/10 of inactivity (TEST_IDLE_TTL_MS=${ttl})`);
+} else {
+  console.log(
+    "javascript: skipping the expiresAt-moves-after-TTL/10 check -- set TEST_IDLE_TTL_MS " +
+      "(and point SANDBOX_URL at a dev server started with a matching --var SESSION_IDLE_TTL_MS) to run it",
+  );
 }
 
 console.log(`${checks} sandbox HTTP checks passed against ${base}`);

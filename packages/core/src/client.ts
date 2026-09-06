@@ -157,6 +157,10 @@ export interface SandboxInfo {
       build: string;
       pages: number;
       bytes: number;
+      // Actual on-disk footprint (chunkCount * 1 MiB), larger than `bytes`
+      // because a 1 MiB chunk containing any non-zero page is stored whole
+      // (docs/snapshot-cost-design.md).
+      storedBytes: number;
       takenAt: string;
       stale: boolean;
     } | null;
