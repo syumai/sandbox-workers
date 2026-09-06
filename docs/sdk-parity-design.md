@@ -11,7 +11,7 @@ Make code written against `@cloudflare/sandbox` (checked against 0.12.9)
 port to `@sandbox-workers/core` with few changes. The entry point, the code
 interpreter methods, the file methods, and the error classes match the SDK
 in name, argument order, and return shape. Fine-grained options may differ
-(documented in `website/content/reference/api.md`). Breaking changes to the
+(documented in `packages/core/README.md` and `website/content/guides/sessions.md`). Breaking changes to the
 unpublished 0.1.0 API and to the HTTP protocol are accepted.
 
 Explicitly out of scope: shell/process APIs (`exec`, `startProcess`, …),

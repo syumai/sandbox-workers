@@ -166,18 +166,3 @@ The Playground gateway returns `{languages:[...]}` with runtime IDs, names, pack
 ## Raw Service Binding calls
 
 The request URL may use any placeholder hostname; the binding determines the destination Worker. The path must be `/execute`. This API provides no host-network capability to the submitted code.
-
-## Differences from the Cloudflare Sandbox SDK
-
-`@sandbox-workers/core`'s `getSandbox`, `createCodeContext`, `runCode`, the file methods, and the error classes match [`@cloudflare/sandbox`](https://github.com/cloudflare/sandbox-sdk) (checked against 0.12.9) in name, argument order, and return shape, so code written against that SDK ports with few changes. Differences that remain:
-
-- **Entry point.** `getSandbox(env.SANDBOX, id)` takes a **Service Binding** to a separate runtime Worker, or a **Durable Object namespace** bound with `script_name` to it — never a same-Worker DO class the caller defines itself.
-- **One language per runtime Worker.** `language` is validated against the runtime's own language rather than selecting it; `typescript` is accepted on the JavaScript runtime (TypeScript-only syntax is stripped automatically, not transpiled on request).
-- **`results` entries are `text`/`json` only.** No `html`, `png`, or `chart` formats.
-- **`error.name` is the real guest error class** (for example a Python `ZeroDivisionError`), not a normalized SDK error name.
-- **No streaming.** `onStdout`/`onStderr`/`onResult`/`onError` all fire after the response arrives; there is no `runCodeStream`.
-- **`timeout`/`signal` bound the request, not the guest.** The Wasm engine's own fuel budget is what actually stops runaway guest code.
-- **No `exec`, processes, git, ports, buckets, backups, terminals, or `createSession`** (a shell session — unrelated to this API's own "sandbox").
-- **Files live only under `/workspace`.** No `readFileStream`, `watch`, or `checkChanges`.
-- **`deleteFile` accepts `{ recursive, force }`**; the SDK refuses to delete directories at all.
-- **Extensions not in the SDK:** `sandbox.getInfo()`; `ExecutionResult.context`, `.usage`, and `.durationMs`; `error.context.errno`; a hard cap of 8 code contexts per sandbox, with one interpreter resident in memory at a time.
