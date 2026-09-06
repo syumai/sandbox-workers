@@ -13,6 +13,7 @@ These pages explain how sandbox-workers works under the hood: the split between 
 
 ## Related resources
 
-- [How-to guides](/guides) - Task-oriented instructions
+- [Stateless mode](/stateless) - Task-oriented instructions for one-shot execution
+- [Stateful mode](/stateful) - Task-oriented instructions for code contexts and the shared workspace
 - [API reference](/api) - Method signatures and the HTTP contract
 - [Configuration](/configuration) - `wrangler.jsonc` bindings and environment variables

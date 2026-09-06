@@ -13,7 +13,7 @@ A sandbox is created the first time a request touches its id — there is no sep
 
 - **`/workspace`** is shared by every context in the sandbox, regardless of which binding it's bound to: files written from one context are visible from another, and they survive across executions, redeploys, and Durable Object eviction or hibernation. **Empty directories persist too** — a directory created with `mkdir` and never written into is stored as its own row and survives eviction, the same as a file.
 - **A code context's globals** (top-level variables, functions, classes, imported modules) persist the same way, through the memory-snapshot mechanism described in [Code contexts](/concepts/code-contexts) — not by keeping the interpreter resident, but by restoring it from a stored snapshot on that context's runtime Worker.
-- Nothing persists for **stateless execution**: the free `runCode` function, a plain `POST /execute` request, or `sandbox.interpreter.runCode({ binding })` against a `contexts: false` binding all boot a fresh Wasm instance every time, with no memory of any prior call.
+- Nothing persists for **stateless mode**: the free `runCode` function, a plain `POST /execute` request, or `sandbox.interpreter.runCode({ binding })` against a `contexts: false` binding all boot a fresh Wasm instance every time, with no memory of any prior call.
 - **A storage-format change is the one exception to "survives redeploys."** Both the `Sandbox` and each `Interpreter` Durable Object keep a format number in their stored metadata; when a deploy changes the on-disk layout, the first touch afterward wipes that object and starts fresh rather than migrating, with no way to recover the wiped state. This has happened several times so far as the storage layout evolved. It's a non-event for short-TTL deployments (idle sandboxes are already being recycled), but a deployment with a long or disabled idle TTL should expect long-lived sandboxes to be reset by a format-changing upgrade.
 
 ## Two idle timers
@@ -35,7 +35,7 @@ Any request that touches the sandbox (`sandbox.interpreter.runCode`, `getInfo`, 
 
 A sandbox can be destroyed explicitly at any time: the typed client's `sandbox.destroy()`. Destruction wipes storage, drops every live context's registry entry, and best-effort calls `DELETE /interpreters/<key>` on every binding a context referenced, wiping that context's memory snapshots on its runtime Worker too.
 
-## Ruby has no code contexts
+## Ruby is stateless-only
 
 Ruby's runtime Worker always reports `contexts: false` from `GET /interpreter` — the same as any runtime Worker deployed with `--stateless`. A sandbox can still exist and hold contexts bound to other languages; `createCodeContext({ binding: "RUBY" })` simply fails, and `runCode({ binding: "RUBY" })` runs statelessly instead.
 
@@ -44,6 +44,6 @@ Ruby's runtime Worker always reports `contexts: false` from `GET /interpreter` �
 - [Code contexts](/concepts/code-contexts)
 - [Architecture](/concepts/architecture)
 - [Security model](/concepts/security)
-- [Use code contexts](/guides/code-contexts)
+- [Use code contexts](/stateful/code-contexts)
 - [API: lifecycle](/api/lifecycle)
 - [Environment variables](/configuration/environment-variables)

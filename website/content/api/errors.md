@@ -3,6 +3,8 @@ title: Errors
 description: The SandboxError hierarchy, the ErrorResponse shape, and the error code table.
 ---
 
+**Mode:** both.
+
 `@sandbox-workers/core` distinguishes two kinds of failure:
 
 - **Guest errors** — the executed code raised an exception, or hit a fuel/output/result limit. These never throw: `runCode()` still resolves, with the failure described in `result.error` (see [Code interpreter](/api/interpreter#types)).
@@ -34,7 +36,7 @@ Every thrown error is `SandboxError` or one of its subclasses, all exported by `
 | --- | --- |
 | `Unknown binding 'X'` | No such key in your Worker's `env`, or the name doesn't match `/^[A-Za-z_][A-Za-z0-9_]*$/` |
 | `Binding 'X' is not a sandbox-workers runtime Worker` | The binding exists but has no `fetch` method, or `GET /interpreter` on it didn't return `{ language, engine, contexts }` |
-| `Code contexts are not supported by binding 'X' (language)` | The binding is a real runtime Worker, but it reports `contexts: false` (Ruby, or `--stateless`) |
+| `Code contexts are not supported by binding 'X' (language)` | The binding is a real runtime Worker, but it reports `contexts: false` (a stateless-only runtime Worker: Ruby, or one deployed with `--stateless`) |
 | `Pass a context or a binding` | `runCode()` was called with neither `context` nor `binding` |
 
 This probe runs only on `createCodeContext` and default-context creation, never on every execution.

@@ -5,7 +5,7 @@ description: Diagnose deployment, binding, and execution failures.
 
 ## Deploy button shows a missing repository
 
-Cloudflare's button requires a public repository. Confirm that the template exists on the referenced branch and the source repository is public. Private GitHub access in your browser does not give anonymous Workers Builds downloads access. See [Deploy a runtime Worker](/guides/deploy) for the expected flow.
+Cloudflare's button requires a public repository. Confirm that the template exists on the referenced branch and the source repository is public. Private GitHub access in your browser does not give anonymous Workers Builds downloads access. See [Deploy a runtime Worker](/deploy) for the expected flow.
 
 ## Source checksum mismatch
 
@@ -13,7 +13,7 @@ Do not bypass verification. Confirm that `runtime-source.json` points to the int
 
 ## Build cannot find a workspace package
 
-Deploy the complete isolated `templates/<language>` directory. Do not point a button directly at `packages/<language>`: it depends on build-time workspace source. For npm-based deployment, wait for publication or install a locally packed runtime. See [Deploy a runtime Worker](/guides/deploy) for the deploy-button and CLI paths.
+Deploy the complete isolated `templates/<language>` directory. Do not point a button directly at `packages/<language>`: it depends on build-time workspace source. For npm-based deployment, wait for publication or install a locally packed runtime. See [Deploy a runtime Worker](/deploy) for the deploy-button and CLI paths.
 
 ## The runtime has no public URL
 
@@ -25,7 +25,7 @@ Check the deployed Worker name and account against your [Wrangler configuration]
 
 ## `Unknown binding 'X'`
 
-`createCodeContext({ binding })` (or `runCode({ binding })`) named a binding that either doesn't exist in your `env` or doesn't match `/^[A-Za-z_][A-Za-z0-9_]*$/`. Check the `binding` name against the `services` entries in your own `wrangler.jsonc` (see [Bindings](/configuration/bindings)) — it must match exactly, including case.
+`createCodeContext({ binding })` (or `runCode({ binding })`) named a binding that either doesn't exist in your `env` or doesn't match `/^[A-Za-z_][A-Za-z0-9_]*$/`. Check the `binding` name against the `services` entries in your own `wrangler.jsonc` (see [Bindings](/configuration/bindings)) — it must match exactly, including case. This validation is specific to stateful mode's `createCodeContext`/binding-based `runCode`; the free, stateless `runCode(env.X, code)` does not probe `env.X` upfront the same way, so an unusable target there fails as a plain JavaScript error instead of this `ValidationFailedError`.
 
 ## `Binding 'X' is not a sandbox-workers runtime Worker`
 

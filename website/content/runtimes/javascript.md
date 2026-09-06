@@ -17,7 +17,7 @@ Or, after npm publication:
 pnpm dlx @sandbox-workers/cli init javascript my-sandbox
 ```
 
-See [deployment setup](/guides/deploy) and [Service Bindings](/configuration/wrangler). The template requires a Paid plan and creates no public URL.
+See [deployment setup](/deploy) and [Service Bindings](/configuration/wrangler). The template requires a Paid plan and creates no public URL.
 
 ## Example
 

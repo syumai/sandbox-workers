@@ -3,6 +3,8 @@ title: Lifecycle
 description: Get a sandbox client, inspect its state, and destroy it.
 ---
 
+**Mode:** stateful only — requires the `Sandbox` Durable Object. See [Stateful mode](/stateful).
+
 Get and manage the sandbox itself: the `Sandbox` Durable Object, hosted by **your own** Worker, that owns a `/workspace` and one or more code contexts. For the contexts and code execution living inside it, see [Code interpreter](/api/interpreter); for files, see [Files](/api/files).
 
 ## Export the Durable Object class

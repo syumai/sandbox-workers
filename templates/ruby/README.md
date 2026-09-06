@@ -36,7 +36,7 @@ Public and preview URLs are disabled. Deploying the runtime does not deploy the 
 
 ## Sandboxes and code contexts
 
-Code contexts (durable, stateful REPLs backed by a Durable Object) are not supported for Ruby: its initial memory and `RubyVM`'s host-side state rule out the memory-snapshot mechanism the other languages use. This template only serves the stateless `POST /execute`. See [the sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/code-contexts.md).
+Code contexts (durable, stateful REPLs backed by a Durable Object) are not supported for Ruby: its initial memory and `RubyVM`'s host-side state rule out the memory-snapshot mechanism the other languages use. This template only serves the stateless `POST /execute`. See [the sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/stateful/code-contexts.md).
 
 ## Licenses
 

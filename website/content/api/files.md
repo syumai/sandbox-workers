@@ -3,7 +3,9 @@ title: Files
 description: Read, write, and manage files in a sandbox's shared workspace.
 ---
 
-Every sandbox owns a writable `/workspace` directory, shared by every code context in that sandbox — a file written from one context (or through these methods) is visible to every other context and to a later `runCode()` in the same sandbox. See [Manage files](/guides/manage-files) for a task-oriented walkthrough.
+**Mode:** stateful only — requires the `Sandbox` Durable Object. See [Stateful mode](/stateful).
+
+Every sandbox owns a writable `/workspace` directory, shared by every code context in that sandbox — a file written from one context (or through these methods) is visible to every other context and to a later `runCode()` in the same sandbox. See [Manage files](/stateful/manage-files) for a task-oriented walkthrough.
 
 Paths must be absolute under `/workspace`. A path is normalized before use, and one that would resolve outside `/workspace` (for example via `..`) is rejected with `PERMISSION_DENIED`. Entries whose name starts with `.` are hidden: `listFiles()` omits them unless `includeHidden` is set.
 

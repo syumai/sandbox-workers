@@ -3,7 +3,9 @@ title: Code interpreter
 description: Create code contexts bound to a runtime Worker and run code with the typed client.
 ---
 
-`sandbox.interpreter` is always present on a `SandboxClient` — there is no attach step or subclass. A **code context** is a durable, named REPL bound to one runtime Worker by the **name of a Service Binding** in your own environment; running code in the same context lets top-level variables, functions, classes, and imported modules from one execution stay visible to the next. There is no `language` option anywhere: the binding determines the language. See [Code contexts](/concepts/code-contexts) for how this works under the hood, and [Use code contexts](/guides/code-contexts) for a task-oriented walkthrough.
+**Mode:** `sandbox.interpreter.*` is stateful mode; the free `runCode()` function (below) is stateless mode. See [Stateless mode](/stateless) and [Stateful mode](/stateful).
+
+`sandbox.interpreter` is always present on a `SandboxClient` — there is no attach step or subclass. A **code context** is a durable, named REPL bound to one runtime Worker by the **name of a Service Binding** in your own environment; running code in the same context lets top-level variables, functions, classes, and imported modules from one execution stay visible to the next. There is no `language` option anywhere: the binding determines the language. See [Code contexts](/concepts/code-contexts) for how this works under the hood, and [Use code contexts](/stateful/code-contexts) for a task-oriented walkthrough.
 
 Code contexts are supported for **JavaScript, Python, and Perl**. **Ruby does not support code contexts** — `GET /interpreter` on a Ruby runtime Worker always reports `contexts: false`, the same as any runtime Worker deployed with `--stateless`. Against such a binding, `createCodeContext()` fails with `ValidationFailedError`, and `runCode(code, { binding })` (no `context`) falls back to running statelessly instead.
 
@@ -84,7 +86,7 @@ await sandbox.interpreter.runCode(code: string, options?: RunCodeOptions): Promi
 - `code` — the script to run. The value of its last top-level expression is the result. Limited to 64 KiB UTF-8.
 - `options` (optional, `RunCodeOptions`):
   - `context` — the `CodeContext` to run in (from `createCodeContext()` or `listCodeContexts()`).
-  - `binding` — the Service Binding name to use when `context` is omitted: runs in (or creates) the **default context** for that binding — the oldest existing context with that `binding`, or a fresh one at `cwd: "/workspace"` when none exists. For a binding that reports `contexts: false` (Ruby, or `--stateless`), this runs **statelessly** through the runtime's plain `POST /execute` instead — no context, no `/workspace`, and the result has no `context` field.
+  - `binding` — the Service Binding name to use when `context` is omitted: runs in (or creates) the **default context** for that binding — the oldest existing context with that `binding`, or a fresh one at `cwd: "/workspace"` when none exists. For a binding that reports `contexts: false` (a stateless-only runtime Worker), this runs **statelessly** through the runtime's plain `POST /execute` instead — no context, no `/workspace`, and the result has no `context` field.
   - Passing neither `context` nor `binding` fails with `ValidationFailedError` ("Pass a context or a binding").
   - `envVars` — environment variables for this call (`Record<string, string | undefined>`; `undefined` unsets a key for this call rather than being sent).
   - `timeout` — a request timeout in milliseconds; internally builds `AbortSignal.timeout(timeout)`. The guest is still separately bounded by its fuel budget regardless of `timeout`.
@@ -111,7 +113,7 @@ const result = await sandbox.interpreter.runCode("import math\nmath.pi * radius 
 console.log(result.results[0]); // { text: "78.53981633974483" }
 ```
 
-### `runCode()` (free function)
+### `runCode()` (free function, stateless mode)
 
 Run code statelessly against a runtime Worker, without a sandbox or a code context: a fresh Wasm instance per call, no files, no `getSandbox` involved.
 

@@ -86,7 +86,7 @@ await sandbox.interpreter.runCode("counter = 1", { context: ctx });
 await sandbox.interpreter.runCode("counter += 1; counter", { context: ctx }); // 2
 ```
 
-See the [sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/code-contexts.md)
+See the [sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/stateful/code-contexts.md)
 for the full client API, the files API, and per-language REPL semantics.
 
 ## Execution contract

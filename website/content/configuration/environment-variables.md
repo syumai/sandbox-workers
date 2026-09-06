@@ -7,13 +7,21 @@ Environment variables work at two layers: guest-visible `envVars`, passed into e
 
 ## Guest environment variables
 
-Pass `envVars` to `runCode`:
+`envVars` works the same way in both modes — pass it as a call option. In stateless mode:
+
+```ts
+import { runCode } from "@sandbox-workers/core";
+
+await runCode(env.PYTHON, code, { envVars: { X: "12" } });
+```
+
+In stateful mode:
 
 ```ts
 await sandbox.interpreter.runCode(code, { envVars: { X: "12" } });
 ```
 
-Keys must match `/^[A-Za-z_][A-Za-z0-9_]*$/`; values must be strings. A `null` or `undefined` value is skipped rather than passed through. Only the key/value pairs supplied this way — merged across the layers below — are visible to guest code; nothing from either Worker's own host environment leaks through.
+Keys must match `/^[A-Za-z_][A-Za-z0-9_]*$/`; values must be strings. A `null` or `undefined` value is skipped rather than passed through. Only the key/value pairs supplied this way — merged across the layers below in stateful mode — are visible to guest code; nothing from either Worker's own host environment leaks through.
 
 Each language reads them differently:
 
@@ -24,7 +32,7 @@ Each language reads them differently:
 | Perl       | `$ENV{NAME}`           |
 | Ruby       | `ENV["NAME"]`          |
 
-### Sandbox-level: `setEnvVars`
+### Sandbox-level: `setEnvVars` (stateful mode only)
 
 `sandbox.setEnvVars()` sets variables for every execution in the sandbox, across every context and every binding, until changed again:
 
@@ -34,7 +42,7 @@ await sandbox.setEnvVars({ NAME: "value", OLD: undefined }); // undefined unsets
 
 Passing `undefined` for a key removes it rather than setting the literal string `"undefined"`.
 
-### Context-level: `envVars` on `createCodeContext`
+### Context-level: `envVars` on `createCodeContext` (stateful mode only)
 
 A code context can carry its own `envVars`, set once when the context is created:
 
@@ -52,9 +60,9 @@ When the same key is set at more than one layer, a later source overrides an ear
 
 An explicit `null`/`undefined` at any layer unsets that key for the merged result rather than passing the literal string through to the guest. This full merge happens in the `Sandbox` Durable Object, which sends the flat, already-merged result to the runtime Worker.
 
-## Two idle-TTL settings, on two Workers
+## Two idle-TTL settings, on two Workers (stateful mode only)
 
-Because a sandbox and a code context's interpreter live in different Durable Objects — possibly in Workers you deployed independently — there are two separate settings:
+Both settings below apply only to stateful mode: a stateless call has no sandbox and no code context to expire. Because a sandbox and a code context's interpreter live in different Durable Objects — possibly in Workers you deployed independently — there are two separate settings:
 
 ### `SANDBOX_IDLE_TTL_MS` — your own Worker
 
@@ -85,6 +93,6 @@ Both default to 24 hours (Wrangler `vars` are always strings; unset or invalid v
 ## Related resources
 
 - [Wrangler configuration](/configuration/wrangler) — where `vars` and other Worker settings live.
-- [Execute code](/guides/execute-code) — passing `envVars` to `runCode`.
+- [Execute code](/stateless/execute-code) — passing `envVars` to `runCode`.
 - [Code interpreter](/api/interpreter) — `createCodeContext`, `setEnvVars`, and `runCode` signatures.
 - [Sandboxes](/concepts/sandboxes) — idle expiry behavior in full, including what happens when the timers mismatch.

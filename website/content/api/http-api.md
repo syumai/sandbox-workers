@@ -3,6 +3,8 @@ title: HTTP API
 description: The raw JSON contract behind the typed client — the runtime Worker's routes, the sandbox's wire protocol, and the gateway paths.
 ---
 
+**Mode:** both.
+
 `@sandbox-workers/core`'s typed client (see [Lifecycle](/api/lifecycle), [Code interpreter](/api/interpreter), and [Files](/api/files)) sits on top of two separate HTTP contracts: the runtime Worker's own routes (stable, and useful if you call a runtime Worker directly), and the wire protocol between your `Sandbox` Durable Object and that runtime Worker (documented here for completeness — **the `Sandbox` Durable Object's own routes are internal to the client** and not meant to be called directly).
 
 ## The runtime Worker's routes
@@ -11,7 +13,7 @@ Every `@sandbox-workers/<language>` Worker serves these routes, whether or not i
 
 ### `POST /execute`
 
-Stateless execution: a runtime Worker always executes a single language — the runtime is chosen by the Service Binding (or, on the Playground gateway, the URL path), never by the request. Use `Content-Type: application/json`.
+Stateless execution, used by stateless mode's free `runCode()` and by the stateful-mode fallback (`sandbox.interpreter.runCode(code, { binding })` against a `contexts: false` binding): a runtime Worker always executes a single language — the runtime is chosen by the Service Binding (or, on the Playground gateway, the URL path), never by the request. Use `Content-Type: application/json`.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |

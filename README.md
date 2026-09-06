@@ -107,7 +107,7 @@ await sandbox.writeFile("/workspace/notes.txt", "hi");
 await sandbox.readFile("/workspace/notes.txt");
 ```
 
-One sandbox can hold contexts of several languages at once, all sharing the same `/workspace`. See the [sandboxes and code contexts guide](website/content/guides/code-contexts.md) and [language runtimes](docs/languages.md) for the client API, the files API, per-language REPL semantics, and the snapshot mechanism.
+One sandbox can hold contexts of several languages at once, all sharing the same `/workspace`. See the [sandboxes and code contexts guide](website/content/stateful/code-contexts.md) and [language runtimes](docs/languages.md) for the client API, the files API, per-language REPL semantics, and the snapshot mechanism.
 
 ## Develop the Playground
 

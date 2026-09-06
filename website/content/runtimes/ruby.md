@@ -5,6 +5,8 @@ description: Execute code with CRuby 4.0.0 inside a dedicated Wasm Worker.
 
 Package: `@sandbox-workers/ruby`. Code is a script: the value of the last expression is the result. Supports Enumerable and the bundled standard library. The JavaScript bridge is disabled. gem installation and arbitrary native extensions are unavailable.
 
+**Ruby is stateless-only** — its runtime Worker always answers `contexts: false`, so it works in [stateless mode](/stateless) only; see [Code contexts](/concepts/code-contexts) for why.
+
 ## Deploy
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fsyumai%2Fsandbox-workers%2Ftree%2Fmain%2Ftemplates%2Fruby)
@@ -15,7 +17,7 @@ Or, after npm publication:
 pnpm dlx @sandbox-workers/cli init ruby my-sandbox
 ```
 
-See [deployment setup](/guides/deploy) and [Service Bindings](/configuration/wrangler). The template requires a Paid plan and creates no public URL.
+See [deployment setup](/deploy) and [Service Bindings](/configuration/wrangler). The template requires a Paid plan and creates no public URL.
 
 ## Example
 

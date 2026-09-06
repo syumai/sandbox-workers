@@ -76,18 +76,20 @@ export { default, Interpreter } from "@sandbox-workers/python";
 
 The generated README links to that runtime's `LICENSE` and `THIRD_PARTY_NOTICES.md`. Read them before use or redistribution. The installed engine has its own upstream licenses in addition to the MIT-licensed adapter.
 
-This deploys the **runtime Worker** only. Your own Worker (the caller) separately exports the `Sandbox` Durable Object from `@sandbox-workers/core` and binds this Worker by name as a Service Binding — see [Getting started](/get-started) and [Use code contexts](/guides/code-contexts).
+This deploys the **runtime Worker** only. It serves both modes: your own Worker (the caller) can call it directly with the free `runCode` for stateless mode, or separately export the `Sandbox` Durable Object from `@sandbox-workers/core` and bind this Worker by name as a Service Binding for stateful mode — see [Get started with stateless mode](/stateless/get-started) and [Get started with stateful mode](/stateful/get-started).
 
-### Stateless mode
+### Stateless-only runtime Workers
 
-Pass `--stateless` to scaffold a code-execution-only Worker: no `durable_objects`/`migrations` in `wrangler.jsonc`, and the entrypoint exports only `default` (no `Interpreter` Durable Object class), so `GET /interpreter` reports `contexts: false`. This is always the case for Ruby, which has no `Interpreter` class regardless of the flag. Call a stateless Worker with the free `runCode` function instead of a code context:
+Pass `--stateless` to scaffold a stateless-only runtime Worker: no `durable_objects`/`migrations` in `wrangler.jsonc`, and the entrypoint exports only `default` (no `Interpreter` Durable Object class), so `GET /interpreter` reports `contexts: false`. This is always the case for Ruby, which has no `Interpreter` class regardless of the flag. A stateless-only runtime Worker still works normally in stateless mode — call it with the free `runCode` function:
 
 ```ts
 import { runCode } from "@sandbox-workers/core";
 const result = await runCode(env.PYTHON, "1 + 1"); // PYTHON: a Service Binding to this Worker
 ```
 
-You can get the same result by hand, without the flag: delete the `durable_objects` and `migrations` blocks from an already-generated `wrangler.jsonc` (and drop the `Interpreter` export from `index.js`, though a leftover export is harmless if the binding itself is gone). The Worker still serves plain `/execute` and `GET /interpreter`; every `/interpreters/:key/*` route then answers 400 — see [HTTP API](/api/http-api) for exactly what still works without the binding. A caller's `createCodeContext({ binding })` against such a binding fails with `ValidationFailedError`; `runCode({ binding })` without a context falls back to the stateless path automatically.
+In stateful mode, a stateless-only runtime Worker's `contexts: false` means `createCodeContext({ binding })` against it fails with `ValidationFailedError`, and `sandbox.interpreter.runCode(code, { binding })` (no `context`) falls back to running statelessly instead.
+
+You can get the same result by hand, without the flag: delete the `durable_objects` and `migrations` blocks from an already-generated `wrangler.jsonc` (and drop the `Interpreter` export from `index.js`, though a leftover export is harmless if the binding itself is gone). The Worker still serves plain `/execute` and `GET /interpreter`; every `/interpreters/:key/*` route then answers 400 — see [HTTP API](/api/http-api) for exactly what still works without the binding.
 
 ### Before npm publication
 

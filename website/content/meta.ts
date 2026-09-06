@@ -1,8 +1,9 @@
 export default {
   pages: [
     "index",
-    "get-started",
-    "guides",
+    "deploy",
+    "stateless",
+    "stateful",
     "api",
     "concepts",
     "configuration",

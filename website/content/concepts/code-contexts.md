@@ -7,7 +7,7 @@ A **code context** is a named, durable REPL bound to one runtime Worker by the *
 
 A sandbox can hold contexts of **several bindings at once** — one language per context, but many languages per sandbox — all sharing the sandbox's single `/workspace`. A sandbox holds at most **8 code contexts across all bindings**, with only **1 interpreter resident in memory per runtime Worker** at a time — the rest are restored from their snapshot the next time they're used. `runCode` without an explicit `context` requires `binding` and uses (or creates) that binding's default context, so simple callers never need to think about contexts at all.
 
-For how to create, list, and delete contexts, and per-language REPL semantics, see [Use code contexts](/guides/code-contexts) and [API: interpreter](/api/interpreter).
+For how to create, list, and delete contexts, and per-language REPL semantics, see [Use code contexts](/stateful/code-contexts) and [API: interpreter](/api/interpreter).
 
 ## The shared workspace mirror
 
@@ -35,7 +35,7 @@ Ruby's runtime Worker always reports `contexts: false` from `GET /interpreter`: 
 
 ## See also
 
-- [Use code contexts](/guides/code-contexts) - how to create, list, and delete contexts, and use several languages in one sandbox
+- [Use code contexts](/stateful/code-contexts) - how to create, list, and delete contexts, and use several languages in one sandbox
 - [API: interpreter](/api/interpreter) - method signatures and the `ExecutionResult`/`CodeContext` types
 - [Architecture](/concepts/architecture) - the `Sandbox`/`Interpreter` split this all runs on
 - [`docs/sandbox-1-0-design.md`](https://github.com/syumai/sandbox-workers/blob/main/docs/sandbox-1-0-design.md) - the full design document for this API surface, including the workspace sync wire protocol

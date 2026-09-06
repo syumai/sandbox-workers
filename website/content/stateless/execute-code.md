@@ -1,9 +1,9 @@
 ---
 title: Execute code
-description: Run stateless code with the free runCode function and handle results and errors.
+description: Run code in stateless mode with the free runCode function and handle results and errors.
 ---
 
-This guide shows you how to run code with the free `runCode` function, read the result, and handle errors. For a durable alternative with state and files, see [Use code contexts](/guides/code-contexts) instead.
+This is the **stateless mode** guide: it shows you how to run code with the free `runCode` function, read the result, and handle errors. For a durable alternative with state and files, see [Use code contexts](/stateful/code-contexts) instead — that's stateful mode.
 
 ## Use the free `runCode` function
 
@@ -30,11 +30,11 @@ try {
 }
 ```
 
-This is the **stateless** path: `runCode(target, code, options?)` boots a fresh Wasm instance for every call — no code context, no files, nothing persists between calls. `target` must be a Service Binding (`Fetcher`) to the runtime Worker; a `Sandbox` Durable Object namespace throws synchronously — use `getSandbox(env.Sandbox, id).interpreter.runCode()` for that instead, since a stateless call has no sandbox id to route through. `runCode` always resolves to an `ExecutionResult`; it does not validate the result's shape at runtime. Guest errors set `output.error` instead of throwing. Transport failures (a malformed response or a non-2xx status) throw a `SandboxError` subclass. The client sends code only to the supplied binding, never to a public URL.
+This is the **stateless mode** path: `runCode(target, code, options?)` boots a fresh Wasm instance for every call — no code context, no files, nothing persists between calls. `target` must be a Service Binding (`Fetcher`) to the runtime Worker; a `Sandbox` Durable Object namespace throws synchronously — use `getSandbox(env.Sandbox, id).interpreter.runCode()` for that instead, since a stateless call has no sandbox id to route through. `runCode` always resolves to an `ExecutionResult`; it does not validate the result's shape at runtime. Guest errors set `output.error` instead of throwing. Transport failures (a malformed response or a non-2xx status) throw a `SandboxError` subclass. The client sends code only to the supplied binding, never to a public URL.
 
-For a durable, stateful alternative — top-level variables persisting across calls in a named code context, shared `/workspace`, several languages in one sandbox — use `getSandbox(env.Sandbox, id).interpreter.runCode(code, { context })` instead. See [Use code contexts](/guides/code-contexts) for the full walkthrough.
+For a durable, stateful-mode alternative — top-level variables persisting across calls in a named code context, shared `/workspace`, several languages in one sandbox — use `getSandbox(env.Sandbox, id).interpreter.runCode(code, { context })` instead. See [Use code contexts](/stateful/code-contexts) for the full walkthrough.
 
-Before publication, install the local core tarball produced by `pnpm run pack` (see [Deploy a runtime Worker](/guides/deploy)).
+Before publication, install the local core tarball produced by `pnpm run pack` (see [Deploy a runtime Worker](/deploy)).
 
 ## Read the result
 
