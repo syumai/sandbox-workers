@@ -1,26 +1,27 @@
-// createSandboxClass(engine) builds the Sandbox Durable Object class each
-// language package exports (renamed from SandboxSession/createSessionClass;
-// see docs/sdk-parity-design.md). A sandbox owns /workspace, cwd, the files
-// API, and idle expiry exactly as the old single-REPL session did (see
-// docs/sessions-design.md for those mechanics, unchanged), but the REPL
-// itself is now split into named "code contexts": one sandbox can hold up to
-// MAX_CONTEXTS interpreters, each with its own globals, cwd, and env, all
-// sharing the one /workspace. Only one interpreter is kept resident in
-// memory at a time (`this.resident`); the rest live only as their last
-// snapshot until an execute() switches back to them.
+// createInterpreterClass(engine) builds the Interpreter Durable Object class
+// each runtime Worker exports (renamed in place from `Sandbox`/
+// createSandboxClass; see docs/sandbox-1-0-design.md). An Interpreter is
+// keyed by the caller-side sandbox Durable Object's own id and owns only:
+// per-context memory snapshots (the `chunks` table, unchanged from
+// docs/sessions-design.md/docs/snapshot-cost-design.md) and an in-memory-only
+// mirror of the sandbox's /workspace, reconciled at the top of every
+// execute() from the sync payload the sandbox sends. There is no `files`
+// table any more -- /workspace has exactly one source of truth, the sandbox
+// Durable Object (`packages/core/src/sandbox.ts`) -- and no default-context
+// resolution or per-context envVars/language: context ids are minted by the
+// sandbox and passed in, and the execution env arrives flat, already merged.
 import { DurableObject } from "cloudflare:workers";
 import {
   ApiError,
   ErrorCode,
-  Operation,
   errnoErrorResponse,
   errorResponse,
   MAX_CODE_BYTES,
-  MAX_FILES_REQUEST_BYTES,
   MAX_REQUEST_BYTES,
-  resolveLanguage,
+  MAX_SYNC_REQUEST_BYTES,
+  Workspace,
+  WorkspaceError,
 } from "@sandbox-workers/core";
-import { Workspace, WorkspaceError } from "./workspace.mjs";
 import {
   PAGE_BYTES,
   CHUNK_PAGES,
@@ -33,58 +34,26 @@ import {
 } from "./snapshot.mjs";
 
 const ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
-const ENV_VAR_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
-// Set by the runtime worker's fetch() before forwarding to env.SANDBOX.get(...).fetch(),
-// and by @sandbox-workers/core's client when it talks to a Durable Object
-// namespace binding directly: keeps the DO's own routes (below) independent
-// of how the id is spelled in the public URL.
-const SANDBOX_ID_HEADER = "x-sandbox-id";
+// Set by the runtime worker's fetch() before forwarding
+// `/interpreters/:key/...` to env.INTERPRETER.get(...).fetch() with the
+// prefix stripped (see docs/sandbox-1-0-design.md, "Wire protocol: sandbox
+// Durable Object -> runtime Worker").
+const INTERPRETER_KEY_HEADER = "x-interpreter-key";
 
 const MAX_CONTEXTS = 8;
 
-// Idle expiry (docs/sessions-design.md phase 3, unchanged). A Durable Object
-// alarm is (re)armed after every request that touches a sandbox; when it
-// fires (no touching request arrived in the meantime), the whole sandbox is
-// deleted the same way `DELETE /sandboxes/:id` does. The TTL comes from the
-// runtime Worker's own `SESSION_IDLE_TTL_MS` env var (a string, because
-// Wrangler `vars` are strings): unset/invalid falls back to 24 hours, and
-// `"0"` disables expiry entirely (no alarm is ever armed, and an existing one
-// is cleared).
+// Idle expiry (docs/sessions-design.md phase 3, unchanged mechanics). A
+// Durable Object alarm is (re)armed after every request that touches an
+// interpreter; when it fires (no touching request arrived in the meantime),
+// the whole interpreter is wiped the same way `DELETE /interpreters/:key`
+// does. The TTL comes from the runtime Worker's own `INTERPRETER_IDLE_TTL_MS`
+// env var (a string, because Wrangler `vars` are strings; renamed from
+// `SESSION_IDLE_TTL_MS`): unset/invalid falls back to 24 hours, and `"0"`
+// disables expiry entirely (no alarm is ever armed, and an existing one is
+// cleared). Per docs/sandbox-1-0-design.md, this should be set to at least
+// the caller's own `SANDBOX_IDLE_TTL_MS`, or a context's globals can be gone
+// while the sandbox still lists it.
 const DEFAULT_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
-
-const FILE_OPERATION = {
-  read: Operation.FILE_READ,
-  write: Operation.FILE_WRITE,
-  mkdir: Operation.DIRECTORY_CREATE,
-  delete: Operation.FILE_DELETE,
-  rename: Operation.FILE_RENAME,
-  move: Operation.FILE_MOVE,
-  list: Operation.DIRECTORY_LIST,
-  exists: Operation.FILE_STAT,
-};
-
-const MIME_TYPES = {
-  ".json": "application/json",
-  ".js": "text/javascript",
-  ".mjs": "text/javascript",
-  ".py": "text/x-python",
-  ".pl": "text/x-perl",
-  ".rb": "text/x-ruby",
-  ".txt": "text/plain",
-  ".md": "text/markdown",
-  ".html": "text/html",
-  ".css": "text/css",
-  ".csv": "text/csv",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".svg": "image/svg+xml",
-  ".pdf": "application/pdf",
-  ".wasm": "application/wasm",
-  ".zip": "application/zip",
-  ".gz": "application/gzip",
-};
 
 function json(body, init = {}) {
   return Response.json(body, { headers: { "cache-control": "no-store" }, ...init });
@@ -104,85 +73,67 @@ async function readJsonBody(request, maxBytes = MAX_REQUEST_BYTES) {
   return body;
 }
 
-// Validates an envVars object: keys must be valid identifiers, values must
-// be a string (sets the var) or, when `allowNull`, `null` (unsets it — the
-// wire encoding of the SDK client's `undefined`, see setEnvVars in
-// packages/core/src/client.ts). Returns `raw` unchanged, or undefined if
-// `raw` itself is undefined.
-function validateEnvVars(raw, { allowNull = false } = {}) {
+// envVars arrives flat and already merged (sandbox.envVars + context.envVars
+// + call.envVars, computed by the sandbox -- see docs/sandbox-1-0-design.md,
+// "Env vars"): plain string values only, no null/unset semantics here.
+function validateEnvVars(raw) {
   if (raw === undefined) return undefined;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
     throw new ApiError(400, "envVars must be an object");
-  for (const [key, value] of Object.entries(raw)) {
-    if (!ENV_VAR_KEY.test(key)) throw new ApiError(400, `Invalid envVars key: ${key}`);
-    if (value === null && allowNull) continue;
+  for (const value of Object.values(raw)) {
     if (typeof value !== "string") throw new ApiError(400, "envVars values must be strings");
   }
   return raw;
 }
 
-// Execution env = sandbox envVars, then the context's own, then this call's
-// — a later source overrides an earlier one, and an explicit `null` (from
-// this call or a previous setEnvVars) unsets the key rather than passing the
-// string "null" through to the guest.
-function computeExecutionEnv(sandboxEnvVars, contextEnvVars, callEnvVars) {
-  const merged = { ...sandboxEnvVars, ...contextEnvVars, ...(callEnvVars ?? {}) };
-  const env = {};
-  for (const [key, value] of Object.entries(merged)) {
-    if (value === null || value === undefined) continue;
-    env[key] = value;
+// Validates the `workspace` field of a `/execute` request (see
+// docs/sandbox-1-0-design.md, "Workspace mirror and sync protocol").
+function validateWorkspacePayload(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    throw new ApiError(400, "workspace is required");
+  const { dirs, manifest, files } = raw;
+  if (!Array.isArray(dirs) || !dirs.every((d) => typeof d === "string"))
+    throw new ApiError(400, "workspace.dirs must be an array of strings");
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest))
+    throw new ApiError(400, "workspace.manifest must be an object");
+  for (const [path, hash] of Object.entries(manifest)) {
+    if (typeof path !== "string" || typeof hash !== "string")
+      throw new ApiError(400, "workspace.manifest must map string paths to string hashes");
   }
-  return env;
+  if (!Array.isArray(files)) throw new ApiError(400, "workspace.files must be an array");
+  for (const file of files) {
+    if (
+      !file ||
+      typeof file !== "object" ||
+      typeof file.path !== "string" ||
+      typeof file.data !== "string" ||
+      typeof file.updatedAt !== "number"
+    )
+      throw new ApiError(400, "workspace.files entries must be {path, data, updatedAt}");
+  }
+  return { dirs, manifest, files };
 }
 
-function validateFilesBody(body) {
-  const ops = new Set(["read", "write", "mkdir", "delete", "rename", "move", "list", "exists"]);
-  if (typeof body.op !== "string" || !ops.has(body.op)) throw new ApiError(400, "Unknown op");
-  if (typeof body.path !== "string" || !body.path) throw new ApiError(400, "path is required");
-  if ((body.op === "rename" || body.op === "move") && (typeof body.newPath !== "string" || !body.newPath))
-    throw new ApiError(400, `newPath is required for ${body.op}`);
-  if (body.encoding !== undefined && body.encoding !== "utf-8" && body.encoding !== "base64")
-    throw new ApiError(400, "encoding must be utf-8 or base64");
+// Builds the response `workspace` diff (docs/sandbox-1-0-design.md): `dirs`
+// is always the full post-run directory list; `files`/`deleted` are empty
+// when `fileDiff` is null (a guest error rolled the mirror back, so nothing
+// actually changed).
+function buildWorkspaceResponse(workspace, fileDiff) {
+  const dirs = workspace.manifest().dirs;
+  if (!fileDiff) return { dirs, files: [], deleted: [] };
+  const files = [...fileDiff.created, ...fileDiff.updated].map((path) => {
+    const read = workspace.read(path, "/workspace", { encoding: "base64" });
+    return { path, data: read.content, updatedAt: read.updatedAt };
+  });
+  return { dirs, files, deleted: fileDiff.deleted };
 }
 
-function mimeTypeFor(path, isBinary) {
-  const match = /\.[^./]+$/.exec(path);
-  const type = match ? MIME_TYPES[match[0].toLowerCase()] : undefined;
-  return type ?? (isBinary ? "application/octet-stream" : "text/plain");
-}
-
-function isHidden(relativePath) {
-  return relativePath.split("/").some((segment) => segment.startsWith("."));
-}
-
-// Maps a runtime/workspace.mjs list() entry to the SDK's FileInfo shape.
-// `baseAbsolute` is the normalized directory that was listed, used to derive
-// `relativePath`; directories report the sandbox's own createdAt as
-// `modifiedAt` because the workspace doesn't track directory mtimes.
-function toFileInfo(entry, baseAbsolute, sandboxCreatedAt) {
-  const name = entry.path.split("/").pop();
-  const relativePath = entry.path.startsWith(`${baseAbsolute}/`)
-    ? entry.path.slice(baseAbsolute.length + 1)
-    : name;
-  const isDir = entry.type === "directory";
-  return {
-    name,
-    absolutePath: entry.path,
-    relativePath,
-    type: entry.type,
-    size: entry.size,
-    modifiedAt: isDir ? sandboxCreatedAt : new Date(entry.updatedAt || Date.now()).toISOString(),
-    mode: isDir ? "drwxr-xr-x" : "-rw-r--r--",
-    permissions: { readable: true, writable: true, executable: isDir },
-  };
-}
-
-// Shapes the context row's embedded `snapshot` record for GET /sandboxes/:id,
-// per docs/snapshot-cost-design.md: `{build, pages: pageCount, bytes,
-// storedBytes, takenAt, stale}`. `pages`/`bytes` keep meaning live data (the
-// snapshot's non-zero 64 KiB pages and their size); `storedBytes` is the
-// actual on-disk footprint (`chunkCount * CHUNK_BYTES`), which is larger
-// because a chunk that has any non-zero page is stored whole.
+// Shapes a context row's embedded `snapshot` record for the execute
+// response, per docs/snapshot-cost-design.md: `{build, pages: pageCount,
+// bytes, storedBytes, takenAt, stale}`. `pages`/`bytes` keep meaning live
+// data (the snapshot's non-zero 64 KiB pages and their size); `storedBytes`
+// is the actual on-disk footprint (`chunkCount * CHUNK_BYTES`), which is
+// larger because a chunk that has any non-zero page is stored whole.
 function snapshotInfo(snapshotMeta) {
   return {
     build: snapshotMeta.build,
@@ -194,13 +145,17 @@ function snapshotInfo(snapshotMeta) {
   };
 }
 
-export function createSandboxClass(engine) {
-  return class Sandbox extends DurableObject {
+export function createInterpreterClass(engine) {
+  return class Interpreter extends DurableObject {
     constructor(ctx, env) {
       super(ctx, env);
       this.ctx = ctx;
       this.env = env;
-      this.workspace = null;
+      // In-memory only: there is no `files` table any more (see the module
+      // comment above). Starts empty; the sandbox's own `sent` map is empty
+      // right after an eviction too, so the next execute() for this
+      // interpreter always carries a full sync payload to rebuild it.
+      this.workspace = new Workspace();
       this.changesSince = undefined;
       // At most one interpreter instance is kept resident per Durable
       // Object (MAX_RESIDENT_CONTEXTS = 1): { contextId, instance,
@@ -220,9 +175,6 @@ export function createSandboxClass(engine) {
     }
 
     _createTables() {
-      this.ctx.storage.sql.exec(
-        "CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, data BLOB, updated_at INTEGER)",
-      );
       this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)");
       this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS contexts (id TEXT PRIMARY KEY, value TEXT)");
       // WITHOUT ROWID: an INSERT counts 1 row written instead of the 2 a
@@ -233,85 +185,67 @@ export function createSandboxClass(engine) {
       );
     }
 
-    // Storage format 3 (docs/snapshot-cost-design.md, "Storage layout"): 1 MiB
-    // chunk rows replace the old per-page `pages` table, and a context's
-    // snapshot record lives inside its own `contexts` row instead of a
-    // separate `meta` key. A `pages` table (format ≤ 2), a `meta` row under
-    // the old key `session` (the pre-context single-REPL format), a `meta`
-    // table with no `chunks` table next to it (format 1/2 always created
-    // `meta`; a brand-new Durable Object has neither and takes the "nothing
-    // to wipe" path below), or an explicit `format < 3` in `meta.sandbox` all
-    // mean this Durable Object predates the chunked layout. There is no
-    // migration from page rows to chunk rows — wipe and start clean, exactly
-    // as format 2 wiped format 1.
+    // Storage format 4 (docs/sandbox-1-0-design.md): the `files` table is
+    // gone (the workspace mirror is in-memory only now) and the meta row
+    // moves from key `sandbox` to key `interpreter`. A `files` table, a
+    // `pages` table (format <= 2), a `meta` row under the old key `sandbox`
+    // or `session`, or an explicit `format < 4` in `meta.interpreter` all
+    // mean this Durable Object predates the current layout. There is no
+    // migration -- wipe and start clean, exactly as every previous format
+    // change did.
     async _ensureSchema() {
       const tableExists = (name) =>
         [
           ...this.ctx.storage.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", name),
         ].length > 0;
+      const hasFilesTable = tableExists("files");
       const hasPagesTable = tableExists("pages");
-      const hasChunksTable = tableExists("chunks");
       const hasMetaTable = tableExists("meta");
-      const legacySessionKey =
-        hasMetaTable && [...this.ctx.storage.sql.exec("SELECT 1 FROM meta WHERE key = 'session'")].length > 0;
-      const sandboxRow = hasMetaTable
-        ? [...this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'sandbox'")]
+      const legacyKey =
+        hasMetaTable &&
+        [...this.ctx.storage.sql.exec("SELECT 1 FROM meta WHERE key IN ('sandbox', 'session')")].length > 0;
+      const interpreterRow = hasMetaTable
+        ? [...this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'interpreter'")]
         : [];
-      const format = sandboxRow.length ? JSON.parse(sandboxRow[0].value).format : undefined;
-      const oldFormat = format !== undefined && format < 3;
-      if (hasPagesTable || (hasMetaTable && !hasChunksTable) || legacySessionKey || oldFormat) {
+      const format = interpreterRow.length ? JSON.parse(interpreterRow[0].value).format : undefined;
+      const oldFormat = format !== undefined && format < 4;
+      if (hasFilesTable || hasPagesTable || legacyKey || oldFormat) {
         await this.ctx.storage.deleteAll();
       }
       this._createTables();
     }
 
-    // --- sandbox meta ---------------------------------------------------
+    // --- interpreter meta -------------------------------------------------
 
-    _loadSandboxMeta() {
-      const rows = [...this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'sandbox'")];
+    _loadInterpreterMeta() {
+      const rows = [...this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = 'interpreter'")];
       return rows.length ? JSON.parse(rows[0].value) : null;
     }
 
-    _saveSandboxMeta(meta) {
+    _saveInterpreterMeta(meta) {
       this.ctx.storage.sql.exec(
-        "INSERT INTO meta (key, value) VALUES ('sandbox', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1",
+        "INSERT INTO meta (key, value) VALUES ('interpreter', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1",
         JSON.stringify(meta),
       );
     }
 
-    _ensureSandboxMeta(id) {
-      let meta = this._loadSandboxMeta();
+    _ensureInterpreterMeta(key) {
+      let meta = this._loadInterpreterMeta();
       if (!meta) {
         const now = new Date().toISOString();
         meta = {
-          format: 3,
-          id,
-          language: engine.language,
+          format: 4,
+          key,
           build: engine.build,
           createdAt: now,
           lastUsed: now,
-          envVars: {},
           // Rotated implicitly on DELETE: storage is wiped, so the next
-          // _ensureSandboxMeta call mints a fresh one (docs/sessions-design.md).
+          // _ensureInterpreterMeta call mints a fresh one.
           lifetime: crypto.randomUUID(),
         };
-        this._saveSandboxMeta(meta);
+        this._saveInterpreterMeta(meta);
       }
       return meta;
-    }
-
-    // --- workspace --------------------------------------------------------
-
-    _loadFiles() {
-      return [...this.ctx.storage.sql.exec("SELECT path, data, updated_at FROM files")];
-    }
-
-    _ensureWorkspace() {
-      if (!this.workspace) {
-        this.workspace = Workspace.load(this._loadFiles());
-        this.changesSince = this.workspace.changes().snapshot;
-      }
-      return this.workspace;
     }
 
     // --- contexts ---------------------------------------------------------
@@ -337,15 +271,18 @@ export function createSandboxClass(engine) {
       this.ctx.storage.sql.exec("DELETE FROM contexts WHERE id = ?", id);
     }
 
-    _createContextRecord({ language, cwd, envVars }) {
+    // Context ids are minted by the sandbox and passed in (no
+    // crypto.randomUUID() here any more, and no language/envVars: those live
+    // only on the sandbox's own context registry now).
+    _createContextRecord({ id, cwd }) {
       if (this._loadAllContexts().length >= MAX_CONTEXTS)
         throw new ApiError(400, `Cannot create more than ${MAX_CONTEXTS} code contexts`);
+      if (this._loadContextRow(id))
+        throw new ApiError(400, `Code context '${id}' already exists`);
       const now = new Date().toISOString();
       const context = {
-        id: crypto.randomUUID(),
-        language,
+        id,
         cwd,
-        envVars: envVars ?? {},
         createdAt: now,
         lastUsed: now,
         executions: 0,
@@ -355,16 +292,6 @@ export function createSandboxClass(engine) {
       };
       this._saveContext(context);
       return context;
-    }
-
-    // runCode without a contextId reuses the first context (by createdAt)
-    // whose language matches, creating one under /workspace when none exists
-    // — the SDK's getOrCreateDefaultContext semantics, done server-side.
-    _resolveDefaultContext(language) {
-      const contexts = this._loadAllContexts().sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      const existing = contexts.find((c) => c.language === language);
-      if (existing) return existing;
-      return this._createContextRecord({ language, cwd: "/workspace", envVars: {} });
     }
 
     _deleteContext(contextId) {
@@ -426,7 +353,6 @@ export function createSandboxClass(engine) {
     // nothing to flush — and this context is booted or restored from its own
     // snapshot rows.
     _ensureInstance(context) {
-      this._ensureWorkspace();
       if (this.resident && this.resident.contextId === context.id && !this.resident.instance.invalid)
         return this.resident.instance;
       if (this.resident) {
@@ -492,32 +418,17 @@ export function createSandboxClass(engine) {
       return instance;
     }
 
-    // Writes the workspace file diff (if any), the resident context's row
-    // (with its embedded snapshot record) plus its memory chunk diff for
-    // execute(), and sandbox meta -- all in one transaction
-    // (docs/sessions-design.md step 4, extended per context and per
-    // docs/snapshot-cost-design.md's chunked write unit). `contextWrite` is
-    // omitted for plain file operations, which are sandbox-level, not tied
-    // to any context. `sandboxMeta` is only written when the caller passes
-    // one: most callers now route their `lastUsed` update through the
-    // throttled `_touchAlarm` (decision 3) instead of writing it here on
-    // every call.
-    _persist(sandboxMeta, fileDiff, contextWrite) {
-      const byPath = fileDiff ? new Map(this.workspace.serialize().map((f) => [f.path, f])) : null;
+    // Writes the resident context's row (with its embedded snapshot record)
+    // plus its memory chunk diff for execute(), and interpreter meta -- all
+    // in one transaction (docs/sessions-design.md step 4, extended per
+    // context and per docs/snapshot-cost-design.md's chunked write unit).
+    // There is no file diff to persist any more: /workspace is in-memory
+    // only here (see the module comment). `meta` is only written when the
+    // caller passes one: most callers now route their `lastUsed` update
+    // through the throttled `_touchAlarm` (decision 3) instead of writing it
+    // here on every call.
+    _persist(meta, contextWrite) {
       this.ctx.storage.transactionSync(() => {
-        if (fileDiff) {
-          for (const path of fileDiff.deleted) this.ctx.storage.sql.exec("DELETE FROM files WHERE path = ?", path);
-          for (const path of [...fileDiff.created, ...fileDiff.updated]) {
-            const file = byPath.get(path);
-            if (!file) continue;
-            this.ctx.storage.sql.exec(
-              "INSERT INTO files (path, data, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(path) DO UPDATE SET data = ?2, updated_at = ?3",
-              path,
-              file.data,
-              file.updatedAt,
-            );
-          }
-        }
         if (contextWrite) {
           const { context, chunkWrites, snapshotRecord } = contextWrite;
           if (chunkWrites) {
@@ -537,39 +448,36 @@ export function createSandboxClass(engine) {
           if (snapshotRecord) context.snapshot = snapshotRecord;
           this._saveContext(context);
         }
-        if (sandboxMeta) this._saveSandboxMeta(sandboxMeta);
+        if (meta) this._saveInterpreterMeta(meta);
       });
     }
 
     // --- idle expiry ------------------------------------------------------
 
     _idleTtlMs() {
-      const raw = this.env?.SESSION_IDLE_TTL_MS;
+      const raw = this.env?.INTERPRETER_IDLE_TTL_MS;
       if (raw === undefined || raw === null || raw === "") return DEFAULT_IDLE_TTL_MS;
       const ms = Number(raw);
       return Number.isFinite(ms) && ms >= 0 ? ms : DEFAULT_IDLE_TTL_MS;
     }
 
-    // Called after every request that touches this sandbox (everything but
-    // DELETE, which has nothing left to expire). Returns the armed
+    // Called after every request that touches this interpreter (everything
+    // but DELETE, which has nothing left to expire). Returns the armed
     // `expiresAt` deadline, or null when expiry is disabled
-    // (`SESSION_IDLE_TTL_MS` is `"0"`), in which case any previously armed
-    // alarm is cleared.
+    // (`INTERPRETER_IDLE_TTL_MS` is `"0"`), in which case any previously
+    // armed alarm is cleared.
     //
     // docs/snapshot-cost-design.md decision 3: re-arming the alarm and
-    // rewriting `meta.sandbox.lastUsed` are each their own row write
+    // rewriting `meta.interpreter.lastUsed` are each their own row write
     // (`setAlarm` and an UPDATE via ON CONFLICT DO UPDATE both count 1), so
     // both are throttled to only happen when the new deadline (`want`) is
     // more than `TTL / 10` later than the deadline actually armed right now
-    // — a sandbox may then be deleted after as little as 0.9 x TTL of
+    // — an interpreter may then be wiped after as little as 0.9 x TTL of
     // inactivity instead of exactly TTL, which is documented. `this.alarmAt`
     // is an in-memory cache of the armed deadline that can be lost on
     // eviction; `storage.getAlarm()` (a read, effectively free) is the
     // fallback so the throttling decision is still correct after a cold
-    // start. `metaAlreadyWritten` is for callers that already wrote
-    // `meta.sandbox` this request for their own reason (setEnvVars): they
-    // keep writing `lastUsed` for free and this function should only handle
-    // the alarm, not write the row a second time.
+    // start.
     //
     // Deviation from the design doc's pseudocode: it returns `armed ?? want`,
     // which -- once any alarm has ever been armed -- returns the stale
@@ -579,7 +487,7 @@ export function createSandboxClass(engine) {
     // first arm. Returning `want` on the branch that actually re-arms (and
     // `armed` otherwise) is the fix that matches the doc's own comment ("the
     // deadline actually armed").
-    async _touchAlarm(sandboxMeta, { metaAlreadyWritten = false } = {}) {
+    async _touchAlarm(meta) {
       const ttl = this._idleTtlMs();
       if (ttl === 0) {
         const armed = this.alarmAt ?? (await this.ctx.storage.getAlarm());
@@ -594,17 +502,15 @@ export function createSandboxClass(engine) {
       if (armed == null || want - armed > ttl / 10) {
         await this.ctx.storage.setAlarm(want);
         this.alarmAt = want;
-        if (!metaAlreadyWritten) {
-          sandboxMeta.lastUsed = new Date(now).toISOString();
-          this._saveSandboxMeta(sandboxMeta);
-        }
+        meta.lastUsed = new Date(now).toISOString();
+        this._saveInterpreterMeta(meta);
         return want; // the deadline actually armed
       }
       return armed; // unchanged: still the deadline actually armed
     }
 
-    // Shared by DELETE /sandboxes/:id and the alarm handler below: wipe all
-    // Durable Object storage (files, meta, contexts, chunks) and drop the
+    // Shared by DELETE /interpreters/:key and the alarm handler below: wipe
+    // all Durable Object storage (meta, contexts, chunks) and drop the
     // in-memory instance/workspace so a later request starts completely
     // fresh.
     async _destroy() {
@@ -613,7 +519,7 @@ export function createSandboxClass(engine) {
       this._createTables();
       this.resident?.instance.close?.();
       this.resident = null;
-      this.workspace = null;
+      this.workspace = new Workspace();
       this.changesSince = undefined;
       this.alarmAt = null;
     }
@@ -626,7 +532,7 @@ export function createSandboxClass(engine) {
     // future, re-arm to that time instead of expiring early
     // (docs/snapshot-cost-design.md, "Alarm policy").
     async alarm() {
-      const meta = this._loadSandboxMeta();
+      const meta = this._loadInterpreterMeta();
       const ttl = this._idleTtlMs();
       if (meta == null || ttl === 0) return;
       const deadline = Date.parse(meta.lastUsed) + ttl;
@@ -654,8 +560,8 @@ export function createSandboxClass(engine) {
 
     async _handle(request) {
       try {
-        const id = request.headers.get(SANDBOX_ID_HEADER) ?? "";
-        if (!ID_PATTERN.test(id)) throw new ApiError(400, "Invalid sandbox id");
+        const key = request.headers.get(INTERPRETER_KEY_HEADER) ?? "";
+        if (!ID_PATTERN.test(key)) throw new ApiError(400, "Invalid interpreter key");
         const path = new URL(request.url).pathname;
         const method = request.method;
 
@@ -664,20 +570,16 @@ export function createSandboxClass(engine) {
           return json({ success: true });
         }
 
-        const sandboxMeta = this._ensureSandboxMeta(id);
+        const meta = this._ensureInterpreterMeta(key);
 
-        if (method === "GET" && path === "/") return await this._info(sandboxMeta);
-        if (method === "POST" && path === "/execute") return await this._execute(request, sandboxMeta);
-        if (method === "POST" && path === "/contexts") return await this._createContext(request, sandboxMeta);
-        if (method === "GET" && path === "/contexts") return await this._listContexts(sandboxMeta);
+        if (method === "POST" && path === "/contexts") return await this._createContext(request, meta);
         const contextMatch = /^\/contexts\/([^/]+)$/.exec(path);
         if (method === "DELETE" && contextMatch) {
           this._deleteContext(decodeURIComponent(contextMatch[1]));
-          await this._touchAlarm(sandboxMeta);
+          await this._touchAlarm(meta);
           return json({ success: true });
         }
-        if (method === "POST" && path === "/env") return await this._setEnv(request, sandboxMeta);
-        if (method === "POST" && path === "/files") return await this._files(request, sandboxMeta);
+        if (method === "POST" && path === "/execute") return await this._execute(request, meta);
 
         throw new ApiError(404, "Not found", ErrorCode.VALIDATION_FAILED);
       } catch (error) {
@@ -686,125 +588,69 @@ export function createSandboxClass(engine) {
       }
     }
 
-    async _info(sandboxMeta) {
-      this._ensureWorkspace();
-      const contexts = this._loadAllContexts().sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      const expiresAt = await this._touchAlarm(sandboxMeta);
-      return json({
-        id: sandboxMeta.id,
-        language: sandboxMeta.language,
-        engine: engine.engineName,
-        createdAt: sandboxMeta.createdAt,
-        lastUsed: sandboxMeta.lastUsed,
-        envVars: sandboxMeta.envVars,
-        contexts: contexts.map((context) => ({
-          id: context.id,
-          language: context.language,
-          cwd: context.cwd,
-          createdAt: context.createdAt,
-          lastUsed: context.lastUsed,
-          executions: context.executions,
-          snapshot: context.snapshot ? snapshotInfo(context.snapshot) : null,
-        })),
-        workspace: this.workspace.stats(),
-        expiresAt,
-      });
-    }
-
-    async _createContext(request, sandboxMeta) {
+    async _createContext(request, meta) {
       const body = await readJsonBody(request);
-      const language = resolveLanguage(body.language, engine.language);
+      if (typeof body.id !== "string" || !body.id || body.id.length > 128)
+        throw new ApiError(400, "id must be a non-empty string of at most 128 characters");
       let cwd = "/workspace";
       if (body.cwd !== undefined) {
         if (typeof body.cwd !== "string" || !body.cwd) throw new ApiError(400, "cwd must be a non-empty string");
-        this._ensureWorkspace();
         try {
           cwd = this.workspace.normalize(body.cwd, "/workspace").absolute;
         } catch (error) {
           throw new ApiError(400, error instanceof WorkspaceError ? error.message : "Invalid cwd");
         }
       }
-      const envVars = validateEnvVars(body.envVars) ?? {};
-      const context = this._createContextRecord({ language, cwd, envVars });
-      await this._touchAlarm(sandboxMeta);
-      return json(
-        {
-          id: context.id,
-          language: context.language,
-          cwd: context.cwd,
-          createdAt: context.createdAt,
-          lastUsed: context.lastUsed,
-        },
-        { status: 201 },
-      );
+      const context = this._createContextRecord({ id: body.id, cwd });
+      await this._touchAlarm(meta);
+      return json({ id: context.id, cwd: context.cwd, createdAt: context.createdAt }, { status: 201 });
     }
 
-    async _listContexts(sandboxMeta) {
-      const contexts = this._loadAllContexts().sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      await this._touchAlarm(sandboxMeta);
-      return json({
-        contexts: contexts.map((context) => ({
-          id: context.id,
-          language: context.language,
-          cwd: context.cwd,
-          createdAt: context.createdAt,
-          lastUsed: context.lastUsed,
-        })),
-      });
-    }
-
-    async _setEnv(request, sandboxMeta) {
-      const body = await readJsonBody(request);
-      const envVars = validateEnvVars(body.envVars, { allowNull: true });
-      if (envVars === undefined) throw new ApiError(400, "envVars is required");
-      const nextEnv = { ...sandboxMeta.envVars };
-      for (const [key, value] of Object.entries(envVars)) {
-        if (value === null) delete nextEnv[key];
-        else nextEnv[key] = value;
-      }
-      sandboxMeta.envVars = nextEnv;
-      sandboxMeta.lastUsed = new Date().toISOString();
-      this._saveSandboxMeta(sandboxMeta);
-      // envVars changed, so meta.sandbox is already being written this
-      // request -- lastUsed rides along for free (docs/snapshot-cost-
-      // design.md, "Alarm policy"); only the alarm itself still needs
-      // deciding.
-      await this._touchAlarm(sandboxMeta, { metaAlreadyWritten: true });
-      return json({ success: true });
-    }
-
-    async _execute(request, sandboxMeta) {
-      const body = await readJsonBody(request);
-      if (body.cwd !== undefined)
-        throw new ApiError(400, "cwd is a context property; pass it to createCodeContext");
+    async _execute(request, meta) {
+      const body = await readJsonBody(request, MAX_SYNC_REQUEST_BYTES);
       if (typeof body.code !== "string" || !body.code.trim())
         throw new ApiError(400, "Non-empty code is required");
       if (new TextEncoder().encode(body.code).length > MAX_CODE_BYTES)
         throw new ApiError(413, "Code exceeds 64 KiB");
-      const callEnvVars = validateEnvVars(body.envVars, { allowNull: true });
-      if (body.contextId !== undefined && (typeof body.contextId !== "string" || !body.contextId))
+      const envVars = validateEnvVars(body.envVars) ?? {};
+      if (typeof body.contextId !== "string" || !body.contextId)
         throw new ApiError(400, "contextId must be a non-empty string");
-      const language = resolveLanguage(body.language, engine.language);
+      const workspacePayload = validateWorkspacePayload(body.workspace);
 
-      let context;
-      if (body.contextId !== undefined) {
-        context = this._loadContextRow(body.contextId);
-        if (!context)
-          throw new ApiError(404, `Code context '${body.contextId}' not found`, ErrorCode.CONTEXT_NOT_FOUND, {
-            contextId: body.contextId,
-          });
-      } else {
-        context = this._resolveDefaultContext(language);
+      const context = this._loadContextRow(body.contextId);
+      if (!context)
+        throw new ApiError(404, `Code context '${body.contextId}' not found`, ErrorCode.CONTEXT_NOT_FOUND, {
+          contextId: body.contextId,
+        });
+
+      // Reconcile the mirror before running anything (docs/sandbox-1-0-
+      // design.md, "Workspace mirror and sync protocol"): create dirs, write
+      // files, delete what's no longer wanted. If the mirror still doesn't
+      // match the manifest afterwards (this interpreter was evicted, or the
+      // sandbox's own idea of what it holds was stale), answer `resync`
+      // instead of executing; the sandbox retries once with the missing
+      // files added.
+      const { missing } = this.workspace.applySync({
+        dirs: workspacePayload.dirs,
+        files: workspacePayload.files,
+        manifest: workspacePayload.manifest,
+      });
+      if (missing.length > 0) {
+        await this._touchAlarm(meta);
+        return json({ resync: true, missing });
       }
+      // The response `workspace` diff is taken from right after
+      // reconciliation, not from whatever this context's mirror looked like
+      // before -- reconciliation itself is not "this execution's changes".
+      this.changesSince = this.workspace.changes().snapshot;
 
       const instance = this._ensureInstance(context);
       const before = this.workspace.serialize();
-      const execEnv = computeExecutionEnv(sandboxMeta.envVars, context.envVars, callEnvVars);
 
       let result;
       let threw = false;
       try {
-        result = instance.execute({ code: body.code, envVars: execEnv });
+        result = instance.execute({ code: body.code, envVars });
       } catch (error) {
         threw = true;
         // The JS engine throws here for a fuel-exhaustion interrupt (the
@@ -829,7 +675,7 @@ export function createSandboxClass(engine) {
 
       context.executions++;
       context.lastUsed = new Date().toISOString();
-      // sandboxMeta.lastUsed is no longer set here: it now goes through the
+      // meta.lastUsed is no longer set here: it now goes through the
       // throttled _touchAlarm below (docs/snapshot-cost-design.md decision
       // 3), which writes it only when the alarm actually re-arms. The
       // context row above still gets an exact lastUsed on every execute.
@@ -847,7 +693,6 @@ export function createSandboxClass(engine) {
         this.workspace.restoreFrom(before);
       } else {
         fileDiff = this.workspace.changes(this.changesSince);
-        this.changesSince = fileDiff.snapshot;
       }
 
       // Python/Perl: a trap or fuel exhaustion invalidates the instance in
@@ -896,25 +741,23 @@ export function createSandboxClass(engine) {
           takenAt: Date.now(),
           stale: false,
         };
-        this._persist(null, fileDiff, { context, chunkWrites, snapshotRecord });
+        this._persist(null, { context, chunkWrites, snapshotRecord });
         snapshotMs = performance.now() - start;
       } else {
         // canSnapshot() is false (the guest still holds an open file
         // descriptor beyond the preopens): the execution result still
         // stands, but restoring the on-disk snapshot later would replay an
         // older memory image than what this execution produced. Flag it so
-        // GET reports `snapshot.stale: true`.
+        // the response's `context.snapshot.stale` is true.
         const existing = live ? context.snapshot : null;
         const staleRecord = existing && !existing.stale ? { ...existing, stale: true } : null;
-        this._persist(null, fileDiff, { context, chunkWrites: null, snapshotRecord: staleRecord });
+        this._persist(null, { context, chunkWrites: null, snapshotRecord: staleRecord });
       }
 
-      const expiresAt = await this._touchAlarm(sandboxMeta);
+      await this._touchAlarm(meta);
       return json({
         code: body.code,
-        // ExecutionResult.language is the runtime's own language (unlike
-        // context.language, which stays the requested/normalized language,
-        // e.g. "typescript" on the javascript runtime — see _createContext).
+        // ExecutionResult.language/engine are the runtime's own.
         language: engine.language,
         engine: engine.engineName,
         durationMs: 0,
@@ -925,101 +768,10 @@ export function createSandboxClass(engine) {
           cwd: context.cwd,
           executions: context.executions,
           ...(snapshotMs !== undefined ? { snapshotMs } : {}),
-          ...(expiresAt !== null ? { expiresAt } : {}),
+          snapshot: context.snapshot ? snapshotInfo(context.snapshot) : null,
         },
+        workspace: buildWorkspaceResponse(this.workspace, fileDiff),
       });
-    }
-
-    async _files(request, sandboxMeta) {
-      const body = await readJsonBody(request, MAX_FILES_REQUEST_BYTES);
-      validateFilesBody(body);
-      this._ensureWorkspace();
-      // File ops are sandbox-level, not tied to any context: they always
-      // resolve relative paths against /workspace itself.
-      const cwd = "/workspace";
-      const timestamp = new Date().toISOString();
-      const operation = FILE_OPERATION[body.op];
-      try {
-        const path = this.workspace.normalize(body.path, cwd).absolute;
-        let response;
-        switch (body.op) {
-          case "read": {
-            const result = this.workspace.read(body.path, cwd, { encoding: body.encoding });
-            response = json({
-              success: true,
-              path,
-              content: result.content,
-              encoding: result.encoding,
-              isBinary: result.isBinary,
-              mimeType: mimeTypeFor(path, result.isBinary),
-              size: result.size,
-              timestamp,
-            });
-            break;
-          }
-          case "write":
-            this.workspace.write(body.path, cwd, body.content ?? "", { encoding: body.encoding });
-            response = json({ success: true, path, timestamp });
-            break;
-          case "mkdir":
-            this.workspace.mkdir(body.path, cwd, { recursive: !!body.recursive });
-            response = json({ success: true, path, recursive: !!body.recursive, timestamp });
-            break;
-          case "delete":
-            this.workspace.delete(body.path, cwd, { recursive: !!body.recursive, force: !!body.force });
-            response = json({ success: true, path, timestamp });
-            break;
-          case "rename":
-          case "move": {
-            this.workspace.rename(body.path, body.newPath, cwd);
-            const newPath = this.workspace.normalize(body.newPath, cwd).absolute;
-            response = json({ success: true, path, newPath, timestamp });
-            break;
-          }
-          case "list": {
-            const result = this.workspace.list(body.path, cwd, { recursive: !!body.recursive });
-            const files = result.entries
-              .map((entry) => toFileInfo(entry, path, sandboxMeta.createdAt))
-              .filter((info) => body.includeHidden || !isHidden(info.relativePath));
-            response = json({ success: true, path, files, count: files.length, timestamp });
-            break;
-          }
-          case "exists": {
-            const result = this.workspace.exists(body.path, cwd);
-            response = json({ success: true, path, exists: result.exists, timestamp });
-            break;
-          }
-        }
-
-        if (["write", "mkdir", "delete", "rename", "move"].includes(body.op)) {
-          const diff = this.workspace.changes(this.changesSince);
-          this.changesSince = diff.snapshot;
-          // lastUsed goes through the throttled _touchAlarm below rather
-          // than an unconditional sandboxMeta write (docs/snapshot-cost-
-          // design.md decision 3).
-          this._persist(null, diff);
-        }
-        await this._touchAlarm(sandboxMeta);
-        return response;
-      } catch (error) {
-        if (error instanceof WorkspaceError) {
-          // The SDK reports every failed mkdir (missing parent, existing
-          // path, non-directory parent) as FILESYSTEM_ERROR, keeping the
-          // Node-style code in context.errno — everything else keeps its
-          // usual errno->code mapping (errorCodeForErrno, unchanged).
-          const codeOverride =
-            body.op === "mkdir" && error.code !== "EACCES" && error.code !== "ENOSPC"
-              ? ErrorCode.FILESYSTEM_ERROR
-              : undefined;
-          return errnoErrorResponse(
-            error.code,
-            error.message,
-            { path: body.path, operation, ...error.details },
-            codeOverride,
-          );
-        }
-        throw error;
-      }
     }
   };
 }

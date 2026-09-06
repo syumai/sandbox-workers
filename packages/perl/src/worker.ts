@@ -7,23 +7,18 @@ import {
   createEmbeddedSession,
   restoreEmbeddedSession,
 } from "../../../runtime/embedded.mjs";
-import { createSandboxClass } from "../../../runtime/sandbox.mjs";
-import {
-  ApiError,
-  errorResponse,
-  handleStatelessSandboxRoute,
-  readExecution,
-  validateSandboxId,
-} from "@sandbox-workers/core";
+import { createInterpreterClass } from "../../../runtime/interpreter.mjs";
+import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
 
 const ENGINE_NAME = "Perl 5.42.2 / goccy v0.2.1";
-// Message for a /sandboxes/:id/* route this Worker can't serve when it has
-// no SANDBOX Durable Object binding (see docs/sdk-parity-design.md,
-// "Stateless mode"). A context-less /sandboxes/:id/execute still works.
-const NO_SANDBOX_BINDING =
-  "Code contexts are not supported: this Worker has no SANDBOX Durable Object binding";
+// Message for an /interpreters/:key/* route this Worker can't serve when it
+// has no INTERPRETER Durable Object binding (see docs/sandbox-1-0-design.md,
+// "Ruby" / stateless deployments).
+const NO_INTERPRETER_BINDING =
+  "Code contexts are not supported: this Worker has no INTERPRETER Durable Object binding";
+const INTERPRETER_KEY = /^[A-Za-z0-9._-]{1,128}$/;
 
-export const Sandbox = createSandboxClass({
+export const Interpreter = createInterpreterClass({
   language: "perl",
   engineName: ENGINE_NAME,
   build: build.sha256,
@@ -35,23 +30,17 @@ export const Sandbox = createSandboxClass({
   },
 });
 
-// SANDBOX is optional: a Worker deployed without it (see the CLI's
-// --stateless flag and docs/sdk-parity-design.md, "Stateless mode") still
-// serves plain /execute and a context-less /sandboxes/:id/execute.
+// INTERPRETER is optional: a Worker deployed without it (see the CLI's
+// --stateless flag and docs/sandbox-1-0-design.md) still serves plain
+// /execute; GET /interpreter reports { contexts: false }.
 interface Env {
-  SANDBOX?: DurableObjectNamespace;
+  INTERPRETER?: DurableObjectNamespace;
 }
 
-const SANDBOX_ROUTE = /^\/sandboxes\/([^/]+)(\/.*)?$/;
+const INTERPRETER_ROUTE = /^\/interpreters\/([^/]+)(\/.*)?$/;
 
-async function handleExecute(
-  request: Request,
-  options?: { rejectContextId?: string },
-): Promise<Response> {
-  const payload = await readExecution(request, {
-    runtimeLanguage: "perl",
-    ...options,
-  });
+async function handleExecute(request: Request): Promise<Response> {
+  const payload = await readExecution(request, { runtimeLanguage: "perl" });
   const start = performance.now();
   try {
     const result = runEmbedded(wasm, archive, "perl", payload);
@@ -92,25 +81,24 @@ async function handleExecute(
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const sandboxMatch = SANDBOX_ROUTE.exec(url.pathname);
-    if (sandboxMatch) {
-      const [, id, subpath] = sandboxMatch;
-      try {
-        validateSandboxId(id);
-      } catch (error) {
-        return errorResponse(
-          new ApiError(400, error instanceof Error ? error.message : "Invalid sandbox id"),
-        );
+    if (url.pathname === "/interpreter") {
+      return Response.json(
+        { language: "perl", engine: ENGINE_NAME, contexts: !!env.INTERPRETER },
+        { headers: { "cache-control": "no-store" } },
+      );
+    }
+    const interpreterMatch = INTERPRETER_ROUTE.exec(url.pathname);
+    if (interpreterMatch) {
+      const [, key, subpath] = interpreterMatch;
+      if (!INTERPRETER_KEY.test(key)) {
+        return errorResponse(new ApiError(400, "Invalid interpreter key"));
       }
-      if (!env.SANDBOX) {
-        return handleStatelessSandboxRoute(request, subpath, {
-          reason: NO_SANDBOX_BINDING,
-          execute: (req) => handleExecute(req, { rejectContextId: NO_SANDBOX_BINDING }),
-        });
+      if (!env.INTERPRETER) {
+        return errorResponse(new ApiError(400, NO_INTERPRETER_BINDING));
       }
-      const stub = env.SANDBOX.get(env.SANDBOX.idFromName(id));
+      const stub = env.INTERPRETER.get(env.INTERPRETER.idFromName(key));
       const headers = new Headers(request.headers);
-      headers.set("x-sandbox-id", id);
+      headers.set("x-interpreter-key", key);
       const hasBody = request.method !== "GET" && request.method !== "HEAD";
       const forwarded = new Request(new URL(subpath || "/", url), {
         method: request.method,
@@ -119,7 +107,7 @@ export default {
       });
       return stub.fetch(forwarded);
     }
-    if (new URL(request.url).pathname !== "/execute")
+    if (url.pathname !== "/execute")
       return new Response("Not found", { status: 404 });
     if (request.method !== "POST")
       return new Response("Method not allowed", { status: 405 });

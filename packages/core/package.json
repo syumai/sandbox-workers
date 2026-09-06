@@ -19,6 +19,9 @@
   "publishConfig": {
     "access": "public"
   },
+  "dependencies": {
+    "@bjorn3/browser_wasi_shim": "^0.4.2"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "pnpm run build"

@@ -16,15 +16,17 @@
       "fallthrough": true
     }
   ],
-  // Sandbox idle expiry (docs/sdk-parity-design.md, website/content/configuration/environment-variables.md):
-  // a Durable Object alarm deletes a sandbox after this many idle milliseconds.
+  // Interpreter idle expiry (docs/sandbox-1-0-design.md, website/content/configuration/environment-variables.md):
+  // a Durable Object alarm wipes an interpreter's snapshots after this many idle milliseconds.
   // "0" disables expiry. Short here so the public Playground reclaims sandboxes quickly.
-  "vars": { "SESSION_IDLE_TTL_MS": "3600000" },
-  "durable_objects": { "bindings": [{ "name": "SANDBOX", "class_name": "Sandbox" }] },
-  // Already deployed with SandboxSession under v1; v2 renames it in place
-  // rather than migrating to a fresh class (docs/sdk-parity-design.md).
+  "vars": { "INTERPRETER_IDLE_TTL_MS": "3600000" },
+  "durable_objects": { "bindings": [{ "name": "INTERPRETER", "class_name": "Interpreter" }] },
+  // Already deployed with SandboxSession under v1, then renamed to Sandbox
+  // under v2; v3 renames it again in place to Interpreter
+  // (docs/sandbox-1-0-design.md).
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["SandboxSession"] },
-    { "tag": "v2", "renamed_classes": [{ "from": "SandboxSession", "to": "Sandbox" }] }
+    { "tag": "v2", "renamed_classes": [{ "from": "SandboxSession", "to": "Sandbox" }] },
+    { "tag": "v3", "renamed_classes": [{ "from": "Sandbox", "to": "Interpreter" }] }
   ]
 }

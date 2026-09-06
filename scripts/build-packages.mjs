@@ -18,21 +18,21 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
     // would otherwise fail to resolve.
     mainFields: ["module", "main"],
   });
-  const supportsSandboxes = language !== "ruby";
+  const supportsContexts = language !== "ruby";
   await writeFile(
     `packages/${language}/dist/worker.d.ts`,
-    supportsSandboxes
+    supportsContexts
       ? [
           "declare const worker: { fetch(request: Request): Promise<Response> };",
           "export default worker;",
-          "// Bind this in the consuming Worker's wrangler config as SANDBOX to use",
-          "// sandboxes: { durable_objects: { bindings: [{ name: \"SANDBOX\", class_name: \"Sandbox\" }] } }.",
-          "// SANDBOX is optional: deployed without it, this Worker still serves plain",
-          "// /execute and a context-less /sandboxes/:id/execute (stateless mode).",
+          "// Bind this in the consuming Worker's wrangler config as INTERPRETER to use",
+          "// code contexts: { durable_objects: { bindings: [{ name: \"INTERPRETER\", class_name: \"Interpreter\" }] } }.",
+          "// INTERPRETER is optional: deployed without it, this Worker still serves plain",
+          "// /execute (stateless mode); GET /interpreter reports { contexts: false }.",
           "export interface Env {",
-          "  SANDBOX?: DurableObjectNamespace;",
+          "  INTERPRETER?: DurableObjectNamespace;",
           "}",
-          "export declare class Sandbox {",
+          "export declare class Interpreter {",
           "  constructor(ctx: DurableObjectState, env: unknown);",
           "  fetch(request: Request): Promise<Response>;",
           "}",
@@ -41,8 +41,8 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
       : [
           "declare const worker: { fetch(request: Request): Promise<Response> };",
           "export default worker;",
-          "// Code contexts are not supported for ruby: /sandboxes/* routes other than",
-          "// a context-less execute answer 400.",
+          "// Code contexts are not supported for ruby: GET /interpreter reports",
+          "// { contexts: false } and /interpreters/* routes answer 400.",
           "",
         ].join("\n"),
   );

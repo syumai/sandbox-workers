@@ -1,7 +1,9 @@
 // HTTP tests for durable sandboxes (code contexts), run like tests/http.mjs
 // against a running gateway (SANDBOX_URL). The gateway forwards
-// /languages/:language/sandboxes/:id/... to the runtime binding for
-// :language as /sandboxes/:id/... (see src/index.ts, docs/sdk-parity-design.md).
+// /languages/:language/sandboxes/:id/... to its own Sandbox Durable Object
+// (keyed by :id), forcing binding = :language.toUpperCase() on
+// POST .../contexts and POST .../execute (see src/index.ts,
+// docs/sandbox-1-0-design.md, "Gateway (Playground) and UI").
 import assert from "node:assert/strict";
 
 const base = process.env.SANDBOX_URL ?? "http://localhost:8787";
@@ -256,7 +258,14 @@ function uniqueId(prefix) {
   console.log("perl: cwd persists after chdir");
 }
 
-// ---- Ruby: no Durable Object, execute stays stateless ---------------------
+// ---- Ruby: no code contexts, execute stays stateless -----------------------
+//
+// Unlike the pre-1.0 design, the sandbox (contexts, /workspace, GET /, ...)
+// is now hosted by the gateway's own Sandbox Durable Object, not by the
+// runtime Worker -- so it exists for ruby too. Only binding = "RUBY" itself
+// reports `contexts: false` (GET /interpreter), so creating a RUBY-bound
+// context (or routing an execute to one) is what's rejected, not the
+// sandbox's other routes. See docs/sandbox-1-0-design.md, "Ruby".
 
 {
   const id = uniqueId("rb-stateless");
@@ -264,20 +273,6 @@ function uniqueId(prefix) {
   assert.deepEqual(r.results, [{ text: "2" }]);
   assert.ok(!("context" in r), "a ruby ExecutionResult should not report a context");
   console.log("ruby: context-less execute runs statelessly with no context in the result");
-}
-
-{
-  const id = uniqueId("rb-execute-context");
-  const res = await fetch(sandboxUrl("ruby", id, "/execute"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code: "1", contextId: "does-not-matter" }),
-  });
-  assert.equal(res.status, 400);
-  const body = await res.json();
-  assert.match(body.message, /not supported for ruby/);
-  checks++;
-  console.log("ruby: execute with a contextId returns 400");
 }
 
 {
@@ -289,17 +284,33 @@ function uniqueId(prefix) {
   });
   assert.equal(res.status, 400);
   const body = await res.json();
-  assert.match(body.message, /not supported for ruby/);
+  assert.match(body.message, /not supported by binding 'RUBY'/);
   checks++;
-  console.log("ruby: POST /contexts returns 400");
+  console.log("ruby: POST /contexts returns 400 (binding RUBY reports contexts: false)");
+}
+
+{
+  const id = uniqueId("rb-execute-bogus-context");
+  const res = await fetch(sandboxUrl("ruby", id, "/execute"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: "1", contextId: "does-not-matter" }),
+  });
+  assert.equal(res.status, 404);
+  const body = await res.json();
+  assert.equal(body.code, "CONTEXT_NOT_FOUND");
+  checks++;
+  console.log("ruby: execute with an unknown contextId is 404 CONTEXT_NOT_FOUND (context lookup is sandbox-side, language-independent)");
 }
 
 {
   const id = uniqueId("rb-info");
   const res = await fetch(sandboxUrl("ruby", id));
-  assert.equal(res.status, 400);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(body.contexts, []);
   checks++;
-  console.log("ruby: GET /sandboxes/:id returns 400 (no Durable Object backs ruby)");
+  console.log("ruby: GET /languages/ruby/sandboxes/:id succeeds -- the sandbox is hosted by the gateway, not by the ruby runtime");
 }
 
 // ---- code contexts: create / list / delete --------------------------------
@@ -309,6 +320,7 @@ function uniqueId(prefix) {
   const created = await createContext("javascript", id, { cwd: "/workspace", envVars: { A: "1" } });
   assert.equal(typeof created.id, "string");
   assert.equal(created.language, "javascript");
+  assert.equal(created.binding, "JAVASCRIPT");
   assert.equal(created.cwd, "/workspace");
   assert.ok(!Number.isNaN(Date.parse(created.createdAt)));
   assert.ok(!Number.isNaN(Date.parse(created.lastUsed)));
@@ -356,60 +368,45 @@ function uniqueId(prefix) {
   console.log("javascript: the default context is reused across context-less executes");
 }
 
-{
-  const id = uniqueId("ctx-lang");
-  const ts = await execute("javascript", id, { code: "const n: number = 41; n", language: "typescript" });
-  assert.deepEqual(ts.results, [{ text: "41" }]);
-  const rejected = await execute("javascript", id, { code: "1", language: "python" }, 400);
-  assert.equal(rejected.code, "VALIDATION_FAILED");
-  console.log("javascript: language 'typescript' is accepted, 'python' is rejected");
-}
-
-// ---- language aliases (case-insensitive, normalized) ----------------------
+// ---- cross-language: one sandbox id, two runtimes, one /workspace ---------
+//
+// docs/sandbox-1-0-design.md, "Tests": the same id reached through
+// /languages/javascript/sandboxes/:id and /languages/python/sandboxes/:id is
+// one sandbox with two contexts (different bindings) sharing /workspace.
 
 {
-  const id = uniqueId("ctx-alias");
-  const viaJs = await execute("javascript", id, { code: "1 + 1", language: "js" });
-  assert.deepEqual(viaJs.results, [{ text: "2" }]);
-  assert.equal(viaJs.language, "javascript", "ExecutionResult.language is always the runtime language");
-  const viaNode = await execute("javascript", id, { code: "1 + 1", language: "NODE" });
-  assert.deepEqual(viaNode.results, [{ text: "2" }]);
-  assert.equal(viaJs.context.id, viaNode.context.id, "'js'/'NODE' resolve to the same (javascript) default context");
+  const id = uniqueId("cross-lang");
+  await execute("javascript", id, {
+    code: 'fs.writeFileSync("/workspace/shared.txt", "from javascript")',
+  });
+  const readFromPython = await execute("python", id, {
+    code: 'open("/workspace/shared.txt").read()',
+  });
+  assert.deepEqual(readFromPython.results, [{ text: "'from javascript'" }]);
 
-  const viaTs = await execute("javascript", id, { code: "const n: number = 1; n", language: "ts" });
-  assert.deepEqual(viaTs.results, [{ text: "1" }]);
-  assert.notEqual(viaTs.context.id, viaJs.context.id, "'ts' resolves to a distinct default context from 'js'");
+  const shown = await info("javascript", id);
+  assert.equal(shown.contexts.length, 2);
+  assert.deepEqual(
+    shown.contexts.map((c) => c.binding).sort(),
+    ["JAVASCRIPT", "PYTHON"],
+  );
 
-  const py = uniqueId("py-alias");
-  const viaPython3 = await execute("python", py, { code: "1 + 1", language: "PYTHON3" });
-  assert.deepEqual(viaPython3.results, [{ text: "2" }]);
-  assert.equal(viaPython3.language, "python");
-  console.log("aliases: js/node/ts/python3 are accepted case-insensitively and normalized");
-}
+  const listedFromJs = await files("javascript", id, { op: "list", path: "/workspace" });
+  assert.ok(listedFromJs.files.some((f) => f.name === "shared.txt"));
+  const listedFromPy = await files("python", id, { op: "list", path: "/workspace" });
+  assert.ok(listedFromPy.files.some((f) => f.name === "shared.txt"));
 
-// ---- typescript context language is stored/reported as "typescript" -------
+  // An empty directory created via the files API is visible to guest code
+  // through either language's context.
+  await files("javascript", id, { op: "mkdir", path: "/workspace/empty-dir" });
+  const isDir = await execute("python", id, {
+    code: 'import os\nos.path.isdir("/workspace/empty-dir")',
+  });
+  assert.deepEqual(isDir.results, [{ text: "True" }]);
 
-{
-  const id = uniqueId("ctx-ts-report");
-  const created = await createContext("javascript", id, { language: "typescript" });
-  assert.equal(created.language, "typescript", "a typescript context is reported as typescript, not javascript");
-
-  const listed = await listContexts("javascript", id);
-  assert.equal(listed.contexts.find((c) => c.id === created.id).language, "typescript");
-
-  const infoBefore = await info("javascript", id);
-  assert.equal(infoBefore.contexts.find((c) => c.id === created.id).language, "typescript");
-
-  const r = await execute("javascript", id, { code: "1 + 1", contextId: created.id });
-  assert.deepEqual(r.results, [{ text: "2" }]);
-  assert.equal(r.context.id, created.id);
-  // ExecutionResult.language is always the runtime's own language, even
-  // though the context it ran in reports "typescript".
-  assert.equal(r.language, "javascript");
-
-  const infoAfter = await info("javascript", id);
-  assert.equal(infoAfter.contexts.find((c) => c.id === created.id).language, "typescript");
-  console.log('javascript: a "typescript" context is stored/reported as "typescript"; ExecutionResult.language stays "javascript"');
+  console.log(
+    "cross-language: one sandbox id via two /languages/:language paths shares /workspace across bindings",
+  );
 }
 
 // ---- setEnvVars layering ---------------------------------------------------
@@ -727,7 +724,7 @@ function uniqueId(prefix) {
   const before = Date.now();
   const r = await execute("javascript", id, { code: "1 + 1" });
   // The Playground's own engine/wrangler*.jsonc set a finite
-  // SESSION_IDLE_TTL_MS, but a caller could disable expiry (`"0"`), in which
+  // SANDBOX_IDLE_TTL_MS, but a caller could disable expiry (`"0"`), in which
   // case expiresAt is omitted/null -- only assert the shape when present.
   if (r.context.expiresAt !== undefined) {
     assert.equal(typeof r.context.expiresAt, "number");
@@ -764,13 +761,13 @@ function uniqueId(prefix) {
 }
 
 // The "does move" half of decision 3 needs to wait past TTL/10, which is too
-// slow to do against this deployment's real TTL (SESSION_IDLE_TTL_MS is
+// slow to do against this deployment's real TTL (SANDBOX_IDLE_TTL_MS is
 // 3600000 in engine/wrangler*.jsonc, so TTL/10 is 6 minutes). Run this case
 // against a second dev server with a short TTL and point this file at it:
 //
 //   pnpm exec wrangler dev -c wrangler.jsonc -c engine/wrangler.jsonc \
 //     -c engine/wrangler-python.jsonc -c engine/wrangler-perl.jsonc \
-//     -c engine/wrangler-ruby.jsonc --var SESSION_IDLE_TTL_MS:20000 --port 8797
+//     -c engine/wrangler-ruby.jsonc --var SANDBOX_IDLE_TTL_MS:20000 --port 8797
 //   SANDBOX_URL=http://localhost:8797 TEST_IDLE_TTL_MS=20000 node tests/sandboxes.mjs
 if (process.env.TEST_IDLE_TTL_MS) {
   const ttl = Number(process.env.TEST_IDLE_TTL_MS);
@@ -788,7 +785,7 @@ if (process.env.TEST_IDLE_TTL_MS) {
 } else {
   console.log(
     "javascript: skipping the expiresAt-moves-after-TTL/10 check -- set TEST_IDLE_TTL_MS " +
-      "(and point SANDBOX_URL at a dev server started with a matching --var SESSION_IDLE_TTL_MS) to run it",
+      "(and point SANDBOX_URL at a dev server started with a matching --var SANDBOX_IDLE_TTL_MS) to run it",
   );
 }
 

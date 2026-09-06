@@ -33,24 +33,25 @@ export { default } from "@sandbox-workers/ruby";
 Disable `workers_dev` and `preview_urls`, deploy the runtime, and add a Service Binding to the calling application's configuration:
 
 ```json
-{ "services": [{ "binding": "SANDBOX", "service": "sandbox-ruby" }] }
+{ "services": [{ "binding": "RUBY", "service": "sandbox-ruby" }] }
 ```
 
 The service name must match the deployed Worker. Install `@sandbox-workers/core` in the calling application:
 
 ```js
-import { getSandbox } from "@sandbox-workers/core";
-const sandbox = getSandbox(env.SANDBOX, "user-42");
-const output = await sandbox.runCode('x = ENV["X"].to_i\nx ** 2', {
+import { runCode } from "@sandbox-workers/core";
+const output = await runCode(env.RUBY, 'x = ENV["X"].to_i\nx ** 2', {
   envVars: { X: "12" },
 });
 // output.results[0].text === "144"
 ```
 
-Ruby has no Durable Object and does not support code contexts (`createCodeContext`
-throws): `getSandbox(env.SANDBOX, id).runCode(code)` above runs statelessly
-over `POST /sandboxes/:id/execute` the same way `POST /execute` does, without a
-`SANDBOX` Durable Object binding or migration.
+Ruby has no `Interpreter` Durable Object and does not support code contexts:
+`GET /interpreter` on this Worker always reports `contexts: false`, so a
+caller's `sandbox.interpreter.createCodeContext({ binding: "RUBY" })` fails
+with `ValidationFailedError`, and `sandbox.interpreter.runCode(code, { binding: "RUBY" })`
+(no context) runs statelessly instead, the same as the free `runCode` above
+— no Durable Object binding or migration needed on this Worker.
 
 ## Execution contract
 

@@ -24,20 +24,32 @@ for (const runtime of ["javascript", "python", "perl", "ruby"])
     assert.equal(config.preview_urls, false);
     const indexSource = readFileSync(join(dir, "index.js"), "utf8");
     assert.match(indexSource, new RegExp("@sandbox-workers/" + runtime));
-    // Code contexts (a Durable Object-backed REPL) are wired for every
-    // language except Ruby; see docs/sdk-parity-design.md.
+    // Code contexts (an Interpreter Durable Object backing memory
+    // snapshots) are wired for every language except Ruby; see
+    // docs/sandbox-1-0-design.md.
     if (runtime === "ruby") {
       assert.equal(config.durable_objects, undefined);
       assert.equal(config.migrations, undefined);
-      assert.doesNotMatch(indexSource, /Sandbox\b/);
+      assert.doesNotMatch(indexSource, /Interpreter\b/);
     } else {
       assert.deepEqual(config.durable_objects, {
-        bindings: [{ name: "SANDBOX", class_name: "Sandbox" }],
+        bindings: [{ name: "INTERPRETER", class_name: "Interpreter" }],
       });
       assert.deepEqual(config.migrations, [
-        { tag: "v1", new_sqlite_classes: ["Sandbox"] },
+        { tag: "v1", new_sqlite_classes: ["Interpreter"] },
       ]);
-      assert.match(indexSource, /Sandbox/);
+      assert.match(indexSource, /Interpreter/);
+      const readme = readFileSync(join(dir, "README.md"), "utf8");
+      assert.match(readme, /export \{ Sandbox \} from "@sandbox-workers\/core";/);
+      assert.match(readme, /getSandbox\(env\.Sandbox, "user-42"\)/);
+      assert.match(
+        readme,
+        new RegExp(
+          `sandbox\\.interpreter\\.createCodeContext\\(\\{ binding: "${runtime.toUpperCase()}"`,
+        ),
+      );
+      assert.match(readme, /INTERPRETER_IDLE_TTL_MS/);
+      assert.match(readme, /SANDBOX_IDLE_TTL_MS/);
     }
     assert.match(
       readFileSync(join(dir, "README.md"), "utf8"),
@@ -46,7 +58,7 @@ for (const runtime of ["javascript", "python", "perl", "ruby"])
     assert.throws(() => run("init", runtime, dir), /Refusing to overwrite/);
   });
 for (const runtime of ["javascript", "python", "perl"])
-  test(`shared CLI: --stateless ${runtime} has no durable_objects/migrations and no Sandbox export`, () => {
+  test(`shared CLI: --stateless ${runtime} has no durable_objects/migrations and no Interpreter export`, () => {
     const root = mkdtempSync(join(tmpdir(), "sandbox-cli-stateless-"));
     // --stateless may appear before or after the directory argument.
     const beforeDir = join(root, `${runtime}-before`);
@@ -58,7 +70,7 @@ for (const runtime of ["javascript", "python", "perl"])
       assert.equal(config.durable_objects, undefined);
       assert.equal(config.migrations, undefined);
       const indexSource = readFileSync(join(dir, "index.js"), "utf8");
-      assert.doesNotMatch(indexSource, /Sandbox\b/);
+      assert.doesNotMatch(indexSource, /Interpreter\b/);
       assert.match(indexSource, new RegExp("@sandbox-workers/" + runtime));
       const readme = readFileSync(join(dir, "README.md"), "utf8");
       assert.match(readme, /this Worker only serves stateless execution/);

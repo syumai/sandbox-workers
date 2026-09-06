@@ -1,128 +1,126 @@
 # @sandbox-workers/core
 
-Typed client and shared execution protocol for `@sandbox-workers/*` runtime
-Workers. This package contains **no Wasm engine**. Deploy a runtime Worker
-separately and add a binding:
+Shared execution protocol, `Workspace` module, and the typed client and
+Durable Object for the **Sandbox SDK 1.0**-style API (see
+`docs/sandbox-1-0-design.md`). This package contains **no Wasm engine**:
+deploy a runtime Worker (`@sandbox-workers/javascript`, `python`, `perl`, or
+`ruby`) separately, one per language, and bind it as a Service Binding in
+your own Worker.
+
+## Model
+
+Your Worker hosts the `Sandbox` Durable Object (exported from this package)
+and calls `getSandbox(env.Sandbox, id)` to get a typed client. A sandbox owns
+`/workspace` and a registry of **code contexts**; each context is bound to a
+runtime Worker by the **name of a Service Binding** in your own environment
+(`createCodeContext({ binding: "PYTHON" })`) — there is no `language` option.
+One sandbox can hold contexts of several languages at once, all sharing the
+same `/workspace`.
 
 ```jsonc
-// Caller wrangler.jsonc (merge into your existing configuration)
-{ "services": [{ "binding": "SANDBOX", "service": "sandbox-javascript" }] }
+// your wrangler.jsonc
+{
+  "durable_objects": { "bindings": [{ "name": "Sandbox", "class_name": "Sandbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+  "services": [
+    { "binding": "PYTHON", "service": "sandbox-python" },
+    { "binding": "JAVASCRIPT", "service": "sandbox-javascript" },
+  ],
+  "vars": { "SANDBOX_IDLE_TTL_MS": "86400000" }, // optional; "0" disables expiry
+}
 ```
 
 ```ts
-import { runCode } from "@sandbox-workers/core";
-
-export default {
-  async fetch(request, env) {
-    const result = await runCode(
-      env.SANDBOX,
-      "const x = Number(process.env.X);\nx ** 2",
-      { envVars: { X: "12" } },
-    );
-    return Response.json(result);
-  },
-};
+// your Worker's entry
+export { Sandbox } from "@sandbox-workers/core";
 ```
-
-`runCode(target, code, options?)` is the **stateless** path: it resolves to
-an `ExecutionResult` from a fresh Wasm instance, with no code context and no
-files. Code is a script — the value of the last expression is the result.
-Guest failures and resource limits (fuel, output, result size) set
-`result.error` instead of throwing; binding/network failures and non-200
-responses throw a `SandboxError` subclass (see [Errors](#errors)). `target`
-must be a Service Binding (`Fetcher`); it throws synchronously for a Durable
-Object namespace, since there's no sandbox id to route through in stateless
-mode.
-
-For a durable, stateful alternative — code contexts where top-level
-variables persist across calls — use `getSandbox(target, id, options?)`
-instead:
 
 ```ts
 import { getSandbox } from "@sandbox-workers/core";
 
-const sandbox = getSandbox(env.SANDBOX, "user-42");
-const result = await sandbox.runCode("const x = Number(process.env.X);\nx ** 2", {
-  envVars: { X: "12" },
-});
+const sandbox = getSandbox(env.Sandbox, "user-42");
+const py = await sandbox.interpreter.createCodeContext({ binding: "PYTHON" });
+const js = await sandbox.interpreter.createCodeContext({ binding: "JAVASCRIPT" });
+
+await sandbox.interpreter.runCode("open('/workspace/a.txt','w').write('hi')", { context: py });
+await sandbox.interpreter.runCode("fs.readFileSync('/workspace/a.txt','utf8')", { context: js });
+await sandbox.interpreter.runCode("1 + 1", { binding: "PYTHON" }); // default context for PYTHON
+
+await sandbox.setEnvVars({ TOKEN: "abc", OLD: undefined });
+await sandbox.writeFile("/workspace/a.txt", "hi");
+await sandbox.getInfo();
+await sandbox.destroy();
 ```
 
-`getSandbox` validates `id` (optionally lowercasing it first with
-`{ normalizeId: true }`) against `/^[A-Za-z0-9._-]{1,63}$/`, rejects a
-leading/trailing hyphen, and rejects the reserved names `www`, `api`,
-`admin`, `root`, `system`, `cloudflare`, `workers` (case-insensitively) —
-also exported standalone as `validateSandboxId(id)` — and returns a client
-for one sandbox — a Durable Object inside the runtime Worker, keyed by `id`.
-Both functions work with JavaScript, Python, Perl, Ruby, and additional
-runtime Workers implementing the same protocol, and call only the supplied
-binding; neither ever sends code to the public Playground.
+For a stateless, one-shot alternative with no code context and no files, use
+the free `runCode` against a runtime Worker's Service Binding directly:
 
-## Transports
+```ts
+import { runCode } from "@sandbox-workers/core";
 
-`target` is either:
-
-- a **Service Binding** to the runtime Worker (`Fetcher`-shaped: has
-  `fetch()` but no `idFromName`) — requests go to
-  `https://sandbox.internal/sandboxes/<id>/...`;
-- a **Durable Object namespace** bound with `script_name` to the runtime
-  Worker's `Sandbox` class (detected by `idFromName`) — the client calls
-  `target.get(target.idFromName(id)).fetch(...)` with header
-  `x-sandbox-id: <id>` and the path without the `/sandboxes/<id>` prefix.
-
-```jsonc
-// Option A: Service Binding
-{ "services": [{ "binding": "SANDBOX", "service": "sandbox-javascript" }] }
-
-// Option B: Durable Object namespace (no migration needed in the caller)
-{
-  "durable_objects": {
-    "bindings": [{ "name": "SANDBOX", "class_name": "Sandbox", "script_name": "sandbox-javascript" }],
-  },
-}
+const result = await runCode(env.PYTHON, "1 + 1", { envVars: { X: "12" } });
 ```
+
+`runCode(target, code, options?)` requires a Service Binding (`Fetcher`); it
+throws synchronously for a Durable Object namespace, since there's no
+sandbox id to route through in stateless mode. A runtime Worker deployed
+`--stateless` (or Ruby) reports `contexts: false`, so
+`sandbox.interpreter.createCodeContext({ binding })` fails for it and
+`sandbox.interpreter.runCode(code, { binding })` runs through the same
+stateless path instead.
+
+`getSandbox(namespace, id, options?)` validates `id` (optionally lowercasing
+it first with `{ normalizeId: true }`) against
+`/^[A-Za-z0-9._-]{1,63}$/`, rejects a leading/trailing hyphen, and rejects
+the reserved names `www`, `api`, `admin`, `root`, `system`, `cloudflare`,
+`workers` (case-insensitively) — also exported standalone as
+`validateSandboxId(id)`. `namespace` must be a Durable Object namespace bound
+to your own `Sandbox` class; it throws synchronously otherwise.
 
 ## API
 
 ```ts
-await runCode(env.SANDBOX, code, {
-  language, envVars, timeout, signal,
+const sandbox = getSandbox(env.Sandbox, "user-42", { normalizeId: true }); // SandboxClient
+
+sandbox.id;                                                                // string
+sandbox.interpreter;                                                      // CodeInterpreter
+
+await sandbox.interpreter.createCodeContext({ binding, cwd, envVars });    // Promise<CodeContext>
+await sandbox.interpreter.listCodeContexts();                             // Promise<CodeContext[]>
+await sandbox.interpreter.deleteCodeContext(ctx.id);                      // Promise<void>
+await sandbox.interpreter.runCode(code, {
+  context, binding, envVars, timeout, signal,
   onStdout, onStderr, onResult, onError,
-});                                                                   // Promise<ExecutionResult>; env.SANDBOX must be a Service Binding
+});                                                                        // Promise<ExecutionResult>
 
-const sandbox = getSandbox(env.SANDBOX, "user-42", { normalizeId: true });
+await sandbox.setEnvVars({ NAME: "value", OLD: undefined });               // Promise<void>; undefined unsets a key
 
-sandbox.id;                                                          // string
+await sandbox.writeFile(path, content, { encoding });                      // Promise<WriteFileResult>; content: string | Uint8Array | ReadableStream<Uint8Array>
+await sandbox.readFile(path, { encoding });                                // Promise<ReadFileResult>; { encoding: "none" } -> Promise<ReadFileStreamResult> (content: ReadableStream<Uint8Array>)
+await sandbox.mkdir(path, { recursive });                                  // Promise<MkdirResult>
+await sandbox.deleteFile(path, { recursive, force });                      // Promise<DeleteFileResult>
+await sandbox.renameFile(oldPath, newPath);                                // Promise<RenameFileResult>
+await sandbox.moveFile(sourcePath, destinationPath);                       // Promise<MoveFileResult>
+await sandbox.listFiles(path, { recursive, includeHidden });               // Promise<ListFilesResult>
+await sandbox.exists(path);                                                // Promise<FileExistsResult>
 
-await sandbox.createCodeContext({ language, cwd, envVars });         // Promise<CodeContext>
-await sandbox.listCodeContexts();                                    // Promise<CodeContext[]>
-await sandbox.deleteCodeContext(ctx.id);                             // Promise<void>
-await sandbox.runCode(code, {
-  context, language, envVars, timeout, signal,
-  onStdout, onStderr, onResult, onError,
-});                                                                   // Promise<ExecutionResult>
-await sandbox.setEnvVars({ NAME: "value", OLD: undefined });         // Promise<void>; undefined unsets a key
+await sandbox.getInfo();                                                   // Promise<SandboxInfo>
+await sandbox.destroy();                                                   // Promise<void>; deletes the sandbox
 
-await sandbox.writeFile(path, content, { encoding });                // Promise<WriteFileResult>; content: string | Uint8Array | ReadableStream<Uint8Array>
-await sandbox.readFile(path, { encoding });                          // Promise<ReadFileResult>; { encoding: "none" } -> Promise<ReadFileStreamResult> (content: ReadableStream<Uint8Array>)
-await sandbox.mkdir(path, { recursive });                            // Promise<MkdirResult>
-await sandbox.deleteFile(path, { recursive, force });                // Promise<DeleteFileResult>
-await sandbox.renameFile(oldPath, newPath);                          // Promise<RenameFileResult>
-await sandbox.moveFile(sourcePath, destinationPath);                 // Promise<MoveFileResult>
-await sandbox.listFiles(path, { recursive, includeHidden });         // Promise<ListFilesResult>
-await sandbox.exists(path);                                          // Promise<FileExistsResult>
-
-await sandbox.getInfo();                                             // Promise<SandboxInfo>
-await sandbox.destroy();                                             // Promise<void>; deletes the sandbox
+await runCode(env.PYTHON, code, {                                          // stateless; env.PYTHON must be a Service Binding
+  envVars, timeout, signal, onStdout, onStderr, onResult, onError,
+});                                                                         // Promise<ExecutionResult>
 ```
 
-`CodeContext` is `{ id, language, cwd, createdAt: Date, lastUsed: Date }`.
-`runCode` without `context` uses (or creates) the default context for the
-requested/runtime language; `onStdout`/`onStderr`/`onResult`/`onError` fire
-after the response arrives — there is no streaming. Files live only under
-`/workspace`, shared by every context in the sandbox (1 MiB per file, 16 MiB
-per workspace, 4096 entries). A sandbox holds at most 8 code contexts, with
-one interpreter resident in memory at a time; others are restored from their
-snapshot on next use.
+`CodeContext` is `{ id, binding, language, cwd, createdAt: Date, lastUsed:
+Date }`. `runCode` without `context` requires `binding` and uses (or
+creates) the default context for that binding;
+`onStdout`/`onStderr`/`onResult`/`onError` fire after the response arrives —
+there is no streaming. Files live only under `/workspace`, shared by every
+context in the sandbox regardless of language (1 MiB per file, 16 MiB per
+workspace, 4096 entries). A sandbox holds at most 8 code contexts across all
+bindings; each runtime Worker keeps at most one interpreter instance
+resident in memory, restoring others from their snapshot on next use.
 
 ## Errors
 
@@ -135,7 +133,8 @@ httpStatus, timestamp, operation? }`); the client throws the matching
   (`error.context.path`, `.operation`, and, for filesystem failures, the
   Node-style errno in `error.context.errno`)
 - `ContextNotFoundError` — `error.context.contextId`
-- `ValidationFailedError` — malformed requests
+- `ValidationFailedError` — malformed requests, or an unknown/unsupported
+  `binding`
 - `CodeExecutionError` — the engine failed before producing a result
 - `SandboxError` — the base class; also thrown for a non-JSON or malformed
   error body, with `code: "INTERNAL_ERROR"`
@@ -152,9 +151,6 @@ try {
 }
 ```
 
-See the [code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/code-contexts.md)
-for per-language REPL semantics, the
-[HTTP API reference](https://github.com/syumai/sandbox-workers/blob/main/website/content/api/http-api.md)
-for the full HTTP contract, and the
-[code contexts concept page](https://github.com/syumai/sandbox-workers/blob/main/website/content/concepts/code-contexts.md)
-for the snapshot mechanism.
+See `docs/sandbox-1-0-design.md` for the full model (the sandbox/interpreter
+split, the workspace mirror and sync protocol, and the wire contracts on
+both sides).

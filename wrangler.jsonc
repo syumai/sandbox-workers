@@ -18,4 +18,10 @@
     { "binding": "PERL", "service": "sandbox-engine-perl" },
     { "binding": "RUBY", "service": "sandbox-engine-ruby" },
   ],
+  // The gateway is an ordinary caller of @sandbox-workers/core: it hosts its
+  // own Sandbox Durable Object (see src/index.ts, docs/sandbox-1-0-design.md).
+  "durable_objects": { "bindings": [{ "name": "Sandbox", "class_name": "Sandbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+  // Short here so the public Playground reclaims sandboxes quickly.
+  "vars": { "SANDBOX_IDLE_TTL_MS": "3600000" },
 }

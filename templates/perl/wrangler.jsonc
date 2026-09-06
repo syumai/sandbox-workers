@@ -23,8 +23,8 @@
   "durable_objects": {
     "bindings": [
       {
-        "name": "SANDBOX",
-        "class_name": "Sandbox"
+        "name": "INTERPRETER",
+        "class_name": "Interpreter"
       }
     ]
   },
@@ -32,7 +32,7 @@
     {
       "tag": "v1",
       "new_sqlite_classes": [
-        "Sandbox"
+        "Interpreter"
       ]
     }
   ]

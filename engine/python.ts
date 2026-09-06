@@ -1,1 +1,1 @@
-export { default, Sandbox } from "@sandbox-workers/python";
+export { default, Interpreter } from "@sandbox-workers/python";

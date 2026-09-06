@@ -225,7 +225,9 @@ test("serialize/load round-trips the tree", () => {
   ws.write("/workspace/sub/f.txt", "/workspace", "hello");
   ws.write("/workspace/top.txt", "/workspace", "world");
   const rows = ws.serialize();
-  assert.equal(rows.length, 2);
+  // 2 files + the "sub" directory itself (serialize() now also emits
+  // directories as {data: null} rows; see docs/sandbox-1-0-design.md).
+  assert.equal(rows.length, 3);
 
   const restored = Workspace.load(rows);
   assert.equal(restored.read("/workspace/sub/f.txt", "/workspace").content, "hello");
@@ -260,4 +262,90 @@ test("WASI-created directories/files are upgraded and tagged for the mount polic
   const { entry: file } = ws.root.create_entry_for_path("guestdir/guestfile.txt", false);
   assert.ok(file[WORKSPACE_TAG]);
   assert.ok(typeof file.updatedAt === "number");
+});
+
+test("manifest() lists every directory (sorted, root excluded) and every file's hash", () => {
+  const ws = new Workspace();
+  ws.mkdir("/workspace/sub", "/workspace");
+  ws.write("/workspace/top.txt", "/workspace", "hello");
+  ws.write("/workspace/sub/nested.txt", "/workspace", "world");
+  const manifest = ws.manifest();
+  assert.deepEqual(manifest.dirs, ["/workspace/sub"]);
+  assert.deepEqual(Object.keys(manifest.files).sort(), ["/workspace/sub/nested.txt", "/workspace/top.txt"]);
+  assert.equal(typeof manifest.files["/workspace/top.txt"], "string");
+});
+
+test("serialize() emits directories as {data: null} rows, and load() recreates them", () => {
+  const ws = new Workspace();
+  ws.mkdir("/workspace/empty", "/workspace");
+  ws.mkdir("/workspace/sub", "/workspace");
+  ws.write("/workspace/sub/f.txt", "/workspace", "hi");
+  const rows = ws.serialize();
+  const dirRows = rows.filter((r) => r.data === null).map((r) => r.path).sort();
+  assert.deepEqual(dirRows, ["/workspace/empty", "/workspace/sub"]);
+  const fileRows = rows.filter((r) => r.data !== null);
+  assert.equal(fileRows.length, 1);
+
+  const restored = Workspace.load(rows);
+  assert.deepEqual(restored.exists("/workspace/empty", "/workspace"), { exists: true });
+  assert.equal(restored.stat("/workspace/empty", "/workspace").type, "directory");
+  assert.equal(restored.read("/workspace/sub/f.txt", "/workspace").content, "hi");
+});
+
+function toBase64(text) {
+  let binary = "";
+  for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+test("applySync creates directories then writes files into them, preserving root identity", () => {
+  const ws = new Workspace();
+  const root = ws.root;
+  const result = ws.applySync({
+    dirs: ["/workspace/new"],
+    files: [{ path: "/workspace/new/file.txt", data: toBase64("hi"), updatedAt: 5 }],
+  });
+  assert.deepEqual(result, { missing: [] });
+  assert.equal(ws.root, root);
+  assert.equal(ws.read("/workspace/new/file.txt", "/workspace").content, "hi");
+  assert.equal(ws.stat("/workspace/new/file.txt", "/workspace").updatedAt, 5);
+});
+
+test("applySync with an explicit deleted list removes files, and drops directories not in dirs", () => {
+  const ws = new Workspace();
+  ws.mkdir("/workspace/old", "/workspace");
+  ws.write("/workspace/old/stale.txt", "/workspace", "stale");
+  ws.mkdir("/workspace/old/nested", "/workspace");
+  ws.write("/workspace/keep.txt", "/workspace", "keep");
+
+  const result = ws.applySync({
+    dirs: [],
+    files: [],
+    deleted: ["/workspace/keep.txt"],
+  });
+
+  assert.deepEqual(result, { missing: [] });
+  assert.deepEqual(ws.exists("/workspace/keep.txt", "/workspace"), { exists: false });
+  // "/workspace/old" (and its nested subtree) isn't in `dirs: []`, so it's removed too.
+  assert.deepEqual(ws.exists("/workspace/old", "/workspace"), { exists: false });
+  assert.deepEqual(ws.exists("/workspace/old/nested", "/workspace"), { exists: false });
+});
+
+test("applySync with a manifest deletes files not listed and reports a hash mismatch as missing", () => {
+  const ws = new Workspace();
+  ws.write("/workspace/a.txt", "/workspace", "one");
+  ws.write("/workspace/b.txt", "/workspace", "two");
+  const realHash = ws.manifest().files["/workspace/a.txt"];
+
+  const result = ws.applySync({
+    dirs: [],
+    files: [],
+    manifest: { "/workspace/a.txt": realHash, "/workspace/c.txt": "0000000000000000" },
+  });
+
+  // b.txt wasn't in the manifest, so it's deleted; a.txt's hash matched, so it's kept.
+  assert.deepEqual(ws.exists("/workspace/b.txt", "/workspace"), { exists: false });
+  assert.equal(ws.read("/workspace/a.txt", "/workspace").content, "one");
+  // c.txt is named in the manifest but the mirror never received it -> resync.
+  assert.deepEqual(result.missing, ["/workspace/c.txt"]);
 });

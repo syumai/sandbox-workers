@@ -1,5 +1,5 @@
-// Pure Node tests for the SDK-parity typed client (see
-// docs/sdk-parity-design.md). Run `pnpm --filter @sandbox-workers/core
+// Pure Node tests for the Sandbox SDK 1.0 typed client (see
+// docs/sandbox-1-0-design.md). Run `pnpm --filter @sandbox-workers/core
 // build` first; this imports the built package, not the TypeScript source.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -91,31 +91,44 @@ function iso(offsetMs = 0) {
   return new Date(Date.now() + offsetMs).toISOString();
 }
 
+// ---- getSandbox: transport --------------------------------------------------
+
+test("getSandbox throws synchronously for a Fetcher (Service Binding) target", () => {
+  const fetcher = makeFetcher(() => jsonResponse({}));
+  assert.throws(() => getSandbox(fetcher, "s1"), /requires a Durable Object namespace/);
+});
+
+test("getSandbox accepts a Durable Object namespace", () => {
+  const namespace = makeNamespace(() => jsonResponse({}));
+  const sandbox = getSandbox(namespace, "s1");
+  assert.equal(sandbox.id, "s1");
+});
+
 // ---- getSandbox: id validation ---------------------------------------------
 
 test("getSandbox throws synchronously on an invalid id", () => {
-  const fetcher = makeFetcher(() => jsonResponse({}));
-  assert.throws(() => getSandbox(fetcher, "has spaces"), /Invalid sandbox id/);
-  assert.throws(() => getSandbox(fetcher, ""), /Invalid sandbox id/);
-  assert.throws(() => getSandbox(fetcher, "a".repeat(64)), /Invalid sandbox id/);
+  const namespace = makeNamespace(() => jsonResponse({}));
+  assert.throws(() => getSandbox(namespace, "has spaces"), /Invalid sandbox id/);
+  assert.throws(() => getSandbox(namespace, ""), /Invalid sandbox id/);
+  assert.throws(() => getSandbox(namespace, "a".repeat(64)), /Invalid sandbox id/);
 });
 
 test("getSandbox rejects ids starting/ending with a hyphen", () => {
-  const fetcher = makeFetcher(() => jsonResponse({}));
-  assert.throws(() => getSandbox(fetcher, "-abc"), /hyphen/);
-  assert.throws(() => getSandbox(fetcher, "abc-"), /hyphen/);
+  const namespace = makeNamespace(() => jsonResponse({}));
+  assert.throws(() => getSandbox(namespace, "-abc"), /hyphen/);
+  assert.throws(() => getSandbox(namespace, "abc-"), /hyphen/);
   // A hyphen in the middle is still fine.
-  getSandbox(fetcher, "ab-c");
+  getSandbox(namespace, "ab-c");
 });
 
 test("getSandbox rejects reserved sandbox ids case-insensitively", () => {
-  const fetcher = makeFetcher(() => jsonResponse({}));
+  const namespace = makeNamespace(() => jsonResponse({}));
   for (const reserved of ["www", "api", "admin", "root", "system", "cloudflare", "workers"]) {
-    assert.throws(() => getSandbox(fetcher, reserved), /reserved/);
-    assert.throws(() => getSandbox(fetcher, reserved.toUpperCase()), /reserved/);
+    assert.throws(() => getSandbox(namespace, reserved), /reserved/);
+    assert.throws(() => getSandbox(namespace, reserved.toUpperCase()), /reserved/);
   }
   // Not an exact match: fine.
-  getSandbox(fetcher, "www2");
+  getSandbox(namespace, "www2");
 });
 
 test("validateSandboxId is exported and usable directly", () => {
@@ -124,84 +137,104 @@ test("validateSandboxId is exported and usable directly", () => {
   assert.throws(() => validateSandboxId("-abc"), /hyphen/);
 });
 
-test("getSandbox accepts a valid id and exposes it as .id", () => {
-  const fetcher = makeFetcher(() => jsonResponse({}));
-  const sandbox = getSandbox(fetcher, "user-42.foo_bar");
-  assert.equal(sandbox.id, "user-42.foo_bar");
-});
-
 test("normalizeId lowercases the id before validating/using it", () => {
-  const fetcher = makeFetcher(() => jsonResponse({ success: true, path: "/x", exists: true, timestamp: iso() }));
-  const sandbox = getSandbox(fetcher, "USER-42", { normalizeId: true });
+  const namespace = makeNamespace(() =>
+    jsonResponse({ success: true, path: "/x", exists: true, timestamp: iso() }),
+  );
+  const sandbox = getSandbox(namespace, "USER-42", { normalizeId: true });
   assert.equal(sandbox.id, "user-42");
 });
 
-// ---- Fetcher transport: path/URL per method --------------------------------
+// ---- namespace transport: path/URL/header per method -----------------------
 
-test("Fetcher target: createCodeContext POSTs /sandboxes/<id>/contexts and converts dates", async () => {
+test("namespace target: every request carries x-sandbox-id and no path prefix", async () => {
+  const namespace = makeNamespace(() => jsonResponse({ success: true, timestamp: iso() }));
+  const sandbox = getSandbox(namespace, "s1");
+  await sandbox.exists("/workspace/a.txt");
+  assert.deepEqual(namespace.idFromNameCalls, ["s1"]);
+  assert.equal(namespace.calls[0].id, "id:s1");
+  assert.equal(namespace.calls[0].url, "https://sandbox.internal/files");
+  assert.equal(namespace.calls[0].headers["x-sandbox-id"], "s1");
+});
+
+test("createCodeContext POSTs /contexts with binding, cwd, envVars, and converts dates", async () => {
   const createdAt = iso(-1000);
   const lastUsed = iso();
-  const fetcher = makeFetcher((request) => {
+  const namespace = makeNamespace((request) => {
     if (request.method === "POST")
       return jsonResponse(
-        { id: "ctx-1", language: "javascript", cwd: "/workspace", createdAt, lastUsed },
+        { id: "ctx-1", binding: "PYTHON", language: "python", cwd: "/workspace", createdAt, lastUsed },
         { status: 201 },
       );
     return jsonResponse({});
   });
-  const sandbox = getSandbox(fetcher, "s1");
-  const ctx = await sandbox.createCodeContext({
-    language: "javascript",
+  const sandbox = getSandbox(namespace, "s1");
+  const ctx = await sandbox.interpreter.createCodeContext({
+    binding: "PYTHON",
     cwd: "/workspace",
     envVars: { A: "1", B: undefined },
   });
-  assert.equal(fetcher.calls[0].method, "POST");
-  assert.equal(fetcher.calls[0].url, "https://sandbox.internal/sandboxes/s1/contexts");
-  assert.deepEqual(JSON.parse(fetcher.calls[0].body), {
-    language: "javascript",
+  assert.equal(namespace.calls[0].method, "POST");
+  assert.equal(namespace.calls[0].url, "https://sandbox.internal/contexts");
+  assert.deepEqual(JSON.parse(namespace.calls[0].body), {
+    binding: "PYTHON",
     cwd: "/workspace",
     envVars: { A: "1" },
   });
   assert.equal(ctx.id, "ctx-1");
+  assert.equal(ctx.binding, "PYTHON");
   assert.ok(ctx.createdAt instanceof Date);
   assert.ok(ctx.lastUsed instanceof Date);
   assert.equal(ctx.createdAt.getTime(), Date.parse(createdAt));
   assert.equal(ctx.lastUsed.getTime(), Date.parse(lastUsed));
 });
 
-test("Fetcher target: listCodeContexts GETs /sandboxes/<id>/contexts and maps each context", async () => {
+test("createCodeContext omits cwd/envVars when not given", async () => {
+  const namespace = makeNamespace(() =>
+    jsonResponse(
+      { id: "ctx-1", binding: "JAVASCRIPT", language: "javascript", cwd: "/workspace", createdAt: iso(), lastUsed: iso() },
+      { status: 201 },
+    ),
+  );
+  const sandbox = getSandbox(namespace, "s1");
+  await sandbox.interpreter.createCodeContext({ binding: "JAVASCRIPT" });
+  assert.deepEqual(JSON.parse(namespace.calls[0].body), { binding: "JAVASCRIPT" });
+});
+
+test("listCodeContexts GETs /contexts and maps each context, including binding", async () => {
   const createdAt = iso(-1000);
   const lastUsed = iso();
-  const fetcher = makeFetcher(() =>
+  const namespace = makeNamespace(() =>
     jsonResponse({
       contexts: [
-        { id: "ctx-1", language: "javascript", cwd: "/workspace", createdAt, lastUsed },
-        { id: "ctx-2", language: "python", cwd: "/workspace", createdAt, lastUsed },
+        { id: "ctx-1", binding: "JAVASCRIPT", language: "javascript", cwd: "/workspace", createdAt, lastUsed },
+        { id: "ctx-2", binding: "PYTHON", language: "python", cwd: "/workspace", createdAt, lastUsed },
       ],
     }),
   );
-  const sandbox = getSandbox(fetcher, "s1");
-  const contexts = await sandbox.listCodeContexts();
-  assert.equal(fetcher.calls[0].method, "GET");
-  assert.equal(fetcher.calls[0].url, "https://sandbox.internal/sandboxes/s1/contexts");
+  const sandbox = getSandbox(namespace, "s1");
+  const contexts = await sandbox.interpreter.listCodeContexts();
+  assert.equal(namespace.calls[0].method, "GET");
+  assert.equal(namespace.calls[0].url, "https://sandbox.internal/contexts");
   assert.equal(contexts.length, 2);
   assert.ok(contexts[0].createdAt instanceof Date);
-  assert.equal(contexts[1].id, "ctx-2");
+  assert.equal(contexts[0].binding, "JAVASCRIPT");
+  assert.equal(contexts[1].binding, "PYTHON");
 });
 
-test("Fetcher target: deleteCodeContext DELETEs /sandboxes/<id>/contexts/<encoded id>", async () => {
-  const fetcher = makeFetcher(() => new Response(null, { status: 204 }));
-  const sandbox = getSandbox(fetcher, "s1");
-  await sandbox.deleteCodeContext("ctx/weird id");
-  assert.equal(fetcher.calls[0].method, "DELETE");
+test("deleteCodeContext DELETEs /contexts/<encoded id>", async () => {
+  const namespace = makeNamespace(() => new Response(null, { status: 204 }));
+  const sandbox = getSandbox(namespace, "s1");
+  await sandbox.interpreter.deleteCodeContext("ctx/weird id");
+  assert.equal(namespace.calls[0].method, "DELETE");
   assert.equal(
-    fetcher.calls[0].url,
-    `https://sandbox.internal/sandboxes/s1/contexts/${encodeURIComponent("ctx/weird id")}`,
+    namespace.calls[0].url,
+    `https://sandbox.internal/contexts/${encodeURIComponent("ctx/weird id")}`,
   );
 });
 
-test("Fetcher target: runCode posts code/contextId/language/envVars, omitting unset keys", async () => {
-  const fetcher = makeFetcher(() =>
+test("runCode posts code/contextId/binding/envVars, omitting unset keys", async () => {
+  const namespace = makeNamespace(() =>
     jsonResponse({
       code: "1+1",
       logs: { stdout: [], stderr: [] },
@@ -211,44 +244,98 @@ test("Fetcher target: runCode posts code/contextId/language/envVars, omitting un
       durationMs: 1,
     }),
   );
-  const sandbox = getSandbox(fetcher, "s1");
-  await sandbox.runCode("1+1");
-  assert.equal(fetcher.calls[0].method, "POST");
-  assert.equal(fetcher.calls[0].url, "https://sandbox.internal/sandboxes/s1/execute");
-  assert.deepEqual(JSON.parse(fetcher.calls[0].body), { code: "1+1" });
+  const sandbox = getSandbox(namespace, "s1");
+  await sandbox.interpreter.runCode("1+1");
+  assert.equal(namespace.calls[0].method, "POST");
+  assert.equal(namespace.calls[0].url, "https://sandbox.internal/execute");
+  assert.deepEqual(JSON.parse(namespace.calls[0].body), { code: "1+1" });
 
-  await sandbox.runCode("2+2", {
-    context: { id: "ctx-1", language: "javascript", cwd: "/workspace", createdAt: new Date(), lastUsed: new Date() },
-    language: "javascript",
+  await sandbox.interpreter.runCode("2+2", {
+    context: {
+      id: "ctx-1",
+      binding: "JAVASCRIPT",
+      language: "javascript",
+      cwd: "/workspace",
+      createdAt: new Date(),
+      lastUsed: new Date(),
+    },
     envVars: { X: "1", Y: undefined },
   });
-  assert.deepEqual(JSON.parse(fetcher.calls[1].body), {
+  assert.deepEqual(JSON.parse(namespace.calls[1].body), {
     code: "2+2",
     contextId: "ctx-1",
-    language: "javascript",
     envVars: { X: "1" },
   });
 });
 
-test("Fetcher target: setEnvVars sends undefined values as null", async () => {
-  const fetcher = makeFetcher(() => jsonResponse({ success: true }));
-  const sandbox = getSandbox(fetcher, "s1");
+test("runCode with only { binding } sends binding, not contextId (default-context path)", async () => {
+  const namespace = makeNamespace(() =>
+    jsonResponse({
+      code: "1+1",
+      logs: { stdout: [], stderr: [] },
+      results: [],
+      language: "python",
+      engine: "cpython",
+      durationMs: 1,
+      executionCount: 1,
+      context: { id: "ctx-1", cwd: "/workspace", executions: 1 },
+    }),
+  );
+  const sandbox = getSandbox(namespace, "s1");
+  const result = await sandbox.interpreter.runCode("1+1", { binding: "PYTHON" });
+  assert.deepEqual(JSON.parse(namespace.calls[0].body), { code: "1+1", binding: "PYTHON" });
+  assert.equal(result.context.id, "ctx-1");
+});
+
+test("runCode with both context and binding sends contextId and binding", async () => {
+  const namespace = makeNamespace(() =>
+    jsonResponse({
+      code: "1+1",
+      logs: { stdout: [], stderr: [] },
+      results: [],
+      language: "python",
+      engine: "cpython",
+      durationMs: 1,
+    }),
+  );
+  const sandbox = getSandbox(namespace, "s1");
+  await sandbox.interpreter.runCode("1+1", {
+    context: {
+      id: "ctx-1",
+      binding: "PYTHON",
+      language: "python",
+      cwd: "/workspace",
+      createdAt: new Date(),
+      lastUsed: new Date(),
+    },
+    binding: "PYTHON",
+  });
+  assert.deepEqual(JSON.parse(namespace.calls[0].body), {
+    code: "1+1",
+    contextId: "ctx-1",
+    binding: "PYTHON",
+  });
+});
+
+test("setEnvVars sends undefined values as null", async () => {
+  const namespace = makeNamespace(() => jsonResponse({ success: true }));
+  const sandbox = getSandbox(namespace, "s1");
   await sandbox.setEnvVars({ TOKEN: "abc", OLD: undefined });
-  assert.equal(fetcher.calls[0].url, "https://sandbox.internal/sandboxes/s1/env");
-  assert.deepEqual(JSON.parse(fetcher.calls[0].body), {
+  assert.equal(namespace.calls[0].url, "https://sandbox.internal/env");
+  assert.deepEqual(JSON.parse(namespace.calls[0].body), {
     envVars: { TOKEN: "abc", OLD: null },
   });
 });
 
-test("Fetcher target: writeFile encodes a string as utf-8 (and normalizes utf8), a Uint8Array as base64", async () => {
-  const fetcher = makeFetcher(() =>
+test("writeFile encodes a string as utf-8 (and normalizes utf8), a Uint8Array as base64", async () => {
+  const namespace = makeNamespace(() =>
     jsonResponse({ success: true, path: "/workspace/a.txt", timestamp: iso() }),
   );
-  const sandbox = getSandbox(fetcher, "s1");
+  const sandbox = getSandbox(namespace, "s1");
 
   await sandbox.writeFile("/workspace/a.txt", "hi");
-  assert.equal(fetcher.calls[0].url, "https://sandbox.internal/sandboxes/s1/files");
-  assert.deepEqual(JSON.parse(fetcher.calls[0].body), {
+  assert.equal(namespace.calls[0].url, "https://sandbox.internal/files");
+  assert.deepEqual(JSON.parse(namespace.calls[0].body), {
     op: "write",
     path: "/workspace/a.txt",
     content: "hi",
@@ -256,7 +343,7 @@ test("Fetcher target: writeFile encodes a string as utf-8 (and normalizes utf8),
   });
 
   await sandbox.writeFile("/workspace/a.txt", "hi", { encoding: "utf8" });
-  assert.deepEqual(JSON.parse(fetcher.calls[1].body), {
+  assert.deepEqual(JSON.parse(namespace.calls[1].body), {
     op: "write",
     path: "/workspace/a.txt",
     content: "hi",
@@ -265,17 +352,17 @@ test("Fetcher target: writeFile encodes a string as utf-8 (and normalizes utf8),
 
   const bytes = Uint8Array.from([104, 105]); // "hi"
   await sandbox.writeFile("/workspace/bin.dat", bytes);
-  const parsed = JSON.parse(fetcher.calls[2].body);
+  const parsed = JSON.parse(namespace.calls[2].body);
   assert.equal(parsed.op, "write");
   assert.equal(parsed.encoding, "base64");
   assert.equal(parsed.content, Buffer.from(bytes).toString("base64"));
 });
 
-test("Fetcher target: writeFile reads a ReadableStream fully and sends it as base64", async () => {
-  const fetcher = makeFetcher(() =>
+test("writeFile reads a ReadableStream fully and sends it as base64", async () => {
+  const namespace = makeNamespace(() =>
     jsonResponse({ success: true, path: "/workspace/stream.dat", timestamp: iso() }),
   );
-  const sandbox = getSandbox(fetcher, "s1");
+  const sandbox = getSandbox(namespace, "s1");
   const bytes = Uint8Array.from([1, 2, 3, 4, 5]);
   const stream = new ReadableStream({
     start(controller) {
@@ -285,32 +372,32 @@ test("Fetcher target: writeFile reads a ReadableStream fully and sends it as bas
     },
   });
   await sandbox.writeFile("/workspace/stream.dat", stream);
-  const parsed = JSON.parse(fetcher.calls[0].body);
+  const parsed = JSON.parse(namespace.calls[0].body);
   assert.equal(parsed.op, "write");
   assert.equal(parsed.encoding, "base64");
   assert.equal(parsed.content, Buffer.from(bytes).toString("base64"));
 });
 
-test("Fetcher target: readFile/mkdir/deleteFile/renameFile/moveFile/listFiles/exists wire mapping", async () => {
-  const fetcher = makeFetcher(() => jsonResponse({ success: true, timestamp: iso() }));
-  const sandbox = getSandbox(fetcher, "s1");
+test("readFile/mkdir/deleteFile/renameFile/moveFile/listFiles/exists wire mapping", async () => {
+  const namespace = makeNamespace(() => jsonResponse({ success: true, timestamp: iso() }));
+  const sandbox = getSandbox(namespace, "s1");
 
   await sandbox.readFile("/workspace/a.txt", { encoding: "base64" });
-  assert.deepEqual(JSON.parse(fetcher.calls[0].body), {
+  assert.deepEqual(JSON.parse(namespace.calls[0].body), {
     op: "read",
     path: "/workspace/a.txt",
     encoding: "base64",
   });
 
   await sandbox.mkdir("/workspace/dir", { recursive: true });
-  assert.deepEqual(JSON.parse(fetcher.calls[1].body), {
+  assert.deepEqual(JSON.parse(namespace.calls[1].body), {
     op: "mkdir",
     path: "/workspace/dir",
     recursive: true,
   });
 
   await sandbox.deleteFile("/workspace/dir", { recursive: true, force: true });
-  assert.deepEqual(JSON.parse(fetcher.calls[2].body), {
+  assert.deepEqual(JSON.parse(namespace.calls[2].body), {
     op: "delete",
     path: "/workspace/dir",
     recursive: true,
@@ -318,21 +405,21 @@ test("Fetcher target: readFile/mkdir/deleteFile/renameFile/moveFile/listFiles/ex
   });
 
   await sandbox.renameFile("/workspace/a.txt", "/workspace/b.txt");
-  assert.deepEqual(JSON.parse(fetcher.calls[3].body), {
+  assert.deepEqual(JSON.parse(namespace.calls[3].body), {
     op: "rename",
     path: "/workspace/a.txt",
     newPath: "/workspace/b.txt",
   });
 
   await sandbox.moveFile("/workspace/b.txt", "/workspace/dir/b.txt");
-  assert.deepEqual(JSON.parse(fetcher.calls[4].body), {
+  assert.deepEqual(JSON.parse(namespace.calls[4].body), {
     op: "move",
     path: "/workspace/b.txt",
     newPath: "/workspace/dir/b.txt",
   });
 
   await sandbox.listFiles("/workspace", { recursive: true, includeHidden: false });
-  assert.deepEqual(JSON.parse(fetcher.calls[5].body), {
+  assert.deepEqual(JSON.parse(namespace.calls[5].body), {
     op: "list",
     path: "/workspace",
     recursive: true,
@@ -340,19 +427,19 @@ test("Fetcher target: readFile/mkdir/deleteFile/renameFile/moveFile/listFiles/ex
   });
 
   await sandbox.exists("/workspace/dir/b.txt");
-  assert.deepEqual(JSON.parse(fetcher.calls[6].body), {
+  assert.deepEqual(JSON.parse(namespace.calls[6].body), {
     op: "exists",
     path: "/workspace/dir/b.txt",
   });
 
-  for (const call of fetcher.calls)
-    assert.equal(call.url, "https://sandbox.internal/sandboxes/s1/files");
+  for (const call of namespace.calls)
+    assert.equal(call.url, "https://sandbox.internal/files");
 });
 
 test("readFile({ encoding: 'none' }) requests base64 over the wire and returns a byte stream", async () => {
   const bytes = Uint8Array.from([104, 105, 33]); // "hi!"
   const b64 = Buffer.from(bytes).toString("base64");
-  const fetcher = makeFetcher(() =>
+  const namespace = makeNamespace(() =>
     jsonResponse({
       success: true,
       path: "/workspace/a.txt",
@@ -364,9 +451,9 @@ test("readFile({ encoding: 'none' }) requests base64 over the wire and returns a
       timestamp: iso(),
     }),
   );
-  const sandbox = getSandbox(fetcher, "s1");
+  const sandbox = getSandbox(namespace, "s1");
   const result = await sandbox.readFile("/workspace/a.txt", { encoding: "none" });
-  assert.deepEqual(JSON.parse(fetcher.calls[0].body), {
+  assert.deepEqual(JSON.parse(namespace.calls[0].body), {
     op: "read",
     path: "/workspace/a.txt",
     encoding: "base64",
@@ -392,49 +479,28 @@ test("readFile({ encoding: 'none' }) requests base64 over the wire and returns a
   assert.deepEqual([...read], [...bytes]);
 });
 
-test("Fetcher target: getInfo GETs /sandboxes/<id>, destroy DELETEs /sandboxes/<id>", async () => {
-  const fetcher = makeFetcher(() => jsonResponse({ id: "s1" }));
-  const sandbox = getSandbox(fetcher, "s1");
-  await sandbox.getInfo();
-  assert.equal(fetcher.calls[0].method, "GET");
-  assert.equal(fetcher.calls[0].url, "https://sandbox.internal/sandboxes/s1");
-  await sandbox.destroy();
-  assert.equal(fetcher.calls[1].method, "DELETE");
-  assert.equal(fetcher.calls[1].url, "https://sandbox.internal/sandboxes/s1");
-});
-
-test("204 responses resolve to {} rather than attempting to parse a body", async () => {
-  const fetcher = makeFetcher(() => new Response(null, { status: 204 }));
-  const sandbox = getSandbox(fetcher, "s1");
-  const result = await sandbox.readFile("/workspace/a.txt");
-  assert.deepEqual(result, {});
-});
-
-// ---- Durable Object namespace transport ------------------------------------
-
-test("namespace target: idFromName is called with the id, x-sandbox-id header is set, path has no /sandboxes/<id> prefix", async () => {
-  const namespace = makeNamespace(() => jsonResponse({ success: true, timestamp: iso() }));
-  const sandbox = getSandbox(namespace, "s1");
-  await sandbox.exists("/workspace/a.txt");
-  assert.deepEqual(namespace.idFromNameCalls, ["s1"]);
-  assert.equal(namespace.calls[0].id, "id:s1");
-  assert.equal(namespace.calls[0].url, "https://sandbox.internal/files");
-  assert.equal(namespace.calls[0].headers["x-sandbox-id"], "s1");
-});
-
-test("namespace target: getInfo/destroy hit the bare root path", async () => {
+test("getInfo GETs /, destroy DELETEs /", async () => {
   const namespace = makeNamespace(() => jsonResponse({ id: "s1" }));
   const sandbox = getSandbox(namespace, "s1");
   await sandbox.getInfo();
+  assert.equal(namespace.calls[0].method, "GET");
   assert.equal(namespace.calls[0].url, "https://sandbox.internal/");
   await sandbox.destroy();
   assert.equal(namespace.calls[1].method, "DELETE");
+  assert.equal(namespace.calls[1].url, "https://sandbox.internal/");
+});
+
+test("204 responses resolve to {} rather than attempting to parse a body", async () => {
+  const namespace = makeNamespace(() => new Response(null, { status: 204 }));
+  const sandbox = getSandbox(namespace, "s1");
+  const result = await sandbox.readFile("/workspace/a.txt");
+  assert.deepEqual(result, {});
 });
 
 // ---- runCode callbacks ------------------------------------------------------
 
 test("runCode invokes onStdout/onStderr/onResult/onError in order with the right payloads", async () => {
-  const fetcher = makeFetcher(() =>
+  const namespace = makeNamespace(() =>
     jsonResponse({
       code: "code",
       logs: { stdout: ["out1", "out2"], stderr: ["err1"] },
@@ -445,9 +511,9 @@ test("runCode invokes onStdout/onStderr/onResult/onError in order with the right
       durationMs: 1,
     }),
   );
-  const sandbox = getSandbox(fetcher, "s1");
+  const sandbox = getSandbox(namespace, "s1");
   const calls = [];
-  const result = await sandbox.runCode("code", {
+  const result = await sandbox.interpreter.runCode("code", {
     onStdout: (o) => {
       calls.push(["stdout", o]);
     },
@@ -480,7 +546,7 @@ test("runCode invokes onStdout/onStderr/onResult/onError in order with the right
 });
 
 test("Result.formats() only lists text/json when truthy (SDK semantics)", async () => {
-  const fetcher = makeFetcher(() =>
+  const namespace = makeNamespace(() =>
     jsonResponse({
       code: "code",
       logs: { stdout: [], stderr: [] },
@@ -495,19 +561,19 @@ test("Result.formats() only lists text/json when truthy (SDK semantics)", async 
       durationMs: 1,
     }),
   );
-  const sandbox = getSandbox(fetcher, "s1");
+  const sandbox = getSandbox(namespace, "s1");
   const seen = [];
-  await sandbox.runCode("code", {
+  await sandbox.interpreter.runCode("code", {
     onResult: (r) => seen.push(r.formats()),
   });
   assert.deepEqual(seen, [[], [], [], ["text", "json"]]);
 });
 
 test("runCode throws on an invalid response shape", async () => {
-  const fetcher = makeFetcher(() => jsonResponse({ notAResult: true }));
-  const sandbox = getSandbox(fetcher, "s1");
+  const namespace = makeNamespace(() => jsonResponse({ notAResult: true }));
+  const sandbox = getSandbox(namespace, "s1");
   await assert.rejects(
-    () => sandbox.runCode("code"),
+    () => sandbox.interpreter.runCode("code"),
     (err) => err instanceof SandboxError && err.code === ErrorCode.INTERNAL_ERROR,
   );
 });
@@ -517,14 +583,17 @@ test("runCode throws on an invalid response shape", async () => {
 test("an already-aborted signal makes the underlying fetch reject, and the rejection propagates", async () => {
   const controller = new AbortController();
   controller.abort();
-  const fetcher = { fetch: (request) => fetch(request) };
-  const sandbox = getSandbox(fetcher, "s1");
-  await assert.rejects(() => sandbox.runCode("1+1", { signal: controller.signal }));
+  const namespace = {
+    idFromName: (name) => `id:${name}`,
+    get: () => ({ fetch: (request) => fetch(request) }),
+  };
+  const sandbox = getSandbox(namespace, "s1");
+  await assert.rejects(() => sandbox.interpreter.runCode("1+1", { signal: controller.signal }));
 });
 
-// ---- runCode() free function -------------------------------------------------
+// ---- runCode() free function (stateless, Service Binding only) -------------
 
-test("runCode() posts code/language/envVars to /execute on the Service Binding, omitting unset keys", async () => {
+test("runCode() posts code/envVars to /execute on the Service Binding, omitting unset keys", async () => {
   const fetcher = makeFetcher(() =>
     jsonResponse({
       code: "1+1",
@@ -542,17 +611,15 @@ test("runCode() posts code/language/envVars to /execute on the Service Binding, 
   assert.deepEqual(JSON.parse(fetcher.calls[0].body), { code: "1+1" });
 
   await runCode(fetcher, "2+2", {
-    language: "javascript",
     envVars: { X: "1", Y: undefined },
   });
   assert.deepEqual(JSON.parse(fetcher.calls[1].body), {
     code: "2+2",
-    language: "javascript",
     envVars: { X: "1" },
   });
 });
 
-test("runCode() invokes onStdout/onStderr/onResult/onError in order, like sandbox.runCode", async () => {
+test("runCode() invokes onStdout/onStderr/onResult/onError in order, like sandbox.interpreter.runCode", async () => {
   const fetcher = makeFetcher(() =>
     jsonResponse({
       code: "code",
@@ -593,7 +660,7 @@ test("runCode() maps a non-ok JSON error response to the matching SandboxError s
     jsonResponse(
       {
         code: ErrorCode.VALIDATION_FAILED,
-        message: "Unsupported language 'python' on this runtime (javascript)",
+        message: "Pass a context or a binding",
         context: {},
         httpStatus: 400,
         timestamp: iso(),
@@ -602,7 +669,7 @@ test("runCode() maps a non-ok JSON error response to the matching SandboxError s
     ),
   );
   await assert.rejects(
-    () => runCode(fetcher, "code", { language: "python" }),
+    () => runCode(fetcher, "code"),
     (err) => err instanceof ValidationFailedError && err.code === ErrorCode.VALIDATION_FAILED,
   );
 });
@@ -620,7 +687,7 @@ test("runCode() maps a non-JSON error response to INTERNAL_ERROR 'HTTP <status>:
   );
 });
 
-test("runCode() forwards signal/timeout like sandbox.runCode (an already-aborted signal propagates)", async () => {
+test("runCode() forwards signal/timeout like sandbox.interpreter.runCode (an already-aborted signal propagates)", async () => {
   const controller = new AbortController();
   controller.abort();
   const fetcher = { fetch: (request) => fetch(request) };
@@ -691,13 +758,13 @@ test("createErrorFromResponse falls back to INTERNAL_ERROR for a non-JSON/malfor
 });
 
 test("end-to-end: a non-ok JSON error response is mapped through getSandbox", async () => {
-  const fetcher = makeFetcher(() =>
+  const namespace = makeNamespace(() =>
     jsonResponse(
       { code: ErrorCode.FILE_NOT_FOUND, message: "no such file", context: { path: "/a", operation: "readFile" }, httpStatus: 404, timestamp: iso() },
       { status: 404 },
     ),
   );
-  const sandbox = getSandbox(fetcher, "s1");
+  const sandbox = getSandbox(namespace, "s1");
   await assert.rejects(
     () => sandbox.readFile("/a"),
     (err) => err instanceof FileNotFoundError && err.context.path === "/a",
@@ -705,10 +772,10 @@ test("end-to-end: a non-ok JSON error response is mapped through getSandbox", as
 });
 
 test("end-to-end: a non-JSON error response becomes INTERNAL_ERROR with 'HTTP <status>: <statusText>'", async () => {
-  const fetcher = makeFetcher(
+  const namespace = makeNamespace(
     () => new Response("<html>gateway error</html>", { status: 502, statusText: "Bad Gateway" }),
   );
-  const sandbox = getSandbox(fetcher, "s1");
+  const sandbox = getSandbox(namespace, "s1");
   await assert.rejects(
     () => sandbox.readFile("/a"),
     (err) =>

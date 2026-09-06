@@ -5,8 +5,8 @@ const sha256 =
 for (const language of ["javascript", "python", "perl", "ruby"]) {
   const directory = `templates/${language}`;
   await mkdir(directory, { recursive: true });
-  // Code contexts (a Durable Object-backed REPL) are not supported for Ruby;
-  // see docs/sdk-parity-design.md.
+  // Code contexts (an Interpreter Durable Object backing memory snapshots)
+  // are not supported for Ruby; see docs/sandbox-1-0-design.md.
   const contextsSupported = language !== "ruby";
   const write = (name, value) =>
     writeFile(
@@ -41,9 +41,9 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
     ...(contextsSupported
       ? {
           durable_objects: {
-            bindings: [{ name: "SANDBOX", class_name: "Sandbox" }],
+            bindings: [{ name: "INTERPRETER", class_name: "Interpreter" }],
           },
-          migrations: [{ tag: "v1", new_sqlite_classes: ["Sandbox"] }],
+          migrations: [{ tag: "v1", new_sqlite_classes: ["Interpreter"] }],
         }
       : {}),
   });
@@ -66,8 +66,9 @@ for (const language of ["javascript", "python", "perl", "ruby"]) {
     renderTemplate(readme, language, contextsSupported),
   );
 }
-// Minimal templating: {{language}} substitution and {{#sessions}}...{{/sessions}}
-// / {{^sessions}}...{{/sessions}} blocks kept or dropped for the language.
+// Minimal templating: {{language}}/{{BINDING}} substitution and
+// {{#sessions}}...{{/sessions}} / {{^sessions}}...{{/sessions}} blocks kept
+// or dropped for the language.
 function renderTemplate(text, language, sessionsSupported) {
   return text
     .replace(/{{#sessions}}\n([\s\S]*?){{\/sessions}}\n/g, (_, block) =>
@@ -76,5 +77,6 @@ function renderTemplate(text, language, sessionsSupported) {
     .replace(/{{\^sessions}}\n([\s\S]*?){{\/sessions}}\n/g, (_, block) =>
       sessionsSupported ? "" : block,
     )
+    .replaceAll("{{BINDING}}", language.toUpperCase())
     .replaceAll("{{language}}", language);
 }

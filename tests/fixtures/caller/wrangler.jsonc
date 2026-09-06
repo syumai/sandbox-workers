@@ -1,0 +1,16 @@
+{
+  "name": "sandbox-caller-fixture",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-04",
+  // A caller of @sandbox-workers/core: hosts its own Sandbox Durable Object
+  // and binds two runtime Workers as Service Bindings, one per language --
+  // see docs/sandbox-1-0-design.md, "Caller configuration".
+  "durable_objects": {
+    "bindings": [{ "name": "Sandbox", "class_name": "Sandbox" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+  "services": [
+    { "binding": "JAVASCRIPT", "service": "sandbox-engine-javascript" },
+    { "binding": "PYTHON", "service": "sandbox-engine-python" },
+  ],
+}

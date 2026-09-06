@@ -10,6 +10,14 @@ import {
 export const MAX_REQUEST_BYTES = 96 * 1024;
 /** Session file operations carry up to a 1 MiB file as base64, so they get a larger cap. */
 export const MAX_FILES_REQUEST_BYTES = 2 * 1024 * 1024;
+/**
+ * `POST /interpreters/:key/execute`'s workspace sync payload carries up to
+ * the full 16 MiB workspace as base64 (~21 MiB) plus its manifest, so it gets
+ * a dedicated, larger cap than every other route (see
+ * docs/sandbox-1-0-design.md, "Wire protocol: sandbox Durable Object ->
+ * runtime Worker").
+ */
+export const MAX_SYNC_REQUEST_BYTES = 24 * 1024 * 1024;
 export const MAX_CODE_BYTES = 64 * 1024;
 const ENV_VAR_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -41,6 +49,22 @@ export interface ExecutionError {
   traceback: string[];
   lineNumber?: number;
 }
+/**
+ * Shape of a context's embedded memory-snapshot record, as reported by an
+ * interpreter Durable Object (see docs/snapshot-cost-design.md and
+ * docs/sandbox-1-0-design.md's `Interpreter`). `pages`/`bytes` are the
+ * snapshot's live (non-zero) data; `storedBytes` is its actual on-disk
+ * footprint, which is larger because a chunk with any non-zero page is
+ * stored whole.
+ */
+export interface SnapshotInfo {
+  build: string;
+  pages: number;
+  bytes: number;
+  storedBytes: number;
+  takenAt: number;
+  stale: boolean;
+}
 export interface ExecutionResult {
   code: string;
   logs: ExecutionLog;
@@ -52,6 +76,13 @@ export interface ExecutionResult {
   engine: string;
   durationMs: number;
   usage?: ExecutionUsage;
+  /**
+   * Present when the execution ran inside a code context (absent for a
+   * stateless run against a `contexts: false` binding). This is the
+   * caller-facing `Sandbox` Durable Object's own context row -- it does not
+   * carry the `Interpreter`'s `snapshot` record (see
+   * `InterpreterExecuteResponse` below); that goes into `getInfo()` instead.
+   */
   context?: {
     id: string;
     cwd: string;
@@ -59,6 +90,65 @@ export interface ExecutionResult {
     snapshotMs?: number;
     expiresAt?: number;
   };
+}
+
+/**
+ * The `workspace` field of `POST /interpreters/:key/execute`'s request body
+ * (see docs/sandbox-1-0-design.md, "Workspace mirror and sync protocol").
+ */
+export interface InterpreterSyncRequest {
+  /** Every directory under /workspace (absolute paths), full list. */
+  dirs: string[];
+  /** Every file: absolute path -> content hash (`Workspace.hashBytes`). */
+  manifest: Record<string, string>;
+  /** Contents the interpreter may not have yet. */
+  files: Array<{ path: string; data: string; updatedAt: number }>;
+}
+
+/**
+ * The `workspace` field of `POST /interpreters/:key/execute`'s response body.
+ */
+export interface InterpreterSyncResponse {
+  /** Full directory list after the run. */
+  dirs: string[];
+  /** Files created or updated by the run. */
+  files: Array<{ path: string; data: string; updatedAt: number }>;
+  /** Files removed by the run. */
+  deleted: string[];
+}
+
+/**
+ * Body of `GET /interpreter`, served by every runtime Worker without a
+ * Durable Object round trip (see docs/sandbox-1-0-design.md). `contexts` is
+ * `false` for Ruby and for a Worker deployed without an `INTERPRETER`
+ * binding (`--stateless`).
+ */
+export interface InterpreterInfo {
+  language: string;
+  engine: string;
+  contexts: boolean;
+}
+
+/**
+ * The runtime-side body of a successful (non-`resync`) `POST
+ * /interpreters/:key/execute` response: `ExecutionResult`'s fields (minus
+ * its caller-facing `context`) plus the interpreter's own `context` (which
+ * carries `snapshot`, unlike `ExecutionResult.context`) and the `workspace`
+ * diff. See docs/sandbox-1-0-design.md, "Workspace mirror and sync
+ * protocol". Consumed by the `Sandbox` Durable Object (`sandbox.ts`), which
+ * strips `workspace` and replaces `context`/`executionCount` with its own
+ * registry's view before answering the caller.
+ */
+export interface InterpreterExecuteResponse extends Omit<ExecutionResult, "context"> {
+  executionCount: number;
+  context: {
+    id: string;
+    cwd: string;
+    executions: number;
+    snapshotMs?: number;
+    snapshot: SnapshotInfo | null;
+  };
+  workspace: InterpreterSyncResponse;
 }
 
 export interface LanguageEngine {
@@ -72,17 +162,9 @@ export async function readExecution(
      * When given, a `language` key in the body is validated against this
      * runtime via `resolveLanguage` (aliases accepted) instead of being
      * unconditionally rejected. Used by the plain `/execute` route on every
-     * runtime Worker, and by `handleStatelessSandboxRoute` below.
+     * runtime Worker.
      */
     runtimeLanguage?: string;
-    /**
-     * When given, a `contextId` key in the body is rejected with this
-     * message (400 VALIDATION_FAILED) instead of being silently ignored.
-     * Used for a runtime Worker's stateless `/sandboxes/:id/execute` route,
-     * where a `contextId` means the caller wants a durable code context that
-     * isn't available (see `handleStatelessSandboxRoute`).
-     */
-    rejectContextId?: string;
   },
 ): Promise<ExecutionRequest> {
   if (
@@ -132,8 +214,6 @@ export async function readExecution(
       400,
       "input is no longer supported; pass data with envVars",
     );
-  if (options?.rejectContextId !== undefined && "contextId" in value)
-    throw new ApiError(400, options.rejectContextId);
   if ("language" in value) {
     if (options?.runtimeLanguage === undefined)
       throw new ApiError(
@@ -170,36 +250,6 @@ export async function readExecution(
     }
   }
   return { code: value.code, ...(envVars ? { envVars } : {}) };
-}
-
-/**
- * Shared implementation of a runtime Worker's stateless `/sandboxes/:id/*`
- * route: a `POST /sandboxes/:id/execute` whose body has no `contextId` runs
- * statelessly (same as plain `/execute`); a body with `contextId`, or any
- * other method/sub-path, answers 400 VALIDATION_FAILED with `reason`. Used
- * by Ruby (which has no Durable Object at all) and by the other runtime
- * Workers when deployed without a `SANDBOX` binding (see
- * docs/sdk-parity-design.md, "Stateless mode"). `subpath` is the part of the
- * `/sandboxes/:id` route after the id (e.g. `/execute`, or `undefined`/`/`
- * for the bare `/sandboxes/:id` route); `execute` should call `readExecution`
- * with `{ rejectContextId: reason }` (and the runtime's `runtimeLanguage`)
- * and format the response.
- */
-export async function handleStatelessSandboxRoute(
-  request: Request,
-  subpath: string | undefined,
-  options: {
-    reason: string;
-    execute: (request: Request) => Promise<Response>;
-  },
-): Promise<Response> {
-  if (request.method !== "POST" || (subpath ?? "/") !== "/execute")
-    return errorResponse(new ApiError(400, options.reason));
-  try {
-    return await options.execute(request);
-  } catch (error) {
-    return errorResponse(error);
-  }
 }
 
 export class ApiError extends Error {

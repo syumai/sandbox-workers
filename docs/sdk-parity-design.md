@@ -1,5 +1,8 @@
 # Sandbox SDK API parity: design
 
+> Superseded 2026-09-06 by `docs/sandbox-1-0-design.md`.
+> See that document for the current API surface; this one is kept for history.
+
 Status: design accepted 2026-09-06. Supersedes the session-layer API in
 `docs/sessions-design.md` (the Durable Object internals — workspace tables,
 memory snapshots, idle expiry — are unchanged and still documented there;
