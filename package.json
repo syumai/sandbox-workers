@@ -6,7 +6,7 @@
     "build:ui": "vite build && pnpm build:docs",
     "build": "pnpm run build:languages && pnpm run build:packages && pnpm run build:ui",
     "dev": "pnpm run build && wrangler dev -c wrangler.jsonc -c engine/wrangler.jsonc -c engine/wrangler-python.jsonc -c engine/wrangler-perl.jsonc -c engine/wrangler-ruby.jsonc",
-    "check": "tsc --noEmit",
+    "check": "pnpm --filter @sandbox-workers/core build && tsc --noEmit",
     "test": "pnpm --filter @sandbox-workers/core build && node --test tests/*.test.mjs",
     "dry-run": "pnpm run build && node scripts/dry-run.mjs",
     "test:http": "node tests/http.mjs",
