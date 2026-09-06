@@ -46,7 +46,7 @@ try {
 
 `runCode` always resolves to an `ExecutionResult`; it does not validate the result's shape at runtime. Guest errors set `output.error` instead of throwing. Transport failures (a malformed response or a non-2xx status) throw a `SandboxError` subclass. The client sends code only to the supplied binding, never to the public Playground. Stateless `runCode` (no `context` option) has no persistent context between calls: every call boots a fresh Wasm instance.
 
-Before publication, install the local core tarball or use the raw fetch example in [Quickstart](/getting-started/quickstart).
+Before publication, install the local core tarball produced by `pnpm run pack`.
 
 ## Multiple runtimes
 

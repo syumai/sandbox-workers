@@ -23,26 +23,27 @@ The service value must exactly match the name you selected. Both Workers must be
 
 ## 3. Execute code
 
-This caller needs no sandbox-workers npm package:
+Install the typed client in your application:
+
+```sh
+pnpm add @sandbox-workers/core
+```
 
 ```ts
+import { getSandbox } from "@sandbox-workers/core";
+
 export default {
   async fetch(request, env) {
-    const response = await env.SANDBOX.fetch(
-      new Request("https://sandbox.internal/execute", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          code: "print('Hello!')\nimport os\nint(os.environ['X']) ** 2",
-          envVars: { X: "12" },
-        }),
-      }),
+    const sandbox = getSandbox(env.SANDBOX, "user-42");
+    const result = await sandbox.runCode(
+      "print('Hello!')\nimport os\nint(os.environ['X']) ** 2",
+      { envVars: { X: "12" } },
     );
-    return Response.json(await response.json());
+    return Response.json(result);
   },
 };
 ```
 
-Deploy your caller after the engine. The result has no `error`, `results: [{ text: "144" }]`, and the captured greeting in `logs.stdout`. The internal URL selects the endpoint path; it does not create a DNS request to a public server.
+Deploy your caller after the engine. `getSandbox` takes the binding and a sandbox id; `runCode` sends the request over the binding only, so nothing leaves your account. The result has no `error`, `results: [{ text: "144" }]`, and the captured greeting in `logs.stdout`. Before publication, install the local core tarball instead (see [Service Bindings](/guides/service-bindings)).
 
-Before exposing a caller that accepts arbitrary code, configure its authentication and rate limits. See [Service Bindings](/guides/service-bindings) for the typed client and multiple engines.
+Before exposing a caller that accepts arbitrary code, configure its authentication and rate limits. See [Service Bindings](/guides/service-bindings) for error handling and multiple engines.
