@@ -100,7 +100,7 @@ Every run creates a fresh Wasm instance unless it runs in a code context. Fuel, 
 
 - [Deploy a runtime Worker](/deploy): create a private runtime Worker with a deploy button or the CLI.
 - [Get started with stateless mode](/stateless/get-started): call a runtime Worker's Service Binding directly.
-- [Get started with stateful mode](/stateful/get-started): host a `Sandbox` Durable Object and run your first code context.
+- [Get started with stateful mode](/stateful/get-started): host a `Sandbox` Durable Object and run Python and JavaScript in one sandbox.
 
 ## Explore
 

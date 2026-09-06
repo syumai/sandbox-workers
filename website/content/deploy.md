@@ -7,7 +7,7 @@ This guide shows you how to deploy a private engine Worker with a deploy button,
 
 ## Choose a runtime
 
-Each button deploys one private engine Worker. Repeat for each language you need; the buttons do not deploy the Playground or your calling application.
+Each button deploys one private engine Worker. Repeat for each language you need; the buttons do not deploy the Playground or your calling application. Each deployed Worker becomes one `services` entry in your caller's [`wrangler.jsonc`](/configuration/wrangler), and a caller may bind several at once.
 
 ### JavaScript
 
@@ -31,7 +31,7 @@ Each button deploys one private engine Worker. Repeat for each language you need
 2. Choose your Cloudflare account, repository name, and Worker name.
 3. Keep the detected build command and deploy command from the template.
 4. Wait for the pinned engine source to download, pass its checksum check, and build.
-5. Add a [Service Binding](/configuration/wrangler) in your caller using the selected Worker name.
+5. Add a [Service Binding](/configuration/wrangler) in your caller using the selected Worker name — one Service Binding per deployed runtime Worker.
 
 Initial builds take several minutes. The generated runtime retains upstream license notices. Review [runtime licenses](/platform/licenses) before use or redistribution. A Paid plan is required by the configured CPU limits.
 

@@ -3,11 +3,15 @@ title: Get started with stateless mode
 description: Deploy a runtime Worker and call it directly with the free runCode function — no sandbox, no code context, no files.
 ---
 
-## 1. Deploy a runtime Worker
+## 1. Deploy a runtime Worker per language
 
-Open [Deploy a runtime Worker](/deploy) and choose JavaScript, Python, Perl, or Ruby. In Cloudflare, select your account and a unique Worker name. Keep the detected build and deploy commands. The templates require a Paid Workers plan for their configured CPU allowance.
+Deploy one runtime Worker for each language you need. This guide deploys Python first.
+
+Open [Deploy a runtime Worker](/deploy) and choose Python. In Cloudflare, select your account and a unique Worker name. Keep the detected build and deploy commands. The templates require a Paid Workers plan for their configured CPU allowance.
 
 Record the deployed name, such as `sandbox-python`. A successful runtime deployment has no public URL; this is intentional.
+
+Open [Deploy a runtime Worker](/deploy) again and repeat for JavaScript as a second runtime Worker, recording that name too, such as `sandbox-javascript` — the example below calls both.
 
 ## 2. Install the typed client
 
@@ -15,17 +19,20 @@ Record the deployed name, such as `sandbox-python`. A successful runtime deploym
 pnpm add @sandbox-workers/core
 ```
 
-## 3. Add a `services` entry
+## 3. Add a `services` entry per runtime Worker
 
-Stateless mode needs only a Service Binding to the runtime Worker you deployed — no `durable_objects`, no `migrations`, and no `Sandbox` export in your entry point:
+Stateless mode needs only a Service Binding to each runtime Worker you deployed — no `durable_objects`, no `migrations`, and no `Sandbox` export in your entry point:
 
 ```jsonc
 {
-  "services": [{ "binding": "PYTHON", "service": "sandbox-python" }],
+  "services": [
+    { "binding": "PYTHON", "service": "sandbox-python" },
+    { "binding": "JAVASCRIPT", "service": "sandbox-javascript" },
+  ],
 }
 ```
 
-The `service` value must exactly match the name you selected when deploying. Both Workers must belong to the same Cloudflare account.
+One entry per runtime Worker; the binding names are yours to choose. Each `service` value must exactly match the name you selected when deploying, and every bound Worker must belong to the same Cloudflare account.
 
 ## 4. Call `runCode`
 
@@ -47,6 +54,14 @@ export default {
 Deploy your caller after the runtime Worker. `env.PYTHON` names the Service Binding from step 3 — that's what selects the language, never a `language` option. `runCode(target, code, options?)` sends the request over the binding only, so nothing leaves your account — no sandbox, no code context, just a fresh Wasm instance for this one call.
 
 The result has no `error`, `results: [{ text: "144" }]`, and the captured greeting in `logs.stdout`. Nothing about this call persists — the next call starts from scratch.
+
+Calling a second runtime Worker is the same function again, against the other binding:
+
+```ts
+const jsResult = await runCode(env.JAVASCRIPT, "1 + 1");
+```
+
+The binding you pass is the only thing that selects the language — call as many runtime Workers as you have bound.
 
 ## Next steps
 

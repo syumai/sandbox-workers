@@ -3,7 +3,7 @@ title: Stateful mode
 description: Host a Sandbox Durable Object in your own Worker for code contexts, a shared workspace, and state that persists between calls.
 ---
 
-**Stateful mode** hosts a `Sandbox` Durable Object in your own Worker (`export { Sandbox } from "@sandbox-workers/core"`). `getSandbox(env.Sandbox, id)` gets you a typed client for one sandbox, which owns a shared `/workspace` and one or more **code contexts** — durable REPLs, each bound to a runtime Worker by the name of a Service Binding, that keep a language interpreter's globals alive between executions.
+**Stateful mode** hosts a `Sandbox` Durable Object in your own Worker (`export { Sandbox } from "@sandbox-workers/core"`). `getSandbox(env.Sandbox, id)` gets you a typed client for one sandbox, which owns a shared `/workspace` and one or more **code contexts** — durable REPLs, each bound to a runtime Worker by the name of a Service Binding, that keep a language interpreter's globals alive between executions. A sandbox isn't limited to one language: it can hold contexts bound to several runtime Workers at once, all sharing the same `/workspace`.
 
 ```ts
 import { getSandbox } from "@sandbox-workers/core";
@@ -12,6 +12,7 @@ export { Sandbox } from "@sandbox-workers/core";
 
 const sandbox = getSandbox(env.Sandbox, "user-42");
 const ctx = await sandbox.interpreter.createCodeContext({ binding: "PYTHON" });
+const jsCtx = await sandbox.interpreter.createCodeContext({ binding: "JAVASCRIPT" }); // same sandbox, same /workspace
 
 await sandbox.interpreter.runCode("count = 1", { context: ctx });
 await sandbox.interpreter.runCode("count += 1\ncount", { context: ctx });
@@ -20,7 +21,7 @@ await sandbox.interpreter.runCode("count += 1\ncount", { context: ctx });
 
 ## What you need
 
-A deployed runtime Worker, plus in your own `wrangler.jsonc`: a `services` entry, a `durable_objects` binding for `Sandbox`, its migration, and `export { Sandbox } from "@sandbox-workers/core"` in your entry point.
+One deployed runtime Worker per language you want to use, plus in your own `wrangler.jsonc`: a `services` entry per runtime Worker, a `durable_objects` binding for `Sandbox`, its migration, and `export { Sandbox } from "@sandbox-workers/core"` in your entry point.
 
 ## What you get
 
