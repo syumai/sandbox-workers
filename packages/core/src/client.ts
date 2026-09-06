@@ -62,12 +62,20 @@ export interface RunCodeOptions {
   onError?: (error: ExecutionError) => void | Promise<void>;
 }
 
-export type FileEncoding = "utf-8" | "utf8" | "base64";
+/**
+ * Options for the free `runCode(target, code, options?)` function: the same
+ * as `RunCodeOptions` minus `context`, since a stateless call has no code
+ * context to run in.
+ */
+export type StatelessRunCodeOptions = Omit<RunCodeOptions, "context">;
+
+export type FileEncoding = "utf-8" | "utf8" | "base64" | "none";
 export interface WriteFileOptions {
-  encoding?: FileEncoding;
+  /** Any string is accepted: "utf8" is normalized to "utf-8"; everything else is forwarded unchanged (the server rejects anything but utf-8/base64). */
+  encoding?: string;
 }
 export interface ReadFileOptions {
-  encoding?: FileEncoding;
+  encoding?: Exclude<FileEncoding, "none">;
 }
 export interface WriteFileResult {
   success: boolean;
@@ -83,6 +91,15 @@ export interface ReadFileResult {
   isBinary?: boolean;
   mimeType?: string;
   size?: number;
+}
+/** Returned by `readFile(path, { encoding: "none" })`: content as a stream of raw bytes. */
+export interface ReadFileStreamResult {
+  success: true;
+  path: string;
+  content: ReadableStream<Uint8Array>;
+  size: number;
+  mimeType: string;
+  timestamp: string;
 }
 export interface MkdirResult {
   success: boolean;
@@ -121,7 +138,8 @@ export interface FileInfo {
   name: string;
   absolutePath: string;
   relativePath: string;
-  type: "file" | "directory";
+  /** The server currently only ever emits "file" or "directory". */
+  type: "file" | "directory" | "symlink" | "other";
   size: number;
   modifiedAt: string;
   mode: string;
@@ -179,9 +197,13 @@ export interface Sandbox {
   setEnvVars(envVars: Record<string, string | undefined>): Promise<void>;
   writeFile(
     path: string,
-    content: string | Uint8Array,
+    content: string | Uint8Array | ReadableStream<Uint8Array>,
     options?: WriteFileOptions,
   ): Promise<WriteFileResult>;
+  readFile(
+    path: string,
+    options: { encoding: "none" },
+  ): Promise<ReadFileStreamResult>;
   readFile(path: string, options?: ReadFileOptions): Promise<ReadFileResult>;
   mkdir(
     path: string,
@@ -205,7 +227,44 @@ export interface Sandbox {
   destroy(): Promise<void>;
 }
 
-const SANDBOX_ID = /^[A-Za-z0-9._-]{1,128}$/;
+const SANDBOX_ID = /^[A-Za-z0-9._-]{1,63}$/;
+/**
+ * Names that would conflict with well-known subdomains/paths if a sandbox id
+ * were ever used to build a hostname (see @cloudflare/sandbox's
+ * `sanitizeSandboxId` in packages/sandbox/src/security.ts). Checked
+ * case-insensitively.
+ */
+const RESERVED_SANDBOX_IDS = new Set([
+  "www",
+  "api",
+  "admin",
+  "root",
+  "system",
+  "cloudflare",
+  "workers",
+]);
+
+/**
+ * Validates a sandbox id against the SDK's rules on top of the existing
+ * charset: 1-63 characters matching `SANDBOX_ID`, no leading/trailing
+ * hyphen, and not one of `RESERVED_SANDBOX_IDS` (case-insensitively). Throws
+ * a plain `Error` (not a `SandboxError`) with an SDK-like message. Does not
+ * warn about uppercase characters the way the SDK's console warning does.
+ */
+export function validateSandboxId(id: string): void {
+  if (!SANDBOX_ID.test(id))
+    throw new Error(
+      `Invalid sandbox id ${JSON.stringify(id)}: must match ${SANDBOX_ID}`,
+    );
+  if (id.startsWith("-") || id.endsWith("-"))
+    throw new Error(
+      `Invalid sandbox id ${JSON.stringify(id)}: cannot start or end with a hyphen`,
+    );
+  if (RESERVED_SANDBOX_IDS.has(id.toLowerCase()))
+    throw new Error(
+      `Invalid sandbox id ${JSON.stringify(id)}: '${id}' is a reserved name`,
+    );
+}
 
 /**
  * A real Cloudflare Service Binding (`Fetcher`) is itself an RPC-capable
@@ -257,8 +316,42 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function normalizeEncoding(encoding: FileEncoding): "utf-8" | "base64" {
+function normalizeEncoding(encoding: string): string {
   return encoding === "utf8" ? "utf-8" : encoding;
+}
+
+function fromBase64(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function readStreamToBytes(
+  stream: ReadableStream<Uint8Array>,
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        total += value.byteLength;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 function toCodeContext(raw: unknown): CodeContext {
@@ -280,8 +373,8 @@ function toCodeContext(raw: unknown): CodeContext {
 
 function formatsFor(entry: { text?: string; json?: JsonValue }): string[] {
   const formats: string[] = [];
-  if (entry.text !== undefined) formats.push("text");
-  if (entry.json !== undefined) formats.push("json");
+  if (entry.text) formats.push("text");
+  if (entry.json) formats.push("json");
   return formats;
 }
 
@@ -297,6 +390,85 @@ function buildSignal(options: RunCodeOptions): AbortSignal | undefined {
     return options.signal;
   }
   return options.signal ?? timeoutSignal;
+}
+
+/**
+ * Parses a fetch `Response` into a JSON body, mapping a non-JSON body or a
+ * non-2xx status to the matching `SandboxError` subclass (via
+ * `createErrorFromResponse`). Shared by `SandboxClient.request` and the
+ * free `runCode` function below.
+ */
+async function parseJsonResponse(response: Response): Promise<unknown> {
+  if (response.status === 204) return {};
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw createErrorFromResponse(undefined, {
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+  if (!response.ok) throw createErrorFromResponse(body);
+  return body;
+}
+
+/**
+ * Builds the JSON body for `POST .../execute`, omitting unset keys and
+ * dropping `undefined` env values. Shared by `SandboxClient.runCode` and the
+ * free `runCode` function (whose options never carry `context`).
+ */
+function buildExecutionRequestBody(
+  code: string,
+  options: RunCodeOptions,
+): Record<string, unknown> {
+  const envVars = withoutUndefined(options.envVars);
+  return {
+    code,
+    ...(options.context?.id !== undefined ? { contextId: options.context.id } : {}),
+    ...(options.language !== undefined ? { language: options.language } : {}),
+    ...(envVars !== undefined ? { envVars } : {}),
+  };
+}
+
+/** Validates the shape of a parsed `/execute` response body. */
+function validateExecutionResult(body: unknown): ExecutionResult {
+  if (
+    !body ||
+    typeof body !== "object" ||
+    !Array.isArray((body as { results?: unknown }).results) ||
+    typeof (body as { logs?: unknown }).logs !== "object" ||
+    (body as { logs?: unknown }).logs === null
+  )
+    throw new SandboxError({
+      code: ErrorCode.INTERNAL_ERROR,
+      message: "Invalid sandbox response",
+      context: {},
+      httpStatus: 500,
+      timestamp: new Date().toISOString(),
+    });
+  return body as ExecutionResult;
+}
+
+/**
+ * Fires `onStdout`/`onStderr`/`onResult`/`onError` in order, after the
+ * response has arrived (there is no streaming). Shared by
+ * `SandboxClient.runCode` and the free `runCode` function.
+ */
+async function dispatchRunCodeCallbacks(
+  result: ExecutionResult,
+  options: RunCodeOptions,
+): Promise<void> {
+  if (options.onStdout)
+    for (const text of result.logs.stdout ?? [])
+      await options.onStdout({ text, timestamp: Date.now() });
+  if (options.onStderr)
+    for (const text of result.logs.stderr ?? [])
+      await options.onStderr({ text, timestamp: Date.now() });
+  if (options.onResult)
+    for (const entry of result.results ?? [])
+      await options.onResult({ ...entry, formats: () => formatsFor(entry) });
+  if (result.error && options.onError) await options.onError(result.error);
 }
 
 class SandboxClient implements Sandbox {
@@ -318,18 +490,7 @@ class SandboxClient implements Sandbox {
         new Request(`https://sandbox.internal/sandboxes/${this.id}${path}`, init),
       );
     }
-    if (response.status === 204) return {};
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch {
-      throw createErrorFromResponse(undefined, {
-        status: response.status,
-        statusText: response.statusText,
-      });
-    }
-    if (!response.ok) throw createErrorFromResponse(body);
-    return body;
+    return parseJsonResponse(response);
   }
 
   private async filesOp(payload: Record<string, unknown>): Promise<unknown> {
@@ -373,46 +534,15 @@ class SandboxClient implements Sandbox {
     code: string,
     options: RunCodeOptions = {},
   ): Promise<ExecutionResult> {
-    const envVars = withoutUndefined(options.envVars);
     const signal = buildSignal(options);
     const body = await this.request("/execute", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        code,
-        ...(options.context?.id !== undefined
-          ? { contextId: options.context.id }
-          : {}),
-        ...(options.language !== undefined ? { language: options.language } : {}),
-        ...(envVars !== undefined ? { envVars } : {}),
-      }),
+      body: JSON.stringify(buildExecutionRequestBody(code, options)),
       ...(signal ? { signal } : {}),
     });
-    if (
-      !body ||
-      typeof body !== "object" ||
-      !Array.isArray((body as { results?: unknown }).results) ||
-      typeof (body as { logs?: unknown }).logs !== "object" ||
-      (body as { logs?: unknown }).logs === null
-    )
-      throw new SandboxError({
-        code: ErrorCode.INTERNAL_ERROR,
-        message: "Invalid sandbox response",
-        context: {},
-        httpStatus: 500,
-        timestamp: new Date().toISOString(),
-      });
-    const result = body as ExecutionResult;
-    if (options.onStdout)
-      for (const text of result.logs.stdout ?? [])
-        await options.onStdout({ text, timestamp: Date.now() });
-    if (options.onStderr)
-      for (const text of result.logs.stderr ?? [])
-        await options.onStderr({ text, timestamp: Date.now() });
-    if (options.onResult)
-      for (const entry of result.results ?? [])
-        await options.onResult({ ...entry, formats: () => formatsFor(entry) });
-    if (result.error && options.onError) await options.onError(result.error);
+    const result = validateExecutionResult(body);
+    await dispatchRunCodeCallbacks(result, options);
     return result;
   }
 
@@ -429,23 +559,50 @@ class SandboxClient implements Sandbox {
 
   async writeFile(
     path: string,
-    content: string | Uint8Array,
+    content: string | Uint8Array | ReadableStream<Uint8Array>,
     options: WriteFileOptions = {},
   ): Promise<WriteFileResult> {
-    const payload =
-      content instanceof Uint8Array
-        ? { content: toBase64(content), encoding: "base64" as const }
-        : {
-            content,
-            encoding: normalizeEncoding(options.encoding ?? "utf-8"),
-          };
+    let payload: { content: string; encoding: string };
+    if (content instanceof Uint8Array) {
+      payload = { content: toBase64(content), encoding: "base64" };
+    } else if (content instanceof ReadableStream) {
+      payload = { content: toBase64(await readStreamToBytes(content)), encoding: "base64" };
+    } else {
+      payload = {
+        content,
+        encoding: normalizeEncoding(options.encoding ?? "utf-8"),
+      };
+    }
     return (await this.filesOp({ op: "write", path, ...payload })) as WriteFileResult;
   }
 
+  readFile(path: string, options: { encoding: "none" }): Promise<ReadFileStreamResult>;
+  readFile(path: string, options?: ReadFileOptions): Promise<ReadFileResult>;
   async readFile(
     path: string,
-    options: ReadFileOptions = {},
-  ): Promise<ReadFileResult> {
+    options: ReadFileOptions | { encoding: "none" } = {},
+  ): Promise<ReadFileResult | ReadFileStreamResult> {
+    if (options.encoding === "none") {
+      const body = (await this.filesOp({
+        op: "read",
+        path,
+        encoding: "base64",
+      })) as ReadFileResult;
+      const bytes = fromBase64(body.content);
+      return {
+        success: true,
+        path: body.path,
+        content: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        }),
+        size: body.size ?? bytes.byteLength,
+        mimeType: body.mimeType ?? "application/octet-stream",
+        timestamp: body.timestamp,
+      };
+    }
     return (await this.filesOp({
       op: "read",
       path,
@@ -536,9 +693,55 @@ export function getSandbox(
   options: SandboxOptions = {},
 ): Sandbox {
   const normalizedId = options.normalizeId ? id.toLowerCase() : id;
-  if (!SANDBOX_ID.test(normalizedId))
-    throw new Error(
-      `Invalid sandbox id ${JSON.stringify(normalizedId)}: must match ${SANDBOX_ID}`,
-    );
+  validateSandboxId(normalizedId);
   return new SandboxClient(target, normalizedId);
+}
+
+/** A `SandboxTarget` narrowed to the Service Binding (`Fetcher`-shaped) branch. */
+type ServiceBindingTarget = Extract<
+  SandboxTarget,
+  { fetch(request: Request): Promise<Response> }
+>;
+
+async function runCodeOverServiceBinding(
+  target: ServiceBindingTarget,
+  code: string,
+  options: StatelessRunCodeOptions,
+): Promise<ExecutionResult> {
+  const signal = buildSignal(options);
+  const response = await target.fetch(
+    new Request("https://sandbox.internal/execute", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(buildExecutionRequestBody(code, options)),
+      ...(signal ? { signal } : {}),
+    }),
+  );
+  const body = await parseJsonResponse(response);
+  const result = validateExecutionResult(body);
+  await dispatchRunCodeCallbacks(result, options);
+  return result;
+}
+
+/**
+ * Runs code statelessly against a runtime Worker: a fresh Wasm instance per
+ * call, no code context, no files -- the plain `POST /execute` route (see
+ * docs/sdk-parity-design.md, "Stateless mode"). Unlike `getSandbox(...).runCode()`,
+ * `target` must be a Service Binding (`Fetcher`) to the runtime Worker, not a
+ * Durable Object namespace -- there is no sandbox id to route through here.
+ *
+ * This function validates `target` synchronously (it is not declared
+ * `async`), so a namespace-shaped `target` throws immediately rather than
+ * rejecting the returned promise.
+ */
+export function runCode(
+  target: SandboxTarget,
+  code: string,
+  options: StatelessRunCodeOptions = {},
+): Promise<ExecutionResult> {
+  if (isNamespaceTarget(target))
+    throw new Error(
+      "runCode() requires a Service Binding to a runtime Worker; use getSandbox(namespace, id).runCode() with a Durable Object namespace",
+    );
+  return runCodeOverServiceBinding(target, code, options);
 }

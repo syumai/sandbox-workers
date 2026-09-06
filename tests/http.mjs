@@ -31,7 +31,9 @@ await post({ code: "あ".repeat(22000) }, 413);
 await post({ code: "1", input: { x: 1 } }, 400);
 await post({ code: "1", envVars: "not an object" }, 400);
 await post({ code: "1", envVars: { X: 1 } }, 400);
-await post({ code: "1", language: "javascript" }, 400);
+await post({ code: "1", language: "javascript" }, 200);
+await post({ code: "1", language: "js" }, 200);
+await post({ code: "1", language: "python" }, 400);
 for (const [method, body, type, expected] of [
   ["GET", undefined, undefined, 405],
   ["POST", "{", "application/json", 400],
@@ -49,7 +51,7 @@ assert.equal(
   "javascript",
 );
 assert.match(await (await fetch(base)).text(), /sandbox-workers/);
-console.log("17 HTTP checks passed against " + base);
+console.log("19 HTTP checks passed against " + base);
 
 for (const [language, code] of [
   ["python", "import os\nint(os.environ['X']) ** 2"],

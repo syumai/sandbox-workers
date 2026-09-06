@@ -20,10 +20,14 @@ export const LIMITS = {
 export const WORKSPACE_TAG = Symbol("workspace");
 
 export class WorkspaceError extends Error {
-  constructor(code, message) {
+  // `details` carries extra context fields beyond {path, operation, errno}
+  // (e.g. FileTooLargeError's `maxSize`/`actualSize`) for _files to merge
+  // into the context it passes to errnoErrorResponse.
+  constructor(code, message, details) {
     super(message || code);
     this.name = "WorkspaceError";
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -235,7 +239,10 @@ export class Workspace {
       throw new WorkspaceError("EISDIR", "Cannot write to the /workspace root");
     const bytes = toBytes(content, encoding);
     if (bytes.byteLength > LIMITS.MAX_FILE_BYTES)
-      throw new WorkspaceError("EFBIG", `File exceeds ${LIMITS.MAX_FILE_BYTES} bytes`);
+      throw new WorkspaceError("EFBIG", `File exceeds ${LIMITS.MAX_FILE_BYTES} bytes`, {
+        maxSize: LIMITS.MAX_FILE_BYTES,
+        actualSize: bytes.byteLength,
+      });
     const parent = this._walkParent(segments);
     const name = segments.at(-1);
     const existing = parent.contents.get(name);
@@ -320,8 +327,14 @@ export class Workspace {
       if (options.force) return {};
       throw new WorkspaceError("ENOENT", `No such file or directory: ${path}`);
     }
-    if (node instanceof Directory && node.contents.size > 0 && !options.recursive)
-      throw new WorkspaceError("ENOTEMPTY", `Directory not empty: ${path}`);
+    // Mirrors the SDK: deleteFile() refuses a directory outright (even an
+    // empty one) unless `recursive: true` is passed — there's no separate
+    // "not empty" case here (unlike rename's overwrite check below).
+    if (node instanceof Directory && !options.recursive)
+      throw new WorkspaceError(
+        "EISDIR",
+        `Cannot delete directory with deleteFile() at '${path}'. Pass { recursive: true } to delete a directory.`,
+      );
     parent.contents.delete(name);
     return {};
   }

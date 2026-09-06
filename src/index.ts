@@ -54,7 +54,10 @@ export default {
         const id = path === "/execute" ? "javascript" : path.slice("/execute/".length);
         const engine = engineFor(env, id);
         if (!engine) throw new ApiError(400, `Unsupported language: ${id}`);
-        const payload = await readExecution(request);
+        // id is validated above against the four supported runtimes, so it
+        // doubles as the runtimeLanguage a language key in the body is
+        // checked against (see packages/core/src/protocol.ts, readExecution).
+        const payload = await readExecution(request, { runtimeLanguage: id });
         return await engine.fetch(
           new Request("https://engine.internal/execute", {
             method: "POST",

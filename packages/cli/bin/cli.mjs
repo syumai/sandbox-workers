@@ -1,16 +1,21 @@
 #!/usr/bin/env node
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
-const [command, runtime, directoryArg, ...extra] = process.argv.slice(2);
+const [command, runtime, ...rest] = process.argv.slice(2);
 const runtimes = ["javascript", "python", "perl", "ruby"];
-if (
-  command !== "init" ||
-  !runtimes.includes(runtime) ||
-  extra.length ||
-  directoryArg?.startsWith("-")
-) {
+// --stateless may appear before or after the directory argument; anything
+// else unrecognized (an extra positional, an unknown flag) is rejected.
+let directoryArg;
+let stateless = false;
+let invalidArgs = false;
+for (const arg of rest) {
+  if (arg === "--stateless") stateless = true;
+  else if (directoryArg === undefined && !arg.startsWith("-")) directoryArg = arg;
+  else invalidArgs = true;
+}
+if (command !== "init" || !runtimes.includes(runtime) || invalidArgs) {
   console.log(
-    "Usage: sandbox-workers init <javascript|python|perl|ruby> [directory]\nCreates a private Worker project. Review the runtime LICENSE and THIRD_PARTY_NOTICES.md before use or redistribution.",
+    "Usage: sandbox-workers init <javascript|python|perl|ruby> [directory] [--stateless]\nCreates a private Worker project. Review the runtime LICENSE and THIRD_PARTY_NOTICES.md before use or redistribution.",
   );
   process.exit(command === "--help" ? 0 : 1);
 }
@@ -20,8 +25,11 @@ const { version } = JSON.parse(
 );
 // Sessions (durable REPLs backed by a Durable Object) are not supported for
 // Ruby: its initial memory and RubyVM's host-side state rule out the
-// memory-snapshot mechanism the other languages use. See docs/sessions-design.md.
-const sessionsSupported = runtime !== "ruby";
+// memory-snapshot mechanism the other languages use (see
+// docs/sessions-design.md). --stateless opts any runtime out the same way,
+// producing a code-execution-only Worker (see docs/sdk-parity-design.md,
+// "Stateless mode").
+const sessionsSupported = runtime !== "ruby" && !stateless;
 const files = {
   "package.json":
     JSON.stringify(
@@ -71,8 +79,8 @@ const files = {
     ) + "\n",
   "README.md": `# ${runtime} sandbox Worker\n\nRun pnpm install, pnpm dry-run, then pnpm run deploy. Set a unique Worker name first. Bind your caller to that Worker name. Code is a function body with JSON input (input, or $input for Perl).\n${
     sessionsSupported
-      ? `\nThis Worker also includes a \`SANDBOX\` Durable Object binding and a \`new_sqlite_classes\` migration, both already in \`wrangler.jsonc\`, so callers can open code contexts with \`getSandbox(env.SANDBOX, id)\` (\`createCodeContext\`, \`runCode\`, and the file methods) in addition to the stateless \`runCode\` over \`/execute\`. An idle sandbox is deleted automatically by a Durable Object alarm after \`SESSION_IDLE_TTL_MS\` milliseconds (default 24 hours if unset; add \`"vars": { "SESSION_IDLE_TTL_MS": "3600000" }\` to \`wrangler.jsonc\` to change it, or \`"0"\` to disable expiry). See the [code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/code-contexts.md).\n`
-      : `\nCode contexts (durable, stateful REPLs) are not supported for ${runtime}; this Worker only serves stateless execution.\n`
+      ? `\nThis Worker also includes a \`SANDBOX\` Durable Object binding and a \`new_sqlite_classes\` migration, both already in \`wrangler.jsonc\`, so callers can open code contexts with \`getSandbox(env.SANDBOX, id)\` (\`createCodeContext\`, \`runCode\`, and the file methods) in addition to the stateless \`runCode(env.SANDBOX, code)\` from \`@sandbox-workers/core\` (or a raw POST to \`/execute\`). An idle sandbox is deleted automatically by a Durable Object alarm after \`SESSION_IDLE_TTL_MS\` milliseconds (default 24 hours if unset; add \`"vars": { "SESSION_IDLE_TTL_MS": "3600000" }\` to \`wrangler.jsonc\` to change it, or \`"0"\` to disable expiry). See the [code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/code-contexts.md).\n`
+      : `\nCode contexts (durable, stateful REPLs) are not supported for ${runtime}; this Worker only serves stateless execution. Call it with the free \`runCode\` function:\n\n\`\`\`ts\nimport { runCode } from "@sandbox-workers/core";\nconst result = await runCode(env.SANDBOX, "1 + 1"); // SANDBOX: a Service Binding to this Worker\n\`\`\`\n`
   }\n## Licenses\n\nBefore use or redistribution, review [the runtime LICENSE](https://github.com/syumai/sandbox-workers/blob/main/packages/${runtime}/LICENSE) and [THIRD_PARTY_NOTICES.md](https://github.com/syumai/sandbox-workers/blob/main/packages/${runtime}/THIRD_PARTY_NOTICES.md). Installed copies are in node_modules/@sandbox-workers/${runtime}/. Bundled engines retain their upstream licenses; sandbox-workers' MIT license does not replace them.\n`,
   ".gitignore": "node_modules/\n.wrangler/\n.dev.vars\n",
 };

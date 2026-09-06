@@ -26,7 +26,7 @@ backups, terminals, `runCodeStream`, `readFileStream`, `watch`,
 | `getSandbox(env.Sandbox, id, options)` — one container-backed Durable Object per `id` | `getSandbox(env.SANDBOX, id, options)` — one Durable Object per `id` inside the runtime Worker. `env.SANDBOX` is either a **Service Binding** to the runtime Worker or a **Durable Object namespace** bound with `script_name` to the runtime Worker's `Sandbox` class |
 | Code context (`createCodeContext`) with a generated id, held in container memory | Code context with a generated id, persisted in the sandbox's Durable Object (meta + memory snapshot per context) |
 | Container filesystem shared by all contexts | One `/workspace` per sandbox, shared by all of its contexts |
-| Language per context (`python`, `javascript`, `typescript`) | Language fixed per runtime Worker; `language` is validated against it (`typescript` is accepted by the JavaScript runtime) |
+| Language per context (`python`, `javascript`, `typescript`), plus aliases (`python3`, `js`, `node`, `ts`) | Language fixed per runtime Worker; `language` is normalized (aliases, case-insensitively) and validated against it (`typescript` is accepted by the JavaScript runtime). A context's `language` is stored and reported as the *normalized requested* value (so a `typescript` context is distinct from a `javascript` one), even though it executes on the JavaScript runtime; `ExecutionResult.language` always reports the runtime's own language |
 
 A **sandbox** = Durable Object `Sandbox` (renamed from `SandboxSession`),
 keyed by the caller-chosen sandbox id. It owns:
@@ -49,9 +49,11 @@ next use). `MAX_CONTEXTS = 8` contexts per sandbox (`createCodeContext`
 beyond that fails with `VALIDATION_FAILED`).
 
 **Default context.** `runCode` without `context` (and without `contextId`
-on the wire) uses the first existing context whose language matches
-`options.language ?? runtime language`, creating one if none exists — the
-SDK's `getOrCreateDefaultContext` semantics, done server-side.
+on the wire) uses the first existing context whose (normalized) language
+matches `options.language ?? runtime language`, creating one if none exists
+— the SDK's `getOrCreateDefaultContext` semantics, done server-side. A
+`typescript` default context is distinct from a `javascript` one, even
+though both execute on the JavaScript runtime.
 
 **Ruby.** Ruby has no Durable Object. Its runtime Worker still answers
 `POST /sandboxes/:id/execute` **without** `contextId` by running the code
@@ -77,8 +79,9 @@ await sandbox.runCode("console.log(1)");                       // default contex
 await sandbox.listCodeContexts();
 await sandbox.deleteCodeContext(ctx.id);
 await sandbox.setEnvVars({ TOKEN: "abc", OLD: undefined });
-await sandbox.writeFile("/workspace/a.txt", "hi");             // string or Uint8Array
+await sandbox.writeFile("/workspace/a.txt", "hi");             // string, Uint8Array, or ReadableStream<Uint8Array>
 await sandbox.readFile("/workspace/a.txt", { encoding: "utf-8" });
+await sandbox.readFile("/workspace/a.txt", { encoding: "none" }); // content: ReadableStream<Uint8Array>, sent over the wire as base64
 await sandbox.mkdir("/workspace/dir", { recursive: true });
 await sandbox.deleteFile("/workspace/a.txt");                  // { recursive, force } are an extension
 await sandbox.renameFile("/workspace/a.txt", "/workspace/b.txt");
@@ -104,8 +107,15 @@ export function getSandbox(target: SandboxTarget, id: string, options?: SandboxO
 - `DurableObjectNamespace`: the client calls `target.get(target.idFromName(id)).fetch(...)` with the
   `x-sandbox-id: <id>` header and the path **without** the `/sandboxes/<id>`
   prefix (the same request the runtime Worker forwards internally).
-- `id` must match `/^[A-Za-z0-9._-]{1,128}$/` after optional lowercasing
-  (`normalizeId`); otherwise `getSandbox` throws synchronously.
+- `id` (after optional lowercasing via `normalizeId`) must match
+  `/^[A-Za-z0-9._-]{1,63}$/`, must not start or end with `-`, and must not be
+  one of the reserved names `www`, `api`, `admin`, `root`, `system`,
+  `cloudflare`, `workers` (checked case-insensitively) — the SDK's
+  `sanitizeSandboxId` rules on top of the existing charset. Otherwise
+  `getSandbox` throws synchronously (a plain `Error`, via the exported
+  `validateSandboxId(id)` helper, also used by every runtime Worker's
+  `/sandboxes/:id` route). Unlike the SDK, there is no console warning about
+  uppercase characters.
 
 ### Types
 
@@ -143,15 +153,17 @@ export interface ExecutionResult {
   context?: { id: string; cwd: string; executions: number; snapshotMs?: number; expiresAt?: number };
 }
 
-export type FileEncoding = "utf-8" | "utf8" | "base64";
+export type FileEncoding = "utf-8" | "utf8" | "base64" | "none";
+export interface WriteFileOptions { encoding?: string }   // any string accepted; "utf8" normalizes to "utf-8", everything else forwarded unchanged
 export interface WriteFileResult { success: boolean; path: string; timestamp: string }
 export interface ReadFileResult { success: boolean; path: string; content: string; timestamp: string; encoding?: "utf-8" | "base64"; isBinary?: boolean; mimeType?: string; size?: number }
+export interface ReadFileStreamResult { success: true; path: string; content: ReadableStream<Uint8Array>; size: number; mimeType: string; timestamp: string }
 export interface MkdirResult { success: boolean; path: string; recursive: boolean; timestamp: string }
 export interface DeleteFileResult { success: boolean; path: string; timestamp: string }
 export interface RenameFileResult { success: boolean; path: string; newPath: string; timestamp: string }
 export interface MoveFileResult { success: boolean; path: string; newPath: string; timestamp: string }
 export interface FileExistsResult { success: boolean; path: string; exists: boolean; timestamp: string }
-export interface FileInfo { name: string; absolutePath: string; relativePath: string; type: "file" | "directory"; size: number; modifiedAt: string; mode: string; permissions: { readable: boolean; writable: boolean; executable: boolean } }
+export interface FileInfo { name: string; absolutePath: string; relativePath: string; type: "file" | "directory" | "symlink" | "other"; size: number; modifiedAt: string; mode: string; permissions: { readable: boolean; writable: boolean; executable: boolean } }
 export interface ListFilesOptions { recursive?: boolean; includeHidden?: boolean }
 export interface ListFilesResult { success: boolean; path: string; files: FileInfo[]; count: number; timestamp: string }
 
@@ -178,16 +190,29 @@ export const ErrorCode = {
   IS_DIRECTORY: "IS_DIRECTORY",              // 400
   NOT_DIRECTORY: "NOT_DIRECTORY",            // 400
   FILE_TOO_LARGE: "FILE_TOO_LARGE",          // 413
-  NO_SPACE: "NO_SPACE",                      // 507
-  FILESYSTEM_ERROR: "FILESYSTEM_ERROR",      // 400 (ENOTEMPTY and anything else)
+  NO_SPACE: "NO_SPACE",                      // 500
+  FILESYSTEM_ERROR: "FILESYSTEM_ERROR",      // 500 (ENOTEMPTY and anything else)
   CONTEXT_NOT_FOUND: "CONTEXT_NOT_FOUND",    // 404
   VALIDATION_FAILED: "VALIDATION_FAILED",    // 400 (also used with 413/415/405 for request-shape failures)
   CODE_EXECUTION_ERROR: "CODE_EXECUTION_ERROR", // 500 (engine failed before producing a result)
   INTERNAL_ERROR: "INTERNAL_ERROR",          // 500 / non-JSON response
 } as const;
 
+// Matches the SDK's `Operation` constants (used as `ErrorResponse.operation`).
+export const Operation = {
+  FILE_READ: "file.read", FILE_WRITE: "file.write", FILE_DELETE: "file.delete",
+  FILE_MOVE: "file.move", FILE_RENAME: "file.rename", FILE_STAT: "file.stat",
+  DIRECTORY_CREATE: "directory.create", DIRECTORY_LIST: "directory.list",
+  CODE_EXECUTE: "code.execute", CODE_CONTEXT_CREATE: "code.context.create",
+  CODE_CONTEXT_DELETE: "code.context.delete",
+} as const;
+export type OperationType = (typeof Operation)[keyof typeof Operation];
+
 export interface ErrorResponse<TContext = Record<string, unknown>> {
-  code: ErrorCode; message: string; context: TContext; httpStatus: number; timestamp: string; operation?: string;
+  code: ErrorCode; message: string; context: TContext; httpStatus: number; timestamp: string;
+  operation?: OperationType;
+  suggestion?: string;     // typed for SDK parity; not currently emitted by any server here
+  documentation?: string;  // typed for SDK parity; not currently emitted by any server here
 }
 
 export class SandboxError<TContext = Record<string, unknown>> extends Error {
@@ -219,6 +244,24 @@ keeps its name; `WorkspaceError` codes map as: `ENOENT→FILE_NOT_FOUND`,
 `ENOTDIR→NOT_DIRECTORY`, `EFBIG→FILE_TOO_LARGE`, `ENOSPC→NO_SPACE`,
 `ENOTEMPTY`/other→`FILESYSTEM_ERROR`. The Node-style code is kept in
 `context.errno` (e.g. `context: { path, operation, errno: "ENOTEMPTY" }`).
+A `write` that exceeds the per-file cap also carries `maxSize: 1048576` and
+`actualSize` (the attempted byte length) in `context`, alongside `path`,
+`operation`, and `errno: "EFBIG"` — `WorkspaceError` carries these as an
+optional `details` object that `_files` merges into the error's context.
+
+`mkdir` is the one op whose errno→code mapping is overridden: every failure
+other than `EACCES`/`ENOSPC` (a missing parent without `recursive`, an
+existing path, a non-directory parent — `ENOENT`/`EEXIST`/`ENOTDIR`) is
+reported as `FILESYSTEM_ERROR`, matching the SDK; `context.errno` still
+carries the Node-style code. `mkdir` with `recursive: true` on an existing
+directory still succeeds. Every other op keeps the table above unchanged.
+
+`deleteFile()` without `recursive: true` refuses **any** directory, empty or
+not, with `IS_DIRECTORY` (not `FILESYSTEM_ERROR`/`ENOTEMPTY` — the SDK has no
+"not empty" case, it refuses directories outright) and a message like
+"Cannot delete directory with deleteFile() at '\<path\>'. Pass { recursive:
+true } to delete a directory." With `recursive: true` it deletes the
+directory and its contents; `force: true` still just ignores a missing path.
 
 Removed: `createSandbox`, `SandboxSession` (client type), `SandboxTransportError`,
 `SandboxFileError`, `SessionInfo`, `FileEntry`, `FileStat`, `stat()`,
@@ -269,9 +312,10 @@ from the extension with a small table (`.json`, `.js/.mjs`, `.py`, `.pl`,
 `.svg`, `.pdf`, `.wasm`, `.zip`, `.gz`); unknown → `text/plain` when not
 binary, else `application/octet-stream`.
 
-`execute` details: `language`, when present, must equal the runtime
-language (`typescript` also accepted on `javascript`) → otherwise 400
-`VALIDATION_FAILED`. `contextId` must exist → otherwise 404
+`execute` details: `language`, when present, is normalized (aliases
+`python3`/`js`/`node`/`ts`, case-insensitively) and must then equal the
+runtime language (`typescript` also accepted on `javascript`) → otherwise
+400 `VALIDATION_FAILED`. `contextId` must exist → otherwise 404
 `CONTEXT_NOT_FOUND`. `cwd` is no longer accepted on `execute` (it is a
 context property; guest `chdir` still updates the context's `cwd`). The
 response `context` block replaces the old `session` block, with the same
@@ -316,6 +360,73 @@ two files.
 - Caller Worker, option B (Durable Object namespace, SDK-shaped):
   `"durable_objects": { "bindings": [{ "name": "SANDBOX", "class_name": "Sandbox", "script_name": "sandbox-javascript" }] }`
   (no migration in the caller; the class lives in the runtime Worker).
+
+## Stateless mode
+
+A code-execution-only mode, with no Session/File API and no `getSandbox`,
+added 2026-09-06:
+
+- **Client**: `runCode(target, code, options?)` (`packages/core/src/client.ts`),
+  a free function alongside `getSandbox`. `options` is `StatelessRunCodeOptions`
+  (`RunCodeOptions` minus `context` — there is no code context in stateless
+  mode). It POSTs `{ code, language?, envVars? }` to `https://sandbox.internal/execute`
+  on a Service Binding, with the same request-body building, response
+  validation, error mapping, and callback dispatch as
+  `getSandbox(...).runCode`, factored into shared module-level helpers
+  (`buildExecutionRequestBody`, `parseJsonResponse`, `validateExecutionResult`,
+  `dispatchRunCodeCallbacks`) used by both. `target` must be a Service Binding
+  (`Fetcher`); a Durable Object namespace throws synchronously — `runCode` is
+  a plain (non-`async`) function that validates `target` before delegating to
+  an async implementation, so the throw is never a rejected promise.
+- **`/execute` language handling**: `readExecution(request, options?)` gained
+  `options.runtimeLanguage` and `options.rejectContextId`
+  (`packages/core/src/protocol.ts`). With `runtimeLanguage` given, a
+  `language` key in the body is validated via the existing `resolveLanguage`
+  (aliases accepted) instead of being unconditionally rejected; every runtime
+  Worker's plain `/execute` route now passes its own language, so
+  `{ code, language: "js" }` succeeds and `{ code, language: "python" }` on
+  the javascript runtime 400s. The Playground gateway
+  (`src/index.ts`) passes the already-validated `id` from the URL path as
+  `runtimeLanguage` too, so the same validation applies through
+  `/execute/<language>`. `ExecutionRequest` is unchanged (`{ code, envVars? }`)
+  — `language` is validated, never returned or forwarded.
+- **Binding-less runtime Worker**: every runtime Worker's `Env.SANDBOX` is now
+  optional. When it's undefined and a `/sandboxes/:id/...` route is hit, the
+  Worker behaves exactly like Ruby always has: a context-less
+  `POST /sandboxes/:id/execute` runs statelessly (same response as
+  `/execute`); a body with `contextId`, or any other method/sub-path, answers
+  400 `VALIDATION_FAILED` with a `reason` message (Ruby keeps its own "Code
+  contexts are not supported for ruby"; the others say "Code contexts are not
+  supported: this Worker has no SANDBOX Durable Object binding"). The shared
+  gate is `handleStatelessSandboxRoute(request, subpath, { reason, execute })`
+  in `packages/core/src/protocol.ts`; `execute` calls `readExecution` with
+  `{ rejectContextId: reason }`, so there's no need to re-parse the body the
+  way Ruby's now-removed `readRubySandboxExecution` did.
+- **CLI**: `sandbox-workers init <runtime> [directory] [--stateless]`
+  (`packages/cli/bin/cli.mjs`) — the flag may appear before or after
+  `directory`. With `--stateless`, or always for ruby, the generated
+  `wrangler.jsonc` has no `durable_objects`/`migrations`, `index.js` exports
+  only `default`, and the README documents the `runCode(env.SANDBOX, code)`
+  caller snippet instead of `getSandbox`. Without the flag, the README's
+  code-contexts paragraph now also mentions that stateless
+  `runCode(env.SANDBOX, code)` works against the same Worker.
+- **Docs**: `website/content/guides/execute-code.md` now leads with
+  `runCode(env.SANDBOX, code, options)` and states plainly that it's the
+  stateless path (fresh Wasm instance per call), linking to
+  `/guides/code-contexts` for `getSandbox(...).runCode`'s stateful default
+  context. `website/content/api/interpreter.md` documents `runCode()` and
+  `StatelessRunCodeOptions`; `website/content/api/http-api.md` documents the
+  `language` field on `POST /execute` and the binding-less-Worker behavior;
+  `website/content/guides/deploy.md` documents the `--stateless` flag and the
+  "delete the two blocks" manual equivalent.
+- **Fixture**: `tests/fixtures/stateless/` (a caller Worker plus a javascript
+  runtime Worker built without a `SANDBOX` binding, via an entry that exports
+  only `default`) and `tests/stateless.mjs` (`pnpm run dev:stateless` /
+  `pnpm run test:stateless`, port 8799) exercise `runCode` end-to-end:
+  envVars, callbacks, an accepted `language: "ts"`, a rejected
+  `language: "python"`, a guest error in `result.error`, and the runtime's
+  raw `/sandboxes/:id/execute` (context-less, succeeds) vs.
+  `/sandboxes/:id/contexts` (400) over the same Service Binding.
 
 ## Tests
 

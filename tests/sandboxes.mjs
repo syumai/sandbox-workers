@@ -365,6 +365,53 @@ function uniqueId(prefix) {
   console.log("javascript: language 'typescript' is accepted, 'python' is rejected");
 }
 
+// ---- language aliases (case-insensitive, normalized) ----------------------
+
+{
+  const id = uniqueId("ctx-alias");
+  const viaJs = await execute("javascript", id, { code: "1 + 1", language: "js" });
+  assert.deepEqual(viaJs.results, [{ text: "2" }]);
+  assert.equal(viaJs.language, "javascript", "ExecutionResult.language is always the runtime language");
+  const viaNode = await execute("javascript", id, { code: "1 + 1", language: "NODE" });
+  assert.deepEqual(viaNode.results, [{ text: "2" }]);
+  assert.equal(viaJs.context.id, viaNode.context.id, "'js'/'NODE' resolve to the same (javascript) default context");
+
+  const viaTs = await execute("javascript", id, { code: "const n: number = 1; n", language: "ts" });
+  assert.deepEqual(viaTs.results, [{ text: "1" }]);
+  assert.notEqual(viaTs.context.id, viaJs.context.id, "'ts' resolves to a distinct default context from 'js'");
+
+  const py = uniqueId("py-alias");
+  const viaPython3 = await execute("python", py, { code: "1 + 1", language: "PYTHON3" });
+  assert.deepEqual(viaPython3.results, [{ text: "2" }]);
+  assert.equal(viaPython3.language, "python");
+  console.log("aliases: js/node/ts/python3 are accepted case-insensitively and normalized");
+}
+
+// ---- typescript context language is stored/reported as "typescript" -------
+
+{
+  const id = uniqueId("ctx-ts-report");
+  const created = await createContext("javascript", id, { language: "typescript" });
+  assert.equal(created.language, "typescript", "a typescript context is reported as typescript, not javascript");
+
+  const listed = await listContexts("javascript", id);
+  assert.equal(listed.contexts.find((c) => c.id === created.id).language, "typescript");
+
+  const infoBefore = await info("javascript", id);
+  assert.equal(infoBefore.contexts.find((c) => c.id === created.id).language, "typescript");
+
+  const r = await execute("javascript", id, { code: "1 + 1", contextId: created.id });
+  assert.deepEqual(r.results, [{ text: "2" }]);
+  assert.equal(r.context.id, created.id);
+  // ExecutionResult.language is always the runtime's own language, even
+  // though the context it ran in reports "typescript".
+  assert.equal(r.language, "javascript");
+
+  const infoAfter = await info("javascript", id);
+  assert.equal(infoAfter.contexts.find((c) => c.id === created.id).language, "typescript");
+  console.log('javascript: a "typescript" context is stored/reported as "typescript"; ExecutionResult.language stays "javascript"');
+}
+
 // ---- setEnvVars layering ---------------------------------------------------
 
 {
@@ -434,6 +481,91 @@ function uniqueId(prefix) {
   assert.equal(entry.mode, "-rw-r--r--");
   assert.deepEqual(entry.permissions, { readable: true, writable: true, executable: false });
   console.log("javascript: list() files carry the full FileInfo shape");
+}
+
+// ---- deleteFile() on a directory (IS_DIRECTORY, even when empty) ----------
+
+{
+  const id = uniqueId("delete-dir");
+  await files("javascript", id, { op: "mkdir", path: "/workspace/empty" });
+  const emptyRejected = await files("javascript", id, { op: "delete", path: "/workspace/empty" }, 400);
+  assert.equal(emptyRejected.code, "IS_DIRECTORY");
+  assert.equal(emptyRejected.context.errno, "EISDIR");
+  assert.match(emptyRejected.message, /Pass \{ recursive: true \}/);
+
+  await files("javascript", id, { op: "mkdir", path: "/workspace/full" });
+  await files("javascript", id, { op: "write", path: "/workspace/full/f.txt", content: "x" });
+  const fullRejected = await files("javascript", id, { op: "delete", path: "/workspace/full" }, 400);
+  assert.equal(fullRejected.code, "IS_DIRECTORY");
+
+  await files("javascript", id, { op: "delete", path: "/workspace/empty", recursive: true });
+  const emptyGone = await files("javascript", id, { op: "exists", path: "/workspace/empty" });
+  assert.equal(emptyGone.exists, false);
+
+  await files("javascript", id, { op: "delete", path: "/workspace/full", recursive: true });
+  const fullGone = await files("javascript", id, { op: "exists", path: "/workspace/full" });
+  assert.equal(fullGone.exists, false);
+  console.log("javascript: deleteFile() refuses any directory without recursive, even an empty one");
+}
+
+// ---- mkdir failure code is always FILESYSTEM_ERROR ------------------------
+
+{
+  const id = uniqueId("mkdir-codes");
+  // FILESYSTEM_ERROR maps to HTTP 500 (see docs/sdk-parity-design.md,
+  // "Errors"), so every failed mkdir below is a 500, not the errno's usual
+  // status (ENOENT would normally be 404, EEXIST 409, ENOTDIR 400).
+  const missingParent = await files("javascript", id, { op: "mkdir", path: "/workspace/a/b" }, 500);
+  assert.equal(missingParent.code, "FILESYSTEM_ERROR");
+  assert.equal(missingParent.context.errno, "ENOENT");
+
+  await files("javascript", id, { op: "mkdir", path: "/workspace/a" });
+  const existing = await files("javascript", id, { op: "mkdir", path: "/workspace/a" }, 500);
+  assert.equal(existing.code, "FILESYSTEM_ERROR");
+  assert.equal(existing.context.errno, "EEXIST");
+
+  await files("javascript", id, { op: "write", path: "/workspace/notadir", content: "x" });
+  const notDir = await files("javascript", id, { op: "mkdir", path: "/workspace/notadir/child" }, 500);
+  assert.equal(notDir.code, "FILESYSTEM_ERROR");
+  assert.equal(notDir.context.errno, "ENOTDIR");
+
+  // mkdir with recursive: true on an existing directory still succeeds.
+  const ok = await files("javascript", id, { op: "mkdir", path: "/workspace/a", recursive: true });
+  assert.equal(ok.success, true);
+  console.log("javascript: mkdir failures are always FILESYSTEM_ERROR, with errno kept in context.errno");
+}
+
+// ---- FileTooLargeError context carries maxSize/actualSize -----------------
+
+{
+  const id = uniqueId("too-large-ctx");
+  const actualSize = 1024 * 1024 + 1;
+  const tooLarge = await files(
+    "javascript",
+    id,
+    { op: "write", path: "/workspace/big.bin", content: "z".repeat(actualSize) },
+    413,
+  );
+  assert.equal(tooLarge.code, "FILE_TOO_LARGE");
+  assert.equal(tooLarge.context.errno, "EFBIG");
+  assert.equal(tooLarge.context.maxSize, 1024 * 1024);
+  assert.equal(tooLarge.context.actualSize, actualSize);
+  console.log("javascript: FileTooLargeError context carries maxSize/actualSize");
+}
+
+// ---- sandbox id rejection (reserved names, leading/trailing hyphen) -------
+
+{
+  for (const bad of ["www", "api", "admin", "root", "system", "cloudflare", "workers", "-abc", "abc-"]) {
+    const res = await fetch(sandboxUrl("javascript", bad, "/execute"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: "1" }),
+    });
+    assert.equal(res.status, 400, `sandbox id '${bad}' should be rejected`);
+    checks++;
+  }
+  console.log("javascript: reserved/hyphen-boundary sandbox ids are rejected with 400");
 }
 
 // ---- "reset" (delete every context; files stay) / delete sandbox ----------

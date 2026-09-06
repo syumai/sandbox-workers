@@ -1,0 +1,6 @@
+{
+  "name": "sandbox-stateless-fixture",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-04",
+  "services": [{ "binding": "SANDBOX_SERVICE", "service": "sandbox-stateless-fixture-engine" }],
+}

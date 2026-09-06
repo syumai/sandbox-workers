@@ -56,9 +56,13 @@ interface ErrorResponse {
   context: Record<string, unknown>;
   httpStatus: number;
   timestamp: string;
-  operation?: string;
+  operation?: OperationType;
+  suggestion?: string;     // typed for SDK parity; not currently emitted
+  documentation?: string;  // typed for SDK parity; not currently emitted
 }
 ```
+
+`operation`, when present, is one of the dotted strings in the exported `Operation` object (`Operation.FILE_READ` = `"file.read"`, `Operation.FILE_WRITE` = `"file.write"`, `Operation.FILE_DELETE` = `"file.delete"`, `Operation.FILE_MOVE` = `"file.move"`, `Operation.FILE_RENAME` = `"file.rename"`, `Operation.FILE_STAT` = `"file.stat"`, `Operation.DIRECTORY_CREATE` = `"directory.create"`, `Operation.DIRECTORY_LIST` = `"directory.list"`, `Operation.CODE_EXECUTE` = `"code.execute"`, `Operation.CODE_CONTEXT_CREATE` = `"code.context.create"`, `Operation.CODE_CONTEXT_DELETE` = `"code.context.delete"`), typed as `OperationType`.
 
 ## Error code table
 
@@ -67,11 +71,11 @@ interface ErrorResponse {
 | `FILE_NOT_FOUND` | 404 | Path does not exist |
 | `FILE_EXISTS` | 409 | Path already exists (`rename`/`move` destination, non-`force` conflicts) |
 | `PERMISSION_DENIED` | 403 | Path escapes `/workspace`, or the underlying `EACCES` |
-| `IS_DIRECTORY` | 400 | Expected a file, found a directory |
+| `IS_DIRECTORY` | 400 | Expected a file, found a directory; also `deleteFile()` on any directory without `recursive: true` |
 | `NOT_DIRECTORY` | 400 | Expected a directory, found a file |
 | `FILE_TOO_LARGE` | 413 | Exceeds the 1 MiB per-file or 16 MiB per-workspace limit |
-| `NO_SPACE` | 507 | Workspace entry-count limit (4096) reached |
-| `FILESYSTEM_ERROR` | 400 | `ENOTEMPTY` or any other filesystem error |
+| `NO_SPACE` | 500 | Workspace entry-count limit (4096) reached |
+| `FILESYSTEM_ERROR` | 500 | `ENOTEMPTY`, any other filesystem error, or any failed `mkdir` (which always reports this code, regardless of the underlying errno) |
 | `CONTEXT_NOT_FOUND` | 404 | Unknown `contextId` |
 | `VALIDATION_FAILED` | 400 | Malformed request (also used with 413/415/405 for request-shape failures) |
 | `CODE_EXECUTION_ERROR` | 500 | The engine failed before producing a result |

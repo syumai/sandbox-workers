@@ -20,7 +20,7 @@ await sandbox.createCodeContext(options?: CreateContextOptions): Promise<CodeCon
 **Parameters**:
 
 - `options` (optional):
-  - `language` — the context's language.
+  - `language` — the context's language. Aliases are accepted case-insensitively and normalized: `python3` → `python`, `js`/`node` → `javascript`, `ts` → `typescript`. The context's `language` is stored and reported as this normalized value — a `typescript` context is distinct from a `javascript` one, even though both execute on the JavaScript runtime.
   - `cwd` — the context's initial working directory.
   - `envVars` — environment variables layered onto executions in this context (`Record<string, string | undefined>`; a value of `undefined` is dropped, not sent).
 
@@ -85,7 +85,7 @@ await sandbox.runCode(code: string, options?: RunCodeOptions): Promise<Execution
 - `code` — the script to run. The value of its last top-level expression is the result. Limited to 64 KiB UTF-8.
 - `options` (optional):
   - `context` — the `CodeContext` to run in (from `createCodeContext()` or `listCodeContexts()`). Omit it to run in (or create) the default context for the request's language — the first context of that language, so simple callers never need to think about contexts.
-  - `language` — the language to use when no `context` is given.
+  - `language` — the language to use when no `context` is given (same aliases as `createCodeContext()`'s `language`).
   - `envVars` — environment variables for this call (`Record<string, string | undefined>`; `undefined` unsets a key for this call rather than being sent).
   - `timeout` — a request timeout in milliseconds; internally builds `AbortSignal.timeout(timeout)`. The guest is still separately bounded by its fuel budget regardless of `timeout`.
   - `signal` — an `AbortSignal` to cancel the request; combined with a `timeout`-derived signal (via `AbortSignal.any`) when both are given.
@@ -110,6 +110,32 @@ const result = await sandbox.runCode("import math\nmath.pi * radius ** 2", {
 
 console.log(result.results[0]); // { text: "78.53981633974483" }
 ```
+
+### `runCode()` (free function)
+
+Run code statelessly against a runtime Worker, without a sandbox or a code context: a fresh Wasm instance per call, no files, no `getSandbox` involved.
+
+```ts
+import { runCode } from "@sandbox-workers/core";
+
+await runCode(target: SandboxTarget, code: string, options?: StatelessRunCodeOptions): Promise<ExecutionResult>
+```
+
+**Parameters**:
+
+- `target` — must be a Service Binding (`Fetcher`) to the runtime Worker. Passing a Durable Object namespace throws synchronously (a plain `Error`, not a rejected promise): use `getSandbox(namespace, id).runCode()` for that transport instead, since a namespace has no meaning without a sandbox id to route through.
+- `code` — same as `sandbox.runCode()`'s `code`.
+- `options` (optional): `StatelessRunCodeOptions`, i.e. `RunCodeOptions` minus `context` — `language`, `envVars`, `timeout`, `signal`, `onStdout`, `onStderr`, `onResult`, `onError`. There is no `context` option; a stateless call cannot run in a code context.
+
+**Returns**: `Promise<ExecutionResult>` — see [Types](#types). Guest errors set `result.error` rather than throwing, exactly like `sandbox.runCode()`; the callbacks fire in the same order, after the response arrives.
+
+```ts
+const result = await runCode(env.SANDBOX, "import os\nint(os.environ['X']) ** 2", {
+  envVars: { X: "12" },
+});
+```
+
+This is the stateless counterpart to `sandbox.runCode()` above: it posts directly to `POST /execute` (see [HTTP API](/api/http-api)) rather than `POST /sandboxes/:id/execute`, so there is no sandbox id, no context, and no persistence between calls.
 
 ### `setEnvVars()`
 
@@ -180,6 +206,7 @@ interface ExecutionResult {
 }
 ```
 
+- `language` is always the runtime Worker's own language (e.g. `"javascript"`), even when the execution ran in a `"typescript"` code context — compare `CodeContext.language`, which reports the requested/normalized language.
 - `durationMs` is elapsed engine execution time, not a billing measurement. `usage` is absent when the engine failed before metering was available.
 - `error` is present only for a guest-side failure — a raised exception, or a fuel/output/result limit. It is never thrown; check `result.error` instead. `traceback` is the language's own stack trace, as lines of text.
 - `context` is present only when the execution ran in a code context (Ruby's context-less `runCode()` omits it). `snapshotMs` is present only on an execution that actually wrote a memory snapshot. `expiresAt` reflects the sandbox's idle-expiry deadline as of this request, and is omitted when expiry is disabled.

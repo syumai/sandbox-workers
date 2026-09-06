@@ -13,6 +13,8 @@
     "test:sandboxes": "node tests/sandboxes.mjs",
     "test:do-binding": "node tests/do-binding.mjs",
     "dev:do-binding": "wrangler dev -c tests/fixtures/do-binding/wrangler.jsonc -c engine/wrangler.jsonc --port 8798",
+    "test:stateless": "node tests/stateless.mjs",
+    "dev:stateless": "wrangler dev -c tests/fixtures/stateless/wrangler.jsonc -c tests/fixtures/stateless/engine-wrangler.jsonc --port 8799",
     "deploy:engine": "wrangler deploy -c engine/wrangler.jsonc",
     "deploy:gateway": "wrangler deploy",
     "build:packages": "pnpm --filter @sandbox-workers/core build && node scripts/build-packages.mjs",

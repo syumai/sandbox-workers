@@ -62,11 +62,11 @@ pnpm run deploy
 ```
 
 ```text
-sandbox-workers init <javascript|python|perl|ruby> [directory]
+sandbox-workers init <javascript|python|perl|ruby> [directory] [--stateless]
 sandbox-workers --help
 ```
 
-The default directory is `sandbox-<runtime>`. The CLI creates an entrypoint, manifest, Wrangler configuration, README, and ignore file. Existing files and symlinks are never overwritten. It does not install packages or deploy automatically.
+The default directory is `sandbox-<runtime>`. The CLI creates an entrypoint, manifest, Wrangler configuration, README, and ignore file. Existing files and symlinks are never overwritten. It does not install packages or deploy automatically. `--stateless` may appear before or after `directory`.
 
 Each generated entrypoint imports the selected package:
 
@@ -75,6 +75,17 @@ export { default } from "@sandbox-workers/python";
 ```
 
 The generated README links to that runtime's `LICENSE` and `THIRD_PARTY_NOTICES.md`. Read them before use or redistribution. The installed engine has its own upstream licenses in addition to the MIT-licensed adapter.
+
+### Stateless mode
+
+Pass `--stateless` to scaffold a code-execution-only Worker: no `durable_objects`/`migrations` in `wrangler.jsonc`, and the entrypoint exports only `default` (no `Sandbox` Durable Object class). This is always the case for Ruby, which has no `Sandbox` class regardless of the flag. Call a stateless Worker with the free `runCode` function instead of `getSandbox`:
+
+```ts
+import { runCode } from "@sandbox-workers/core";
+const result = await runCode(env.SANDBOX, "1 + 1"); // SANDBOX: a Service Binding to this Worker
+```
+
+You can get the same result by hand, without the flag: delete the `durable_objects` and `migrations` blocks from an already-generated `wrangler.jsonc` (and drop the `Sandbox` export from `index.js`, though a leftover export is harmless if the binding itself is gone). The Worker still serves plain `/execute`, and its `/sandboxes/:id/execute` route still runs context-less calls statelessly — see [HTTP API](/api/http-api#sandboxes) for exactly what still works without the binding.
 
 ### Before npm publication
 

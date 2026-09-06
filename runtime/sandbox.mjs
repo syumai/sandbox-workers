@@ -12,11 +12,13 @@ import { DurableObject } from "cloudflare:workers";
 import {
   ApiError,
   ErrorCode,
+  Operation,
   errnoErrorResponse,
   errorResponse,
   MAX_CODE_BYTES,
   MAX_FILES_REQUEST_BYTES,
   MAX_REQUEST_BYTES,
+  resolveLanguage,
 } from "@sandbox-workers/core";
 import { Workspace, WorkspaceError } from "./workspace.mjs";
 import {
@@ -51,14 +53,14 @@ const MAX_CONTEXTS = 8;
 const DEFAULT_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const FILE_OPERATION = {
-  read: "file.read",
-  write: "file.write",
-  mkdir: "directory.create",
-  delete: "file.delete",
-  rename: "file.rename",
-  move: "file.move",
-  list: "directory.list",
-  exists: "file.stat",
+  read: Operation.FILE_READ,
+  write: Operation.FILE_WRITE,
+  mkdir: Operation.DIRECTORY_CREATE,
+  delete: Operation.FILE_DELETE,
+  rename: Operation.FILE_RENAME,
+  move: Operation.FILE_MOVE,
+  list: Operation.DIRECTORY_LIST,
+  exists: Operation.FILE_STAT,
 };
 
 const MIME_TYPES = {
@@ -100,17 +102,6 @@ async function readJsonBody(request, maxBytes = MAX_REQUEST_BYTES) {
   if (!body || typeof body !== "object" || Array.isArray(body))
     throw new ApiError(400, "Expected an object");
   return body;
-}
-
-// A context's language must be the runtime language, or "typescript" when
-// the runtime is javascript (the JS engine parses both dialects without a
-// separate mode, so a TypeScript context is just a javascript context with a
-// friendlier name at the call site) — collapsed to the runtime language
-// either way. Anything else is rejected up front.
-function resolveLanguage(requested, runtimeLanguage) {
-  if (requested === undefined || requested === runtimeLanguage) return runtimeLanguage;
-  if (runtimeLanguage === "javascript" && requested === "typescript") return runtimeLanguage;
-  throw new ApiError(400, `Unsupported language '${requested}' on this runtime (${runtimeLanguage})`);
 }
 
 // Validates an envVars object: keys must be valid identifiers, values must
@@ -921,7 +912,10 @@ export function createSandboxClass(engine) {
       const expiresAt = await this._touchAlarm(sandboxMeta);
       return json({
         code: body.code,
-        language: context.language,
+        // ExecutionResult.language is the runtime's own language (unlike
+        // context.language, which stays the requested/normalized language,
+        // e.g. "typescript" on the javascript runtime — see _createContext).
+        language: engine.language,
         engine: engine.engineName,
         durationMs: 0,
         ...result,
@@ -1008,8 +1002,22 @@ export function createSandboxClass(engine) {
         await this._touchAlarm(sandboxMeta);
         return response;
       } catch (error) {
-        if (error instanceof WorkspaceError)
-          return errnoErrorResponse(error.code, error.message, { path: body.path, operation });
+        if (error instanceof WorkspaceError) {
+          // The SDK reports every failed mkdir (missing parent, existing
+          // path, non-directory parent) as FILESYSTEM_ERROR, keeping the
+          // Node-style code in context.errno — everything else keeps its
+          // usual errno->code mapping (errorCodeForErrno, unchanged).
+          const codeOverride =
+            body.op === "mkdir" && error.code !== "EACCES" && error.code !== "ENOSPC"
+              ? ErrorCode.FILESYSTEM_ERROR
+              : undefined;
+          return errnoErrorResponse(
+            error.code,
+            error.message,
+            { path: body.path, operation, ...error.details },
+            codeOverride,
+          );
+        }
         throw error;
       }
     }

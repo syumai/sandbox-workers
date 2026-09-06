@@ -7,14 +7,17 @@ description: The raw JSON contract behind the typed client, for callers that tal
 
 ## `POST /execute`
 
-Stateless execution: a runtime Worker (the one behind your Service Binding) always executes a single language, so the request body carries no language field. Use `Content-Type: application/json`.
+Stateless execution: a runtime Worker (the one behind your Service Binding) always executes a single language — the runtime is chosen by the Service Binding (or, on the Playground gateway, the URL path), never by the request. Use `Content-Type: application/json`.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `code` | string | Yes | Nonempty script; maximum 64 KiB UTF-8 |
 | `envVars` | object of string values | No | Environment variables exposed to the script |
+| `language` | string | No | Validated, not executed — see below |
 
-The complete request is limited to 96 KiB. `envVars` keys must match `/^[A-Za-z_][A-Za-z0-9_]*$/`, and every value must be a string; `null`/`undefined` values are skipped. A request that still contains an `input` or `language` key is rejected — pass data with `envVars`, and let the Service Binding (or, on the Playground gateway, the URL path) choose the runtime.
+The complete request is limited to 96 KiB. `envVars` keys must match `/^[A-Za-z_][A-Za-z0-9_]*$/`, and every value must be a string; `null`/`undefined` values are skipped. A request that still contains an `input` key is rejected — pass data with `envVars`.
+
+`language`, when given, is only *validated*, never executed with — the runtime Worker always executes its own language. It accepts the same aliases as the typed client (`python3` → `python`, `js`/`node` → `javascript`, `ts` → `typescript`, case-insensitively) and must equal the runtime's language after normalization (`typescript` is also accepted on a `javascript` runtime); otherwise the request 400s with `VALIDATION_FAILED` and a message like `Unsupported language 'python' on this runtime (javascript)`. Omitting `language` entirely always works, on every runtime.
 
 ```json
 {
@@ -68,7 +71,7 @@ A guest error looks like this instead — `logs` produced before the error are s
 | Status | Meaning |
 | --- | --- |
 | 200 | Every execution: success, a guest error, or a fuel/output/result limit — check `error` |
-| 400 | Invalid JSON, an unsupported `/execute/<language>` gateway path, invalid `envVars`, or an `input`/`language` key in the body (`VALIDATION_FAILED`) |
+| 400 | Invalid JSON, an unsupported `/execute/<language>` gateway path, invalid `envVars`, an `input` key in the body, or a `language` that doesn't match the runtime (`VALIDATION_FAILED`) |
 | 405 | Wrong HTTP method (`VALIDATION_FAILED`) |
 | 413 | Request or code too large (`VALIDATION_FAILED`) |
 | 415 | Unsupported Content-Type (`VALIDATION_FAILED`) |
@@ -80,7 +83,9 @@ Always check the `error` field, not the HTTP status, to see whether guest code s
 
 ## Sandboxes
 
-A **sandbox** is a Durable Object, keyed by a caller-chosen id, that owns a shared `/workspace` and one or more named code contexts. See [Sandboxes](/concepts/sandboxes) and [Code contexts](/concepts/code-contexts) for the full behavior. Code contexts are supported for JavaScript, Python, and Perl; on a Ruby runtime Worker every `/sandboxes/:id/*` route answers 400 `Code contexts are not supported for ruby`, except a context-less `execute`, which runs statelessly. Sandbox ids match `^[A-Za-z0-9._-]{1,128}$`.
+A **sandbox** is a Durable Object, keyed by a caller-chosen id, that owns a shared `/workspace` and one or more named code contexts. See [Sandboxes](/concepts/sandboxes) and [Code contexts](/concepts/code-contexts) for the full behavior. Code contexts are supported for JavaScript, Python, and Perl; on a Ruby runtime Worker every `/sandboxes/:id/*` route answers 400 `Code contexts are not supported for ruby`, except a context-less `execute`, which runs statelessly. Sandbox ids match `^[A-Za-z0-9._-]{1,63}$`, must not start or end with a hyphen, and must not be one of the reserved names `www`, `api`, `admin`, `root`, `system`, `cloudflare`, `workers` (checked case-insensitively).
+
+A JavaScript, Python, or Perl runtime Worker deployed **without** a `SANDBOX` Durable Object binding (see the CLI's `--stateless` flag in [Deploy a runtime Worker](/guides/deploy)) behaves like Ruby: a context-less `POST /sandboxes/:id/execute` still succeeds and runs statelessly, but a body with `contextId`, or any other `/sandboxes/:id/*` route, answers 400 `VALIDATION_FAILED` ("Code contexts are not supported: this Worker has no SANDBOX Durable Object binding").
 
 | Method and path | Body | Response |
 | --- | --- | --- |

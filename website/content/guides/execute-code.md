@@ -12,11 +12,10 @@ pnpm add @sandbox-workers/core
 ```
 
 ```ts
-import { getSandbox, SandboxError } from "@sandbox-workers/core";
+import { runCode, SandboxError } from "@sandbox-workers/core";
 
-const python = getSandbox(env.PYTHON, "user-42");
 try {
-  const output = await python.runCode("import os\nint(os.environ['X']) ** 2", {
+  const output = await runCode(env.PYTHON, "import os\nint(os.environ['X']) ** 2", {
     envVars: { X: "12" },
   });
   if (output.error) {
@@ -31,7 +30,9 @@ try {
 }
 ```
 
-`runCode` always resolves to an `ExecutionResult`; it does not validate the result's shape at runtime. Guest errors set `output.error` instead of throwing. Transport failures (a malformed response or a non-2xx status) throw a `SandboxError` subclass. The client sends code only to the supplied binding, never to a public URL. Stateless `runCode` (no `context` option) has no persistent context between calls: every call boots a fresh Wasm instance. See [Use code contexts](/guides/code-contexts) for the stateful alternative.
+This is the **stateless** path: `runCode(target, code, options?)` boots a fresh Wasm instance for every call — no code context, no files, nothing persists between calls. `target` must be a Service Binding (`Fetcher`) to the runtime Worker; a Durable Object namespace throws synchronously (use `getSandbox` for that transport instead). `runCode` always resolves to an `ExecutionResult`; it does not validate the result's shape at runtime. Guest errors set `output.error` instead of throwing. Transport failures (a malformed response or a non-2xx status) throw a `SandboxError` subclass. The client sends code only to the supplied binding, never to a public URL.
+
+For a durable, stateful alternative — top-level variables persisting across calls in a named code context — use `getSandbox(env.PYTHON, id).runCode(code, options)` instead. Without a `context` option, that call still runs in (or creates) the sandbox's *default* code context, so it is not stateless the way the free `runCode` function is. See [Use code contexts](/guides/code-contexts) for the full walkthrough.
 
 Before publication, install the local core tarball produced by `pnpm run pack` (see [Deploy a runtime Worker](/guides/deploy)).
 

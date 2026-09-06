@@ -17,7 +17,7 @@ const sandbox = getSandbox(env.SANDBOX, "user-42");
 
 ```ts
 await sandbox.writeFile("/workspace/app.py", "print('hi')");
-// content is a string or Uint8Array; pass { encoding: "base64" } for base64 strings
+// content is a string, Uint8Array, or ReadableStream<Uint8Array>; pass { encoding: "base64" } for base64 strings
 ```
 
 ### Read a file
@@ -25,6 +25,9 @@ await sandbox.writeFile("/workspace/app.py", "print('hi')");
 ```ts
 const file = await sandbox.readFile("/workspace/app.py");
 console.log(file.content);
+
+const stream = await sandbox.readFile("/workspace/image.png", { encoding: "none" });
+// stream.content is a ReadableStream<Uint8Array>
 ```
 
 ### List files

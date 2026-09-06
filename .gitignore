@@ -11,3 +11,5 @@ packages/*/dist/
 website/dist/
 templates/*/.runtime-build/
 templates/*/runtime/
+
+.playwright-mcp/

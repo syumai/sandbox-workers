@@ -10,12 +10,12 @@ separately and add a binding:
 ```
 
 ```ts
-import { getSandbox } from "@sandbox-workers/core";
+import { runCode } from "@sandbox-workers/core";
 
 export default {
   async fetch(request, env) {
-    const sandbox = getSandbox(env.SANDBOX, "user-42");
-    const result = await sandbox.runCode(
+    const result = await runCode(
+      env.SANDBOX,
       "const x = Number(process.env.X);\nx ** 2",
       { envVars: { X: "12" } },
     );
@@ -24,17 +24,38 @@ export default {
 };
 ```
 
-`runCode(code, options?)` resolves to an `ExecutionResult`. Code is a
-script — the value of the last expression is the result. Guest failures and
-resource limits (fuel, output, result size) set `result.error` instead of
-throwing; binding/network failures and non-200 responses throw a
-`SandboxError` subclass (see [Errors](#errors)). `getSandbox(target, id,
-options?)` validates `id` against `/^[A-Za-z0-9._-]{1,128}$/` (optionally
-lowercasing it first with `{ normalizeId: true }`) and returns a client for
-one sandbox — a Durable Object inside the runtime Worker, keyed by `id`. It
-works with JavaScript, Python, Perl, Ruby, and additional runtime Workers
-implementing the same protocol. The client calls only the supplied binding;
-it never sends code to the public Playground.
+`runCode(target, code, options?)` is the **stateless** path: it resolves to
+an `ExecutionResult` from a fresh Wasm instance, with no code context and no
+files. Code is a script — the value of the last expression is the result.
+Guest failures and resource limits (fuel, output, result size) set
+`result.error` instead of throwing; binding/network failures and non-200
+responses throw a `SandboxError` subclass (see [Errors](#errors)). `target`
+must be a Service Binding (`Fetcher`); it throws synchronously for a Durable
+Object namespace, since there's no sandbox id to route through in stateless
+mode.
+
+For a durable, stateful alternative — code contexts where top-level
+variables persist across calls — use `getSandbox(target, id, options?)`
+instead:
+
+```ts
+import { getSandbox } from "@sandbox-workers/core";
+
+const sandbox = getSandbox(env.SANDBOX, "user-42");
+const result = await sandbox.runCode("const x = Number(process.env.X);\nx ** 2", {
+  envVars: { X: "12" },
+});
+```
+
+`getSandbox` validates `id` (optionally lowercasing it first with
+`{ normalizeId: true }`) against `/^[A-Za-z0-9._-]{1,63}$/`, rejects a
+leading/trailing hyphen, and rejects the reserved names `www`, `api`,
+`admin`, `root`, `system`, `cloudflare`, `workers` (case-insensitively) —
+also exported standalone as `validateSandboxId(id)` — and returns a client
+for one sandbox — a Durable Object inside the runtime Worker, keyed by `id`.
+Both functions work with JavaScript, Python, Perl, Ruby, and additional
+runtime Workers implementing the same protocol, and call only the supplied
+binding; neither ever sends code to the public Playground.
 
 ## Transports
 
@@ -63,6 +84,11 @@ it never sends code to the public Playground.
 ## API
 
 ```ts
+await runCode(env.SANDBOX, code, {
+  language, envVars, timeout, signal,
+  onStdout, onStderr, onResult, onError,
+});                                                                   // Promise<ExecutionResult>; env.SANDBOX must be a Service Binding
+
 const sandbox = getSandbox(env.SANDBOX, "user-42", { normalizeId: true });
 
 sandbox.id;                                                          // string
@@ -76,8 +102,8 @@ await sandbox.runCode(code, {
 });                                                                   // Promise<ExecutionResult>
 await sandbox.setEnvVars({ NAME: "value", OLD: undefined });         // Promise<void>; undefined unsets a key
 
-await sandbox.writeFile(path, content, { encoding });                // Promise<WriteFileResult>; content: string | Uint8Array
-await sandbox.readFile(path, { encoding });                          // Promise<ReadFileResult>
+await sandbox.writeFile(path, content, { encoding });                // Promise<WriteFileResult>; content: string | Uint8Array | ReadableStream<Uint8Array>
+await sandbox.readFile(path, { encoding });                          // Promise<ReadFileResult>; { encoding: "none" } -> Promise<ReadFileStreamResult> (content: ReadableStream<Uint8Array>)
 await sandbox.mkdir(path, { recursive });                            // Promise<MkdirResult>
 await sandbox.deleteFile(path, { recursive, force });                // Promise<DeleteFileResult>
 await sandbox.renameFile(oldPath, newPath);                          // Promise<RenameFileResult>

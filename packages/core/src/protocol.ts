@@ -4,6 +4,7 @@ import {
   errorCodeForErrno,
   httpStatusForCode,
   type ErrorResponse,
+  type OperationType,
 } from "./errors.js";
 
 export const MAX_REQUEST_BYTES = 96 * 1024;
@@ -66,6 +67,23 @@ export interface LanguageEngine {
 
 export async function readExecution(
   request: Request,
+  options?: {
+    /**
+     * When given, a `language` key in the body is validated against this
+     * runtime via `resolveLanguage` (aliases accepted) instead of being
+     * unconditionally rejected. Used by the plain `/execute` route on every
+     * runtime Worker, and by `handleStatelessSandboxRoute` below.
+     */
+    runtimeLanguage?: string;
+    /**
+     * When given, a `contextId` key in the body is rejected with this
+     * message (400 VALIDATION_FAILED) instead of being silently ignored.
+     * Used for a runtime Worker's stateless `/sandboxes/:id/execute` route,
+     * where a `contextId` means the caller wants a durable code context that
+     * isn't available (see `handleStatelessSandboxRoute`).
+     */
+    rejectContextId?: string;
+  },
 ): Promise<ExecutionRequest> {
   if (
     !request.headers
@@ -114,11 +132,20 @@ export async function readExecution(
       400,
       "input is no longer supported; pass data with envVars",
     );
-  if ("language" in value)
-    throw new ApiError(
-      400,
-      "language is no longer supported; the runtime is selected by the Service Binding",
-    );
+  if (options?.rejectContextId !== undefined && "contextId" in value)
+    throw new ApiError(400, options.rejectContextId);
+  if ("language" in value) {
+    if (options?.runtimeLanguage === undefined)
+      throw new ApiError(
+        400,
+        "language is no longer supported; the runtime is selected by the Service Binding",
+      );
+    if (typeof value.language !== "string")
+      throw new ApiError(400, "language must be a string");
+    // Validates (and normalizes aliases); the resolved value isn't part of
+    // ExecutionRequest -- execution always uses the runtime's own engine.
+    resolveLanguage(value.language, options.runtimeLanguage);
+  }
   if (typeof value.code !== "string" || !value.code.trim())
     throw new ApiError(400, "Non-empty code is required");
   if (new TextEncoder().encode(value.code).length > MAX_CODE_BYTES)
@@ -144,17 +171,94 @@ export async function readExecution(
   }
   return { code: value.code, ...(envVars ? { envVars } : {}) };
 }
+
+/**
+ * Shared implementation of a runtime Worker's stateless `/sandboxes/:id/*`
+ * route: a `POST /sandboxes/:id/execute` whose body has no `contextId` runs
+ * statelessly (same as plain `/execute`); a body with `contextId`, or any
+ * other method/sub-path, answers 400 VALIDATION_FAILED with `reason`. Used
+ * by Ruby (which has no Durable Object at all) and by the other runtime
+ * Workers when deployed without a `SANDBOX` binding (see
+ * docs/sdk-parity-design.md, "Stateless mode"). `subpath` is the part of the
+ * `/sandboxes/:id` route after the id (e.g. `/execute`, or `undefined`/`/`
+ * for the bare `/sandboxes/:id` route); `execute` should call `readExecution`
+ * with `{ rejectContextId: reason }` (and the runtime's `runtimeLanguage`)
+ * and format the response.
+ */
+export async function handleStatelessSandboxRoute(
+  request: Request,
+  subpath: string | undefined,
+  options: {
+    reason: string;
+    execute: (request: Request) => Promise<Response>;
+  },
+): Promise<Response> {
+  if (request.method !== "POST" || (subpath ?? "/") !== "/execute")
+    return errorResponse(new ApiError(400, options.reason));
+  try {
+    return await options.execute(request);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
     public code: ErrorCode = ErrorCode.VALIDATION_FAILED,
     public context: Record<string, unknown> = {},
-    public operation?: string,
+    public operation?: OperationType,
   ) {
     super(message);
     this.name = "ApiError";
   }
+}
+
+/**
+ * Normalizes the SDK's language aliases, case-insensitively:
+ * `python3`→`python`, `js`/`node`→`javascript`, `ts`→`typescript`. Anything
+ * else is only lowercased (an unsupported language is still rejected by
+ * `resolveLanguage` below, against the runtime's actual language).
+ */
+export function normalizeLanguage(requested: string): string {
+  const lower = requested.toLowerCase();
+  switch (lower) {
+    case "python3":
+      return "python";
+    case "js":
+    case "node":
+      return "javascript";
+    case "ts":
+      return "typescript";
+    default:
+      return lower;
+  }
+}
+
+/**
+ * Resolves a requested language against a runtime's actual language: a
+ * context/execution's language must be the runtime language (after alias
+ * normalization), or "typescript" when the runtime is "javascript" (the JS
+ * engine parses both dialects without a separate mode). Returns the
+ * *normalized requested* language unchanged otherwise (so a "typescript"
+ * request stays "typescript", distinct from a "javascript" one) — callers
+ * that need the runtime's own language for execution/reporting use
+ * `runtimeLanguage` directly. `requested` undefined returns `runtimeLanguage`.
+ */
+export function resolveLanguage(
+  requested: string | undefined,
+  runtimeLanguage: string,
+): string {
+  if (requested === undefined) return runtimeLanguage;
+  const normalized = normalizeLanguage(requested);
+  if (normalized === runtimeLanguage) return normalized;
+  if (runtimeLanguage === "javascript" && normalized === "typescript")
+    return normalized;
+  throw new ApiError(
+    400,
+    `Unsupported language '${requested}' on this runtime (${runtimeLanguage})`,
+  );
 }
 /**
  * Reads a request body up to `maxBytes`, without validating its shape. Used
@@ -227,13 +331,17 @@ export function errorResponse(error: unknown): Response {
  * Builds an `ErrorResponse` for a workspace errno (see
  * docs/sdk-parity-design.md, "Errors"). Used by the runtime Durable Object
  * to report filesystem failures without depending on `ApiError`/`SandboxError`.
+ * `codeOverride`, when given, replaces the errno's usual `errorCodeForErrno`
+ * mapping (used by `mkdir`, whose failures are always `FILESYSTEM_ERROR` per
+ * the SDK, while `context.errno` still carries the Node-style code).
  */
 export function errnoErrorResponse(
   errno: string,
   message: string,
-  context: { path?: string; operation?: string; [key: string]: unknown },
+  context: { path?: string; operation?: OperationType; [key: string]: unknown },
+  codeOverride?: ErrorCode,
 ): Response {
-  const code = errorCodeForErrno(errno);
+  const code = codeOverride ?? errorCodeForErrno(errno);
   const httpStatus = httpStatusForCode(code);
   const payload: ErrorResponse = {
     code,

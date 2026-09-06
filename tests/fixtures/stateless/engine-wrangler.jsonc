@@ -1,0 +1,10 @@
+{
+  "name": "sandbox-stateless-fixture-engine",
+  "main": "engine-entry.ts",
+  "compatibility_date": "2026-09-04",
+  "workers_dev": false,
+  "preview_urls": false,
+  // No durable_objects/migrations: this runtime Worker has no SANDBOX
+  // binding, so it serves only /execute and a context-less
+  // /sandboxes/:id/execute (see docs/sdk-parity-design.md, "Stateless mode").
+}

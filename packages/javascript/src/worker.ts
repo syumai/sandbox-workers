@@ -7,9 +7,20 @@ import {
   restoreJavaScriptSession,
 } from "../../../runtime/javascript.mjs";
 import { createSandboxClass } from "../../../runtime/sandbox.mjs";
-import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
+import {
+  ApiError,
+  errorResponse,
+  handleStatelessSandboxRoute,
+  readExecution,
+  validateSandboxId,
+} from "@sandbox-workers/core";
 
 const ENGINE_NAME = "SpiderMonkey 147 / goccy spidermonkey-wasm v0.2.6";
+// Message for a /sandboxes/:id/* route this Worker can't serve when it has
+// no SANDBOX Durable Object binding (see docs/sdk-parity-design.md,
+// "Stateless mode"). A context-less /sandboxes/:id/execute still works.
+const NO_SANDBOX_BINDING =
+  "Code contexts are not supported: this Worker has no SANDBOX Durable Object binding";
 
 export const Sandbox = createSandboxClass({
   language: "javascript",
@@ -23,11 +34,59 @@ export const Sandbox = createSandboxClass({
   },
 });
 
+// SANDBOX is optional: a Worker deployed without it (see the CLI's
+// --stateless flag and docs/sdk-parity-design.md, "Stateless mode") still
+// serves plain /execute and a context-less /sandboxes/:id/execute.
 interface Env {
-  SANDBOX: DurableObjectNamespace;
+  SANDBOX?: DurableObjectNamespace;
 }
 
 const SANDBOX_ROUTE = /^\/sandboxes\/([^/]+)(\/.*)?$/;
+
+async function handleExecute(
+  request: Request,
+  options?: { rejectContextId?: string },
+): Promise<Response> {
+  const payload = await readExecution(request, {
+    runtimeLanguage: "javascript",
+    ...options,
+  });
+  const start = performance.now();
+  try {
+    const result = runJavaScript(wasm, payload);
+    return Response.json(
+      {
+        code: payload.code,
+        language: "javascript",
+        engine: ENGINE_NAME,
+        durationMs: performance.now() - start,
+        ...result,
+      },
+      { headers: { "cache-control": "no-store" } },
+    );
+  } catch (error) {
+    const limited = error instanceof ExecutionLimitError;
+    return Response.json(
+      {
+        code: payload.code,
+        language: "javascript",
+        engine: ENGINE_NAME,
+        durationMs: performance.now() - start,
+        logs: { stdout: [], stderr: [] },
+        results: [],
+        error: {
+          name: limited ? "ExecutionLimitError" : "EngineError",
+          message:
+            error instanceof Error
+              ? error.message.slice(0, 2048)
+              : "Execution failed",
+          traceback: [],
+        },
+      },
+      { headers: { "cache-control": "no-store" } },
+    );
+  }
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -35,8 +94,19 @@ export default {
     const sandboxMatch = SANDBOX_ROUTE.exec(url.pathname);
     if (sandboxMatch) {
       const [, id, subpath] = sandboxMatch;
-      if (!/^[A-Za-z0-9._-]{1,128}$/.test(id))
-        return errorResponse(new ApiError(400, "Invalid sandbox id"));
+      try {
+        validateSandboxId(id);
+      } catch (error) {
+        return errorResponse(
+          new ApiError(400, error instanceof Error ? error.message : "Invalid sandbox id"),
+        );
+      }
+      if (!env.SANDBOX) {
+        return handleStatelessSandboxRoute(request, subpath, {
+          reason: NO_SANDBOX_BINDING,
+          execute: (req) => handleExecute(req, { rejectContextId: NO_SANDBOX_BINDING }),
+        });
+      }
       const stub = env.SANDBOX.get(env.SANDBOX.idFromName(id));
       const headers = new Headers(request.headers);
       headers.set("x-sandbox-id", id);
@@ -53,42 +123,7 @@ export default {
     if (request.method !== "POST")
       return new Response("Method not allowed", { status: 405 });
     try {
-      const payload = await readExecution(request);
-      const start = performance.now();
-      try {
-        const result = runJavaScript(wasm, payload);
-        return Response.json(
-          {
-            code: payload.code,
-            language: "javascript",
-            engine: "SpiderMonkey 147 / goccy spidermonkey-wasm v0.2.6",
-            durationMs: performance.now() - start,
-            ...result,
-          },
-          { headers: { "cache-control": "no-store" } },
-        );
-      } catch (error) {
-        const limited = error instanceof ExecutionLimitError;
-        return Response.json(
-          {
-            code: payload.code,
-            language: "javascript",
-            engine: "SpiderMonkey 147 / goccy spidermonkey-wasm v0.2.6",
-            durationMs: performance.now() - start,
-            logs: { stdout: [], stderr: [] },
-            results: [],
-            error: {
-              name: limited ? "ExecutionLimitError" : "EngineError",
-              message:
-                error instanceof Error
-                  ? error.message.slice(0, 2048)
-                  : "Execution failed",
-              traceback: [],
-            },
-          },
-          { headers: { "cache-control": "no-store" } },
-        );
-      }
+      return await handleExecute(request);
     } catch (error) {
       return errorResponse(error);
     }

@@ -5,6 +5,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   getSandbox,
+  runCode,
+  validateSandboxId,
   errorResponse,
   errnoErrorResponse,
   createErrorFromResponse,
@@ -19,6 +21,7 @@ import {
   ValidationFailedError,
   CodeExecutionError,
   ErrorCode,
+  Operation,
 } from "../packages/core/dist/index.js";
 
 // ---- helpers ---------------------------------------------------------------
@@ -94,7 +97,31 @@ test("getSandbox throws synchronously on an invalid id", () => {
   const fetcher = makeFetcher(() => jsonResponse({}));
   assert.throws(() => getSandbox(fetcher, "has spaces"), /Invalid sandbox id/);
   assert.throws(() => getSandbox(fetcher, ""), /Invalid sandbox id/);
-  assert.throws(() => getSandbox(fetcher, "a".repeat(129)), /Invalid sandbox id/);
+  assert.throws(() => getSandbox(fetcher, "a".repeat(64)), /Invalid sandbox id/);
+});
+
+test("getSandbox rejects ids starting/ending with a hyphen", () => {
+  const fetcher = makeFetcher(() => jsonResponse({}));
+  assert.throws(() => getSandbox(fetcher, "-abc"), /hyphen/);
+  assert.throws(() => getSandbox(fetcher, "abc-"), /hyphen/);
+  // A hyphen in the middle is still fine.
+  getSandbox(fetcher, "ab-c");
+});
+
+test("getSandbox rejects reserved sandbox ids case-insensitively", () => {
+  const fetcher = makeFetcher(() => jsonResponse({}));
+  for (const reserved of ["www", "api", "admin", "root", "system", "cloudflare", "workers"]) {
+    assert.throws(() => getSandbox(fetcher, reserved), /reserved/);
+    assert.throws(() => getSandbox(fetcher, reserved.toUpperCase()), /reserved/);
+  }
+  // Not an exact match: fine.
+  getSandbox(fetcher, "www2");
+});
+
+test("validateSandboxId is exported and usable directly", () => {
+  assert.doesNotThrow(() => validateSandboxId("user-42"));
+  assert.throws(() => validateSandboxId("www"), /reserved/);
+  assert.throws(() => validateSandboxId("-abc"), /hyphen/);
 });
 
 test("getSandbox accepts a valid id and exposes it as .id", () => {
@@ -244,6 +271,26 @@ test("Fetcher target: writeFile encodes a string as utf-8 (and normalizes utf8),
   assert.equal(parsed.content, Buffer.from(bytes).toString("base64"));
 });
 
+test("Fetcher target: writeFile reads a ReadableStream fully and sends it as base64", async () => {
+  const fetcher = makeFetcher(() =>
+    jsonResponse({ success: true, path: "/workspace/stream.dat", timestamp: iso() }),
+  );
+  const sandbox = getSandbox(fetcher, "s1");
+  const bytes = Uint8Array.from([1, 2, 3, 4, 5]);
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes.subarray(0, 2));
+      controller.enqueue(bytes.subarray(2));
+      controller.close();
+    },
+  });
+  await sandbox.writeFile("/workspace/stream.dat", stream);
+  const parsed = JSON.parse(fetcher.calls[0].body);
+  assert.equal(parsed.op, "write");
+  assert.equal(parsed.encoding, "base64");
+  assert.equal(parsed.content, Buffer.from(bytes).toString("base64"));
+});
+
 test("Fetcher target: readFile/mkdir/deleteFile/renameFile/moveFile/listFiles/exists wire mapping", async () => {
   const fetcher = makeFetcher(() => jsonResponse({ success: true, timestamp: iso() }));
   const sandbox = getSandbox(fetcher, "s1");
@@ -300,6 +347,49 @@ test("Fetcher target: readFile/mkdir/deleteFile/renameFile/moveFile/listFiles/ex
 
   for (const call of fetcher.calls)
     assert.equal(call.url, "https://sandbox.internal/sandboxes/s1/files");
+});
+
+test("readFile({ encoding: 'none' }) requests base64 over the wire and returns a byte stream", async () => {
+  const bytes = Uint8Array.from([104, 105, 33]); // "hi!"
+  const b64 = Buffer.from(bytes).toString("base64");
+  const fetcher = makeFetcher(() =>
+    jsonResponse({
+      success: true,
+      path: "/workspace/a.txt",
+      content: b64,
+      encoding: "base64",
+      isBinary: false,
+      mimeType: "text/plain",
+      size: bytes.length,
+      timestamp: iso(),
+    }),
+  );
+  const sandbox = getSandbox(fetcher, "s1");
+  const result = await sandbox.readFile("/workspace/a.txt", { encoding: "none" });
+  assert.deepEqual(JSON.parse(fetcher.calls[0].body), {
+    op: "read",
+    path: "/workspace/a.txt",
+    encoding: "base64",
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.path, "/workspace/a.txt");
+  assert.equal(result.mimeType, "text/plain");
+  assert.equal(result.size, bytes.length);
+  assert.ok(result.content instanceof ReadableStream);
+  const reader = result.content.getReader();
+  const chunks = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const read = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    read.set(chunk, offset);
+    offset += chunk.length;
+  }
+  assert.deepEqual([...read], [...bytes]);
 });
 
 test("Fetcher target: getInfo GETs /sandboxes/<id>, destroy DELETEs /sandboxes/<id>", async () => {
@@ -389,6 +479,30 @@ test("runCode invokes onStdout/onStderr/onResult/onError in order with the right
   assert.equal(result.error.message, "boom");
 });
 
+test("Result.formats() only lists text/json when truthy (SDK semantics)", async () => {
+  const fetcher = makeFetcher(() =>
+    jsonResponse({
+      code: "code",
+      logs: { stdout: [], stderr: [] },
+      results: [
+        { text: "" }, // falsy text -> no "text"
+        { json: 0 }, // falsy json -> no "json"
+        { json: false },
+        { text: "hi", json: { a: 1 } },
+      ],
+      language: "javascript",
+      engine: "spidermonkey",
+      durationMs: 1,
+    }),
+  );
+  const sandbox = getSandbox(fetcher, "s1");
+  const seen = [];
+  await sandbox.runCode("code", {
+    onResult: (r) => seen.push(r.formats()),
+  });
+  assert.deepEqual(seen, [[], [], [], ["text", "json"]]);
+});
+
 test("runCode throws on an invalid response shape", async () => {
   const fetcher = makeFetcher(() => jsonResponse({ notAResult: true }));
   const sandbox = getSandbox(fetcher, "s1");
@@ -406,6 +520,119 @@ test("an already-aborted signal makes the underlying fetch reject, and the rejec
   const fetcher = { fetch: (request) => fetch(request) };
   const sandbox = getSandbox(fetcher, "s1");
   await assert.rejects(() => sandbox.runCode("1+1", { signal: controller.signal }));
+});
+
+// ---- runCode() free function -------------------------------------------------
+
+test("runCode() posts code/language/envVars to /execute on the Service Binding, omitting unset keys", async () => {
+  const fetcher = makeFetcher(() =>
+    jsonResponse({
+      code: "1+1",
+      logs: { stdout: [], stderr: [] },
+      results: [],
+      language: "javascript",
+      engine: "spidermonkey",
+      durationMs: 1,
+    }),
+  );
+  await runCode(fetcher, "1+1");
+  assert.equal(fetcher.calls[0].method, "POST");
+  assert.equal(fetcher.calls[0].url, "https://sandbox.internal/execute");
+  assert.equal(fetcher.calls[0].headers["content-type"], "application/json");
+  assert.deepEqual(JSON.parse(fetcher.calls[0].body), { code: "1+1" });
+
+  await runCode(fetcher, "2+2", {
+    language: "javascript",
+    envVars: { X: "1", Y: undefined },
+  });
+  assert.deepEqual(JSON.parse(fetcher.calls[1].body), {
+    code: "2+2",
+    language: "javascript",
+    envVars: { X: "1" },
+  });
+});
+
+test("runCode() invokes onStdout/onStderr/onResult/onError in order, like sandbox.runCode", async () => {
+  const fetcher = makeFetcher(() =>
+    jsonResponse({
+      code: "code",
+      logs: { stdout: ["out1"], stderr: ["err1"] },
+      results: [{ text: "42" }],
+      error: { name: "Error", message: "boom", traceback: [] },
+      language: "javascript",
+      engine: "spidermonkey",
+      durationMs: 1,
+    }),
+  );
+  const calls = [];
+  const result = await runCode(fetcher, "code", {
+    onStdout: (o) => calls.push(["stdout", o.text]),
+    onStderr: (o) => calls.push(["stderr", o.text]),
+    onResult: (r) => calls.push(["result", r.text, r.formats()]),
+    onError: (e) => calls.push(["error", e.message]),
+  });
+  assert.deepEqual(calls, [
+    ["stdout", "out1"],
+    ["stderr", "err1"],
+    ["result", "42", ["text"]],
+    ["error", "boom"],
+  ]);
+  assert.equal(result.error.message, "boom");
+});
+
+test("runCode() throws on an invalid response shape", async () => {
+  const fetcher = makeFetcher(() => jsonResponse({ notAResult: true }));
+  await assert.rejects(
+    () => runCode(fetcher, "code"),
+    (err) => err instanceof SandboxError && err.code === ErrorCode.INTERNAL_ERROR,
+  );
+});
+
+test("runCode() maps a non-ok JSON error response to the matching SandboxError subclass", async () => {
+  const fetcher = makeFetcher(() =>
+    jsonResponse(
+      {
+        code: ErrorCode.VALIDATION_FAILED,
+        message: "Unsupported language 'python' on this runtime (javascript)",
+        context: {},
+        httpStatus: 400,
+        timestamp: iso(),
+      },
+      { status: 400 },
+    ),
+  );
+  await assert.rejects(
+    () => runCode(fetcher, "code", { language: "python" }),
+    (err) => err instanceof ValidationFailedError && err.code === ErrorCode.VALIDATION_FAILED,
+  );
+});
+
+test("runCode() maps a non-JSON error response to INTERNAL_ERROR 'HTTP <status>: <statusText>'", async () => {
+  const fetcher = makeFetcher(
+    () => new Response("<html>gateway error</html>", { status: 502, statusText: "Bad Gateway" }),
+  );
+  await assert.rejects(
+    () => runCode(fetcher, "code"),
+    (err) =>
+      err instanceof SandboxError &&
+      err.code === ErrorCode.INTERNAL_ERROR &&
+      err.message === "HTTP 502: Bad Gateway",
+  );
+});
+
+test("runCode() forwards signal/timeout like sandbox.runCode (an already-aborted signal propagates)", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const fetcher = { fetch: (request) => fetch(request) };
+  await assert.rejects(() => runCode(fetcher, "1+1", { signal: controller.signal }));
+});
+
+test("runCode() throws synchronously (not a rejected promise) for a namespace-shaped target", () => {
+  const namespace = makeNamespace(() => jsonResponse({}));
+  assert.throws(
+    () => runCode(namespace, "1+1"),
+    /runCode\(\) requires a Service Binding/,
+  );
 });
 
 // ---- error mapping -----------------------------------------------------------
@@ -551,8 +778,60 @@ test("errnoErrorResponse maps ENOENT/EEXIST/ENOTEMPTY to the right code/status/c
   assert.equal(eexistBody.context.errno, "EEXIST");
 
   const enotempty = errnoErrorResponse("ENOTEMPTY", "directory not empty", { path: "/c", operation: "deleteFile" });
-  assert.equal(enotempty.status, 400);
+  assert.equal(enotempty.status, 500);
   const enotemptyBody = await enotempty.json();
   assert.equal(enotemptyBody.code, ErrorCode.FILESYSTEM_ERROR);
   assert.equal(enotemptyBody.context.errno, "ENOTEMPTY");
+});
+
+test("errnoErrorResponse accepts a codeOverride (used by mkdir, per the SDK)", async () => {
+  const overridden = errnoErrorResponse("EEXIST", "already exists", { path: "/d", operation: "directory.create" }, ErrorCode.FILESYSTEM_ERROR);
+  assert.equal(overridden.status, 500);
+  const body = await overridden.json();
+  assert.equal(body.code, ErrorCode.FILESYSTEM_ERROR);
+  assert.equal(body.context.errno, "EEXIST");
+});
+
+// ---- status map / Operation ------------------------------------------------
+
+test("HTTP status matches the SDK's ERROR_STATUS_MAP for every shared code", () => {
+  const cases = [
+    [ErrorCode.FILE_NOT_FOUND, 404],
+    [ErrorCode.FILE_EXISTS, 409],
+    [ErrorCode.PERMISSION_DENIED, 403],
+    [ErrorCode.IS_DIRECTORY, 400],
+    [ErrorCode.NOT_DIRECTORY, 400],
+    [ErrorCode.FILE_TOO_LARGE, 413],
+    [ErrorCode.NO_SPACE, 500],
+    [ErrorCode.FILESYSTEM_ERROR, 500],
+    [ErrorCode.CONTEXT_NOT_FOUND, 404],
+    [ErrorCode.VALIDATION_FAILED, 400],
+    [ErrorCode.CODE_EXECUTION_ERROR, 500],
+    [ErrorCode.INTERNAL_ERROR, 500],
+  ];
+  for (const [code, status] of cases) {
+    const err = createErrorFromResponse({
+      code,
+      message: "x",
+      context: {},
+      timestamp: iso(),
+    });
+    assert.equal(err.httpStatus, status, `${code} should map to ${status}`);
+  }
+});
+
+test("Operation exposes the SDK's dotted operation strings", () => {
+  assert.deepEqual(Operation, {
+    FILE_READ: "file.read",
+    FILE_WRITE: "file.write",
+    FILE_DELETE: "file.delete",
+    FILE_MOVE: "file.move",
+    FILE_RENAME: "file.rename",
+    FILE_STAT: "file.stat",
+    DIRECTORY_CREATE: "directory.create",
+    DIRECTORY_LIST: "directory.list",
+    CODE_EXECUTE: "code.execute",
+    CODE_CONTEXT_CREATE: "code.context.create",
+    CODE_CONTEXT_DELETE: "code.context.delete",
+  });
 });

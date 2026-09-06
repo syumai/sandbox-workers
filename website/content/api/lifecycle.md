@@ -22,13 +22,13 @@ function getSandbox(
 **Parameters**:
 
 - `target` — either a Service Binding (`Fetcher`-shaped) to the runtime Worker, or a Durable Object namespace bound with `script_name` to the runtime Worker's `Sandbox` class. The client detects which one it was given. See [Transport](/configuration/transport) for how each is wired up and what the client does differently for each.
-- `id` — the sandbox's id, chosen by the caller. Must match `^[A-Za-z0-9._-]{1,128}$`; the same id always resolves to the same sandbox (Durable Object).
+- `id` — the sandbox's id, chosen by the caller. Must match `^[A-Za-z0-9._-]{1,63}$`, must not start or end with a hyphen, and must not be one of the reserved names `www`, `api`, `admin`, `root`, `system`, `cloudflare`, `workers` (checked case-insensitively); the same id always resolves to the same sandbox (Durable Object).
 - `options` (optional):
   - `normalizeId` — lowercases `id` before validating and using it.
 
 **Returns**: a `Sandbox` client. No network call is made yet — `getSandbox()` itself is synchronous.
 
-`getSandbox()` throws synchronously (an `Error`, not a `SandboxError`) if `id` (after normalization, when `normalizeId` is set) doesn't match `^[A-Za-z0-9._-]{1,128}$`.
+`getSandbox()` throws synchronously (an `Error`, not a `SandboxError`) if `id` (after normalization, when `normalizeId` is set) fails any of the checks above. The same validation is exported standalone as `validateSandboxId(id)`.
 
 Sandbox ids are chosen by the caller and are **not authenticated by the runtime** — anyone who knows an id can reach that sandbox through the same binding. An application that accepts user input must tenant-scope or validate ids itself (for example `user-${userId}`), rather than passing raw user input straight through.
 

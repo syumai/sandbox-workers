@@ -25,8 +25,8 @@ const HTTP_STATUS_FOR_CODE: Record<ErrorCode, number> = {
   IS_DIRECTORY: 400,
   NOT_DIRECTORY: 400,
   FILE_TOO_LARGE: 413,
-  NO_SPACE: 507,
-  FILESYSTEM_ERROR: 400,
+  NO_SPACE: 500,
+  FILESYSTEM_ERROR: 500,
   CONTEXT_NOT_FOUND: 404,
   VALIDATION_FAILED: 400,
   CODE_EXECUTION_ERROR: 500,
@@ -50,13 +50,33 @@ export function errorCodeForErrno(errno: string): ErrorCode {
   return ERROR_CODE_FOR_ERRNO[errno] ?? ErrorCode.FILESYSTEM_ERROR;
 }
 
+/** Mirrors the SDK's `Operation` constants, used as `ErrorResponse.operation`. */
+export const Operation = {
+  FILE_READ: "file.read",
+  FILE_WRITE: "file.write",
+  FILE_DELETE: "file.delete",
+  FILE_MOVE: "file.move",
+  FILE_RENAME: "file.rename",
+  FILE_STAT: "file.stat",
+  DIRECTORY_CREATE: "directory.create",
+  DIRECTORY_LIST: "directory.list",
+  CODE_EXECUTE: "code.execute",
+  CODE_CONTEXT_CREATE: "code.context.create",
+  CODE_CONTEXT_DELETE: "code.context.delete",
+} as const;
+export type OperationType = (typeof Operation)[keyof typeof Operation];
+
 export interface ErrorResponse<TContext = Record<string, unknown>> {
   code: ErrorCode;
   message: string;
   context: TContext;
   httpStatus: number;
   timestamp: string;
-  operation?: string;
+  operation?: OperationType;
+  /** Not currently emitted by any server in this repo; typed for SDK parity. */
+  suggestion?: string;
+  /** Not currently emitted by any server in this repo; typed for SDK parity. */
+  documentation?: string;
 }
 
 export class SandboxError<
@@ -81,7 +101,7 @@ export class SandboxError<
   get timestamp(): string {
     return this.errorResponse.timestamp;
   }
-  get operation(): string | undefined {
+  get operation(): OperationType | undefined {
     return this.errorResponse.operation;
   }
   toJSON(): ErrorResponse<TContext> {
@@ -251,7 +271,7 @@ export function createErrorFromResponse(
         ? body.timestamp
         : new Date().toISOString(),
     ...(typeof body.operation === "string"
-      ? { operation: body.operation }
+      ? { operation: body.operation as OperationType }
       : {}),
   };
   switch (code) {

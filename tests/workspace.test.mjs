@@ -107,16 +107,26 @@ test("list returns entries with absolute paths, recursive walks subdirectories",
   ]);
 });
 
-test("delete rejects non-empty directories without recursive, force ignores missing", () => {
+test("delete rejects any directory (even empty) without recursive; recursive deletes contents; force ignores missing", () => {
   const ws = new Workspace();
   ws.mkdir("/workspace/sub", "/workspace");
   ws.write("/workspace/sub/f.txt", "/workspace", "x");
+  // A non-empty directory without recursive fails EISDIR (not ENOTEMPTY —
+  // deleteFile() refuses directories outright, mirroring the SDK).
   assert.throws(
     () => ws.delete("/workspace/sub", "/workspace"),
-    (err) => err.code === "ENOTEMPTY",
+    (err) => err.code === "EISDIR",
+  );
+  // An empty directory without recursive also fails EISDIR.
+  ws.mkdir("/workspace/empty", "/workspace");
+  assert.throws(
+    () => ws.delete("/workspace/empty", "/workspace"),
+    (err) => err.code === "EISDIR",
   );
   ws.delete("/workspace/sub", "/workspace", { recursive: true });
   assert.deepEqual(ws.exists("/workspace/sub", "/workspace"), { exists: false });
+  ws.delete("/workspace/empty", "/workspace", { recursive: true });
+  assert.deepEqual(ws.exists("/workspace/empty", "/workspace"), { exists: false });
   // force on a missing path does not throw
   ws.delete("/workspace/missing", "/workspace", { force: true });
 });
@@ -152,12 +162,15 @@ test("stat reports type, size, and updatedAt", () => {
   assert.equal(dirStat.type, "directory");
 });
 
-test("per-file limit is enforced (EFBIG)", () => {
+test("per-file limit is enforced (EFBIG), with maxSize/actualSize in details", () => {
   const ws = new Workspace();
   const big = "x".repeat(LIMITS.MAX_FILE_BYTES + 1);
   assert.throws(
     () => ws.write("/workspace/big.txt", "/workspace", big),
-    (err) => err.code === "EFBIG",
+    (err) =>
+      err.code === "EFBIG" &&
+      err.details.maxSize === LIMITS.MAX_FILE_BYTES &&
+      err.details.actualSize === LIMITS.MAX_FILE_BYTES + 1,
   );
 });
 

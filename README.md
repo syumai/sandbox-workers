@@ -61,12 +61,12 @@ Add a Service Binding to your application's `wrangler.jsonc`:
 Install `@sandbox-workers/core` in the calling application:
 
 ```ts
-import { getSandbox } from "@sandbox-workers/core";
+import { runCode } from "@sandbox-workers/core";
 
 export default {
   async fetch(request, env) {
-    const sandbox = getSandbox(env.SANDBOX, "user-42");
-    const output = await sandbox.runCode(
+    const output = await runCode(
+      env.SANDBOX,
       "console.log(process.env.X);\nawait Promise.resolve(Number(process.env.X) ** 2);",
       { envVars: { X: "12" } },
     );
@@ -75,15 +75,15 @@ export default {
 };
 ```
 
-A Service Binding targets a **Worker deployed in your account**. Deploy the runtime before the calling application. The client sends code only to that binding, never to the public Playground. The core package is optional if you call `binding.fetch()` directly.
+A Service Binding targets a **Worker deployed in your account**. Deploy the runtime before the calling application. `runCode` sends code only to that binding, never to the public Playground; it requires a Service Binding specifically (not a Durable Object namespace — see below). The core package is optional if you call `binding.fetch()` directly.
 
 ### Python, Perl, and Ruby
 
-Replace `javascript` in the installation commands with `python`, `perl`, or `ruby`. The client takes only the binding and a sandbox id, for example `getSandbox(env.SANDBOX, "user-42")`; the runtime is whichever Worker that binding targets. Each initializer generates the required configuration, including Data module rules for the Python and Perl standard libraries.
+Replace `javascript` in the installation commands with `python`, `perl`, or `ruby`. The client takes only the binding, the code, and options, for example `runCode(env.SANDBOX, code)`; the runtime is whichever Worker that binding targets. Each initializer generates the required configuration, including Data module rules for the Python and Perl standard libraries.
 
 ### Sandboxes and code contexts
 
-`runCode` above is stateless. `getSandbox(env.SANDBOX, id)` opens a durable sandbox instead, with a shared `/workspace` and one or more **code contexts** — named, stateful REPLs where top-level variables persist across calls, surviving Durable Object eviction, hibernation, and redeploys via a memory snapshot taken after each execution. A sandbox is backed by a Durable Object the runtime Worker exports (`SANDBOX` / `Sandbox`, already wired into the CLI initializer and deploy templates for JavaScript, Python, and Perl; Ruby does not support code contexts).
+`runCode` above is stateless: every call boots a fresh Wasm instance, with no persistence between calls. `getSandbox(env.SANDBOX, id)` opens a durable sandbox instead, with a shared `/workspace` and one or more **code contexts** — named, stateful REPLs where top-level variables persist across calls, surviving Durable Object eviction, hibernation, and redeploys via a memory snapshot taken after each execution. A sandbox is backed by a Durable Object the runtime Worker exports (`SANDBOX` / `Sandbox`, already wired into the CLI initializer and deploy templates for JavaScript, Python, and Perl; Ruby does not support code contexts, and neither does a Worker generated with the CLI's `--stateless` flag).
 
 ```ts
 import { getSandbox } from "@sandbox-workers/core";

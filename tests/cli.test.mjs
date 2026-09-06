@@ -45,6 +45,29 @@ for (const runtime of ["javascript", "python", "perl", "ruby"])
     );
     assert.throws(() => run("init", runtime, dir), /Refusing to overwrite/);
   });
+for (const runtime of ["javascript", "python", "perl"])
+  test(`shared CLI: --stateless ${runtime} has no durable_objects/migrations and no Sandbox export`, () => {
+    const root = mkdtempSync(join(tmpdir(), "sandbox-cli-stateless-"));
+    // --stateless may appear before or after the directory argument.
+    const beforeDir = join(root, `${runtime}-before`);
+    run("init", runtime, "--stateless", beforeDir);
+    const afterDir = join(root, `${runtime}-after`);
+    const output = run("init", runtime, afterDir, "--stateless");
+    for (const dir of [beforeDir, afterDir]) {
+      const config = JSON.parse(readFileSync(join(dir, "wrangler.jsonc"), "utf8"));
+      assert.equal(config.durable_objects, undefined);
+      assert.equal(config.migrations, undefined);
+      const indexSource = readFileSync(join(dir, "index.js"), "utf8");
+      assert.doesNotMatch(indexSource, /Sandbox\b/);
+      assert.match(indexSource, new RegExp("@sandbox-workers/" + runtime));
+      const readme = readFileSync(join(dir, "README.md"), "utf8");
+      assert.match(readme, /this Worker only serves stateless execution/);
+      assert.match(readme, /import \{ runCode \} from "@sandbox-workers\/core";/);
+      assert.match(readme, /runCode\(env\.SANDBOX, "1 \+ 1"\)/);
+    }
+    assert.match(output, /LICENSE and THIRD_PARTY_NOTICES/);
+  });
+
 test("shared CLI: rejects unknown engines and dangling symlink overwrites", () => {
   assert.throws(() => run("init", "php"), /Command failed/);
   const dir = mkdtempSync(join(tmpdir(), "sandbox-cli-symlink-"));

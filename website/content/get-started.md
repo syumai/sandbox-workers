@@ -30,12 +30,12 @@ pnpm add @sandbox-workers/core
 ## 4. Execute code
 
 ```ts
-import { getSandbox } from "@sandbox-workers/core";
+import { runCode } from "@sandbox-workers/core";
 
 export default {
   async fetch(request, env) {
-    const sandbox = getSandbox(env.SANDBOX, "user-42");
-    const result = await sandbox.runCode(
+    const result = await runCode(
+      env.SANDBOX,
       "print('Hello!')\nimport os\nint(os.environ['X']) ** 2",
       { envVars: { X: "12" } },
     );
@@ -44,7 +44,7 @@ export default {
 };
 ```
 
-Deploy your caller after the engine. `getSandbox` takes the binding and a sandbox id; `runCode` sends the request over the binding only, so nothing leaves your account. The result has no `error`, `results: [{ text: "144" }]`, and the captured greeting in `logs.stdout`.
+Deploy your caller after the engine. `runCode` takes the binding, the code, and options, sending the request over the binding only, so nothing leaves your account — no sandbox, no code context, just a fresh Wasm instance for this one call. The result has no `error`, `results: [{ text: "144" }]`, and the captured greeting in `logs.stdout`.
 
 ## Next steps
 

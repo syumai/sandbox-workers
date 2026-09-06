@@ -16,7 +16,7 @@ Write content to a file, creating it if it doesn't exist.
 ```ts
 await sandbox.writeFile(
   path: string,
-  content: string | Uint8Array,
+  content: string | Uint8Array | ReadableStream<Uint8Array>,
   options?: WriteFileOptions,
 ): Promise<WriteFileResult>
 ```
@@ -24,15 +24,16 @@ await sandbox.writeFile(
 **Parameters**:
 
 - `path` — absolute path under `/workspace`.
-- `content` — a string, or a `Uint8Array` for binary data (sent as base64 automatically).
+- `content` — a string, a `Uint8Array`, or a `ReadableStream<Uint8Array>` for binary data (both are read fully and sent as base64 automatically).
 - `options` (optional):
-  - `encoding` — `"utf-8"` (default) or `"base64"`, for string `content`. Ignored for `Uint8Array` content, which is always sent as base64.
+  - `encoding` — any string, for string `content`: `"utf8"` is normalized to `"utf-8"`; anything else is forwarded unchanged (the server still rejects anything but `"utf-8"`/`"base64"` with 400). Ignored for `Uint8Array`/`ReadableStream` content, which is always sent as base64.
 
 **Returns**: `Promise<WriteFileResult>`.
 
 ```ts
 await sandbox.writeFile("/workspace/app.js", "console.log('hi');");
 await sandbox.writeFile("/workspace/image.png", pngBytes); // Uint8Array
+await sandbox.writeFile("/workspace/upload.bin", request.body); // ReadableStream<Uint8Array>
 ```
 
 ### `readFile()`
@@ -40,6 +41,7 @@ await sandbox.writeFile("/workspace/image.png", pngBytes); // Uint8Array
 Read a file's content.
 
 ```ts
+await sandbox.readFile(path: string, options: { encoding: "none" }): Promise<ReadFileStreamResult>
 await sandbox.readFile(path: string, options?: ReadFileOptions): Promise<ReadFileResult>
 ```
 
@@ -47,13 +49,16 @@ await sandbox.readFile(path: string, options?: ReadFileOptions): Promise<ReadFil
 
 - `path` — absolute path under `/workspace`.
 - `options` (optional):
-  - `encoding` — `"utf-8"` or `"base64"` to force how `content` is returned.
+  - `encoding` — `"utf-8"` or `"base64"` to force how `content` is returned, or `"none"` to get the content as a `ReadableStream<Uint8Array>` instead (the request still asks the server for base64; the client decodes it into a single-chunk stream).
 
-**Returns**: `Promise<ReadFileResult>`.
+**Returns**: `Promise<ReadFileResult>`, or `Promise<ReadFileStreamResult>` when `encoding: "none"` is given.
 
 ```ts
 const file = await sandbox.readFile("/workspace/package.json");
 JSON.parse(file.content);
+
+const stream = await sandbox.readFile("/workspace/image.png", { encoding: "none" });
+stream.content; // ReadableStream<Uint8Array>
 ```
 
 ### `mkdir()`
@@ -88,7 +93,7 @@ await sandbox.deleteFile(path: string, options?: DeleteFileOptions): Promise<Del
 
 - `path` — absolute path under `/workspace`.
 - `options` (optional):
-  - `recursive` — required to delete a non-empty directory.
+  - `recursive` — required to delete a directory at all (even an empty one) — without it, `deleteFile()` on a directory fails with `IS_DIRECTORY`.
   - `force` — don't error if `path` doesn't exist.
 
 **Returns**: `Promise<DeleteFileResult>`.
@@ -180,7 +185,11 @@ if (!exists) await sandbox.writeFile("/workspace/config.json", "{}");
 ## Types
 
 ```ts
+interface WriteFileOptions { encoding?: string; }
+
 interface WriteFileResult { success: boolean; path: string; timestamp: string; }
+
+interface ReadFileOptions { encoding?: "utf-8" | "utf8" | "base64"; }
 
 interface ReadFileResult {
   success: boolean;
@@ -191,6 +200,15 @@ interface ReadFileResult {
   isBinary?: boolean;
   mimeType?: string;
   size?: number;
+}
+
+interface ReadFileStreamResult {
+  success: true;
+  path: string;
+  content: ReadableStream<Uint8Array>;
+  size: number;
+  mimeType: string;
+  timestamp: string;
 }
 
 interface MkdirResult { success: boolean; path: string; recursive: boolean; timestamp: string; }
@@ -215,7 +233,7 @@ interface FileInfo {
   name: string;
   absolutePath: string;
   relativePath: string;
-  type: "file" | "directory";
+  type: "file" | "directory" | "symlink" | "other"; // the server currently only ever emits "file" or "directory"
   size: number;
   modifiedAt: string;
   mode: string;
