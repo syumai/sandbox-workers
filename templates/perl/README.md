@@ -39,7 +39,7 @@ const ctx = await sandbox.createCodeContext({ cwd, envVars });
 await sandbox.runCode(code, { context: ctx });
 ```
 
-A code context keeps top-level variables and functions alive across calls, surviving Durable Object eviction, hibernation, and redeploys via a linear-memory snapshot taken after each execution; a `/workspace` is shared by every context in the sandbox. See [the sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md) for language-specific REPL semantics, the files API, the snapshot mechanism, and limits.
+A code context keeps top-level variables and functions alive across calls, surviving Durable Object eviction, hibernation, and redeploys via a linear-memory snapshot taken after each execution; a `/workspace` is shared by every context in the sandbox. See [the sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/code-contexts.md) for language-specific REPL semantics, the files API, the snapshot mechanism, and limits.
 
 An idle sandbox is deleted automatically by a Durable Object alarm. Set `SESSION_IDLE_TTL_MS` (milliseconds, as a string) under `vars` in this template's `wrangler.jsonc` to change the timeout — it defaults to 24 hours (`86400000`) if unset, and `"0"` disables expiry entirely, for example:
 

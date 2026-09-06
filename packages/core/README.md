@@ -126,6 +126,9 @@ try {
 }
 ```
 
-See [the sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/sessions.md)
-for the full HTTP contract, per-language REPL semantics, and the snapshot
-mechanism.
+See the [code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/code-contexts.md)
+for per-language REPL semantics, the
+[HTTP API reference](https://github.com/syumai/sandbox-workers/blob/main/website/content/api/http-api.md)
+for the full HTTP contract, and the
+[code contexts concept page](https://github.com/syumai/sandbox-workers/blob/main/website/content/concepts/code-contexts.md)
+for the snapshot mechanism.

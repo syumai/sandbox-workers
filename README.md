@@ -106,7 +106,7 @@ await sandbox.readFile("/workspace/notes.txt");
 }
 ```
 
-See the [sandboxes and code contexts guide](website/content/guides/sessions.md) and [language runtimes](docs/languages.md) for the client API, the files API, per-language REPL semantics, and the snapshot mechanism.
+See the [sandboxes and code contexts guide](website/content/guides/code-contexts.md) and [language runtimes](docs/languages.md) for the client API, the files API, per-language REPL semantics, and the snapshot mechanism.
 
 ## Develop the Playground
 

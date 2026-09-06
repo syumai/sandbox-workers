@@ -1,7 +1,9 @@
 ---
-title: Deploy to Cloudflare
-description: Create a runtime Worker in your account from an isolated source template.
+title: Deploy a runtime Worker
+description: Create a runtime Worker in your account from an isolated source template, or initialize one with the CLI.
 ---
+
+This guide shows you how to deploy a private engine Worker with a deploy button, and how to initialize one with the CLI instead.
 
 ## Choose a runtime
 
@@ -29,9 +31,9 @@ Each button deploys one private engine Worker. Repeat for each language you need
 2. Choose your Cloudflare account, repository name, and Worker name.
 3. Keep the detected build command and deploy command from the template.
 4. Wait for the pinned engine source to download, pass its checksum check, and build.
-5. Add a [Service Binding](/guides/service-bindings) in your caller using the selected Worker name.
+5. Add a [Service Binding](/configuration/wrangler) in your caller using the selected Worker name.
 
-Initial builds take several minutes. The generated runtime retains upstream license notices. Review [runtime licenses](/reference/licenses) before use or redistribution. A Paid plan is required by the configured CPU limits.
+Initial builds take several minutes. The generated runtime retains upstream license notices. Review [runtime licenses](/platform/licenses) before use or redistribution. A Paid plan is required by the configured CPU limits.
 
 ## How the templates work
 
@@ -46,3 +48,45 @@ Public and preview URLs remain disabled. There are no required secrets, database
 Deploy buttons require a public GitHub or GitLab source repository. While this repository is private, the buttons and anonymous source downloads are unavailable. The templates must also be pushed to the referenced `main` branch before others can use them. The Cloudflare account creation and final deployment are completed by the person clicking the button.
 
 See Cloudflare's [Deploy button documentation](https://developers.cloudflare.com/workers/platform/deploy-buttons/) for the hosting flow and repository requirements.
+
+## Use the CLI
+
+After npm publication, use the shared CLI:
+
+```sh
+pnpm dlx @sandbox-workers/cli init python my-sandbox
+cd my-sandbox
+pnpm install
+pnpm dry-run
+pnpm run deploy
+```
+
+```text
+sandbox-workers init <javascript|python|perl|ruby> [directory]
+sandbox-workers --help
+```
+
+The default directory is `sandbox-<runtime>`. The CLI creates an entrypoint, manifest, Wrangler configuration, README, and ignore file. Existing files and symlinks are never overwritten. It does not install packages or deploy automatically.
+
+Each generated entrypoint imports the selected package:
+
+```js
+export { default } from "@sandbox-workers/python";
+```
+
+The generated README links to that runtime's `LICENSE` and `THIRD_PARTY_NOTICES.md`. Read them before use or redistribution. The installed engine has its own upstream licenses in addition to the MIT-licensed adapter.
+
+### Before npm publication
+
+Use one of the deploy buttons above, or build local packages:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm run pack
+node packages/cli/bin/cli.mjs init python /tmp/my-sandbox
+cd /tmp/my-sandbox
+pnpm add /absolute/path/to/dist/sandbox-workers-python-0.1.0.tgz
+pnpm dry-run
+```
+
+To use npm instead of pnpm in a generated project, the equivalent `npm install` and `npm run` commands work. The repository itself is managed with pnpm workspace.

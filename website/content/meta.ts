@@ -1,3 +1,12 @@
 export default {
-  pages: ["index", "getting-started", "guides", "runtimes", "reference"],
+  pages: [
+    "index",
+    "get-started",
+    "guides",
+    "api",
+    "concepts",
+    "configuration",
+    "runtimes",
+    "platform",
+  ],
 };
