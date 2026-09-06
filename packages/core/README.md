@@ -77,10 +77,18 @@ the reserved names `www`, `api`, `admin`, `root`, `system`, `cloudflare`,
 `validateSandboxId(id)`. `namespace` must be a Durable Object namespace bound
 to your own `Sandbox` class; it throws synchronously otherwise.
 
+`getSandbox` also takes an optional `Env` type parameter: `getSandbox<Env>(env.Sandbox, id)`
+types every `binding` option on `sandbox.interpreter` as `ServiceBindingName<Env>`, the names
+of the Service Bindings (values with a `fetch` method) in `Env`, so a misspelled binding name
+or the `Sandbox` namespace itself is a compile-time error. This is type-only — the Durable
+Object still validates the binding at runtime — and since `Env` can't be inferred from
+`namespace` alone, omitting it (`getSandbox(namespace, id)`) keeps `binding` as plain `string`,
+exactly as before this type parameter existed.
+
 ## API
 
 ```ts
-const sandbox = getSandbox(env.Sandbox, "user-42", { normalizeId: true }); // SandboxClient
+const sandbox = getSandbox<Env>(env.Sandbox, "user-42", { normalizeId: true }); // SandboxClient<ServiceBindingName<Env>>
 
 sandbox.id;                                                                // string
 sandbox.interpreter;                                                      // CodeInterpreter

@@ -31,11 +31,11 @@ See [Configuration: wrangler.jsonc](/configuration/wrangler) for the complete ca
 Get a typed client for one sandbox.
 
 ```ts
-function getSandbox(
+function getSandbox<Env = AnyEnv>(
   namespace: SandboxNamespace,
   id: string,
   options?: SandboxOptions,
-): SandboxClient
+): SandboxClient<ServiceBindingName<Env>>
 ```
 
 **Parameters**:
@@ -46,6 +46,19 @@ function getSandbox(
   - `normalizeId` — lowercases `id` before validating and using it.
 
 **Returns**: a `SandboxClient`. No network call is made yet — `getSandbox()` itself is synchronous.
+
+`getSandbox` takes an optional `Env` type parameter. Pass your Worker's own `Env` type — `getSandbox<Env>(env.Sandbox, id)` — and every `binding` option on `sandbox.interpreter` (see [Code interpreter](/api/interpreter)) is narrowed to `ServiceBindingName<Env>`, the names of the Service Bindings (values with a `fetch` method) in `Env`. A misspelled binding name, or the `Sandbox` namespace itself, becomes a compile-time error instead of a runtime one. This is type-only: the Durable Object still validates the binding name at runtime regardless of whether `Env` was given. Omit `Env` and `binding` stays `string`, exactly as before this type parameter existed.
+
+```ts
+interface Env {
+  Sandbox: DurableObjectNamespace;
+  PYTHON: Fetcher;
+}
+
+const sandbox = getSandbox<Env>(env.Sandbox, "user-42");
+await sandbox.interpreter.createCodeContext({ binding: "PYTHON" }); // ok
+await sandbox.interpreter.createCodeContext({ binding: "PYTHONN" }); // type error
+```
 
 `getSandbox()` throws synchronously if `id` (after normalization, when `normalizeId` is set) fails any of the checks above. The same validation is exported standalone as `validateSandboxId(id)`.
 

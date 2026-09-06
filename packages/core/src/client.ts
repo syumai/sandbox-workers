@@ -16,9 +16,25 @@ export interface SandboxOptions {
   normalizeId?: boolean;
 }
 
-export interface CreateContextOptions {
+/**
+ * Any environment: every binding name is allowed, so `ServiceBindingName<AnyEnv>`
+ * is `string`. This is the default `Env` for `getSandbox()`, matching today's
+ * untyped behavior when no `Env` type argument is given.
+ */
+export type AnyEnv = Record<string, ServiceBindingTarget>;
+
+/**
+ * The names of the Service Bindings (`Fetcher`-like values, i.e. anything with
+ * a `fetch` method) in a caller's environment type. Pass an `Env` to
+ * `getSandbox<Env>()` and `binding` options are narrowed to this union.
+ */
+export type ServiceBindingName<Env> = {
+  [K in keyof Env & string]: Env[K] extends ServiceBindingTarget ? K : never;
+}[keyof Env & string];
+
+export interface CreateContextOptions<B extends string = string> {
   /** Name of a Service Binding, in the caller's own environment, to a runtime Worker. */
-  binding: string;
+  binding: B;
   cwd?: string;
   envVars?: Record<string, string | undefined>;
 }
@@ -41,10 +57,10 @@ export interface Result {
   formats(): string[];
 }
 
-export interface RunCodeOptions {
+export interface RunCodeOptions<B extends string = string> {
   context?: CodeContext;
   /** Name of a Service Binding to run against when `context` is omitted (uses/creates the default context for that binding). */
-  binding?: string;
+  binding?: B;
   envVars?: Record<string, string | undefined>;
   /** Request timeout; builds an `AbortSignal.timeout(timeout)`. The guest is still bounded by fuel. */
   timeout?: number;
@@ -181,11 +197,11 @@ export interface SandboxInfo {
   expiresAt: number | null;
 }
 
-export interface CodeInterpreter {
-  createCodeContext(options: CreateContextOptions): Promise<CodeContext>;
+export interface CodeInterpreter<B extends string = string> {
+  createCodeContext(options: CreateContextOptions<B>): Promise<CodeContext>;
   listCodeContexts(): Promise<CodeContext[]>;
   deleteCodeContext(id: string): Promise<void>;
-  runCode(code: string, options?: RunCodeOptions): Promise<ExecutionResult>;
+  runCode(code: string, options?: RunCodeOptions<B>): Promise<ExecutionResult>;
 }
 
 /**
@@ -193,10 +209,14 @@ export interface CodeInterpreter {
  * present, spanning every language bound in the caller's own environment)
  * plus a shared `/workspace`. Named `SandboxClient` because `Sandbox` is the
  * Durable Object class itself (see docs/sandbox-1-0-design.md).
+ *
+ * `B` is the union of Service Binding names `binding` options accept; it's
+ * `string` by default (untyped `getSandbox()`) or narrowed to
+ * `ServiceBindingName<Env>` when the client came from `getSandbox<Env>()`.
  */
-export interface SandboxClient {
+export interface SandboxClient<B extends string = string> {
   readonly id: string;
-  readonly interpreter: CodeInterpreter;
+  readonly interpreter: CodeInterpreter<B>;
   setEnvVars(envVars: Record<string, string | undefined>): Promise<void>;
   writeFile(
     path: string,
@@ -305,7 +325,7 @@ function assertNamespace(
 }
 
 /** A `SandboxTarget`-shaped value narrowed to the Service Binding branch, for the free `runCode`. */
-type ServiceBindingTarget = { fetch(request: Request): Promise<Response> };
+export type ServiceBindingTarget = { fetch(request: Request): Promise<Response> };
 
 function isNamespaceShaped(
   target: ServiceBindingTarget | SandboxNamespace,
@@ -702,16 +722,31 @@ class SandboxClientImpl implements SandboxClient {
  * class exported by this package, re-exported from the caller's own entry),
  * keyed by `id`, inside `namespace` -- the caller's own Durable Object
  * namespace binding for that class. See docs/sandbox-1-0-design.md.
+ *
+ * Pass your Worker's own `Env` type as the `Env` type parameter (e.g.
+ * `getSandbox<Env>(env.Sandbox, id)`) and every `binding` option on
+ * `sandbox.interpreter` is narrowed to `ServiceBindingName<Env>` -- the names
+ * of the Service Bindings (values with a `fetch` method) in `Env` -- so a
+ * misspelled binding name or the `Sandbox` namespace itself is a compile-time
+ * error. `Env` can't be inferred from `namespace` alone, so omitting it (as
+ * in plain `getSandbox(namespace, id)`) falls back to `string`, exactly as
+ * before this type parameter existed.
  */
-export function getSandbox(
+export function getSandbox<Env = AnyEnv>(
   namespace: SandboxNamespace,
   id: string,
   options: SandboxOptions = {},
-): SandboxClient {
+): SandboxClient<ServiceBindingName<Env>> {
   assertNamespace(namespace);
   const normalizedId = options.normalizeId ? id.toLowerCase() : id;
   validateSandboxId(normalizedId);
-  return new SandboxClientImpl(namespace, normalizedId);
+  // SandboxClientImpl always implements SandboxClient<string>: its methods
+  // never actually check the `binding` string beyond forwarding it over the
+  // wire, so narrowing to a subset of `string` here is a type-level-only
+  // cast, sound because `ServiceBindingName<Env>` is always a subset of `string`.
+  return new SandboxClientImpl(namespace, normalizedId) as SandboxClient<
+    ServiceBindingName<Env>
+  >;
 }
 
 async function runCodeOverServiceBinding(

@@ -9,6 +9,7 @@ import {
   ContextNotFoundError,
   ValidationFailedError,
   type SandboxClient,
+  type ServiceBindingName,
 } from "@sandbox-workers/core";
 
 export { Sandbox } from "@sandbox-workers/core";
@@ -30,7 +31,7 @@ function summarizeError(error: unknown, Class: new (...args: never[]) => Error):
   return { name: err.name, isClass: error instanceof Class, code: err.code };
 }
 
-async function runScenario(sandbox: SandboxClient) {
+async function runScenario(sandbox: SandboxClient<ServiceBindingName<Env>>) {
   // Two contexts, one per language, sharing /workspace.
   const js = await sandbox.interpreter.createCodeContext({
     binding: "JAVASCRIPT",
@@ -128,7 +129,7 @@ export default {
     const url = new URL(request.url);
     const id = url.searchParams.get("id");
     if (!id) return new Response("id query param required", { status: 400 });
-    const sandbox = getSandbox(env.Sandbox, id);
+    const sandbox = getSandbox<Env>(env.Sandbox, id);
     try {
       const summary = await runScenario(sandbox);
       return Response.json(summary);

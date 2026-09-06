@@ -23,7 +23,7 @@ const ctx = await sandbox.interpreter.createCodeContext({
 });
 ```
 
-`binding` must name a Service Binding in your own environment to a sandbox-workers runtime Worker; an unknown or non-runtime binding fails with `ValidationFailedError` (`VALIDATION_FAILED`), and a binding that reports `contexts: false` (a stateless-only runtime Worker: Ruby, or one deployed with `--stateless`) fails with the same error naming the binding and its language.
+`binding` must name a Service Binding in your own environment to a sandbox-workers runtime Worker; an unknown or non-runtime binding fails with `ValidationFailedError` (`VALIDATION_FAILED`), and a binding that reports `contexts: false` (a stateless-only runtime Worker: Ruby, or one deployed with `--stateless`) fails with the same error naming the binding and its language. [`getSandbox<Env>()`](/api/lifecycle#getsandbox) checks this at compile time instead of runtime: pass your Worker's `Env` type and a misspelled `binding` fails to build.
 
 ## Run code in a context
 

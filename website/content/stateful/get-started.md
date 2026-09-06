@@ -45,9 +45,14 @@ import { getSandbox } from "@sandbox-workers/core";
 
 export { Sandbox } from "@sandbox-workers/core";
 
+interface Env {
+  Sandbox: DurableObjectNamespace;
+  PYTHON: Fetcher;
+}
+
 export default {
-  async fetch(request, env) {
-    const sandbox = getSandbox(env.Sandbox, "user-42");
+  async fetch(request: Request, env: Env) {
+    const sandbox = getSandbox<Env>(env.Sandbox, "user-42");
     const ctx = await sandbox.interpreter.createCodeContext({ binding: "PYTHON" });
     const result = await sandbox.interpreter.runCode(
       "print('Hello!')\nimport os\nint(os.environ['X']) ** 2",
@@ -58,7 +63,7 @@ export default {
 };
 ```
 
-Deploy your caller after the runtime Worker. `binding: "PYTHON"` names the Service Binding from step 4 — that's what selects the language, never a `language` option. The result has no `error`, `results: [{ text: "144" }]`, and the captured greeting in `logs.stdout`. State in this context (`ctx`) — top-level variables, functions, imports — persists across calls; see [Use code contexts](/stateful/code-contexts).
+Deploy your caller after the runtime Worker. `binding: "PYTHON"` names the Service Binding from step 4 — that's what selects the language, never a `language` option. The result has no `error`, `results: [{ text: "144" }]`, and the captured greeting in `logs.stdout`. State in this context (`ctx`) — top-level variables, functions, imports — persists across calls; see [Use code contexts](/stateful/code-contexts). With `getSandbox<Env>`, `binding` is checked against the Service Bindings in `Env` at compile time, so a typo like `binding: "PYTHOn"` fails to build instead of failing at runtime.
 
 ## Next steps
 

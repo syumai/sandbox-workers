@@ -21,7 +21,7 @@ await sandbox.interpreter.createCodeContext(options: CreateContextOptions): Prom
 
 **Parameters** (`CreateContextOptions`):
 
-- `binding` — required. The name of a Service Binding, in your own environment, to a sandbox-workers runtime Worker. Must match `/^[A-Za-z_][A-Za-z0-9_]*$/`, name a binding that exists and has a `fetch` method, and answer `GET /interpreter` with `{ language, engine, contexts: true }` — otherwise this throws `ValidationFailedError` ("Unknown binding 'X'", "Binding 'X' is not a sandbox-workers runtime Worker", or "Code contexts are not supported by binding 'X' (language)"). This probe runs only on `createCodeContext` and default-context creation, never on every execution.
+- `binding` — required. The name of a Service Binding, in your own environment, to a sandbox-workers runtime Worker. Must match `/^[A-Za-z_][A-Za-z0-9_]*$/`, name a binding that exists and has a `fetch` method, and answer `GET /interpreter` with `{ language, engine, contexts: true }` — otherwise this throws `ValidationFailedError` ("Unknown binding 'X'", "Binding 'X' is not a sandbox-workers runtime Worker", or "Code contexts are not supported by binding 'X' (language)"). This probe runs only on `createCodeContext` and default-context creation, never on every execution. Typed as `ServiceBindingName<Env>` (see [Types](#types)) when `sandbox` came from [`getSandbox<Env>()`](/api/lifecycle#getsandbox), otherwise plain `string`.
 - `cwd` — the context's initial working directory. Defaults to `/workspace`.
 - `envVars` — environment variables layered onto executions in this context (`Record<string, string | undefined>`; a value of `undefined` is dropped, not sent).
 
@@ -86,7 +86,7 @@ await sandbox.interpreter.runCode(code: string, options?: RunCodeOptions): Promi
 - `code` — the script to run. The value of its last top-level expression is the result. Limited to 64 KiB UTF-8.
 - `options` (optional, `RunCodeOptions`):
   - `context` — the `CodeContext` to run in (from `createCodeContext()` or `listCodeContexts()`).
-  - `binding` — the Service Binding name to use when `context` is omitted: runs in (or creates) the **default context** for that binding — the oldest existing context with that `binding`, or a fresh one at `cwd: "/workspace"` when none exists. For a binding that reports `contexts: false` (a stateless-only runtime Worker), this runs **statelessly** through the runtime's plain `POST /execute` instead — no context, no `/workspace`, and the result has no `context` field.
+  - `binding` — the Service Binding name to use when `context` is omitted: runs in (or creates) the **default context** for that binding — the oldest existing context with that `binding`, or a fresh one at `cwd: "/workspace"` when none exists. For a binding that reports `contexts: false` (a stateless-only runtime Worker), this runs **statelessly** through the runtime's plain `POST /execute` instead — no context, no `/workspace`, and the result has no `context` field. Typed as `ServiceBindingName<Env>` (see [Types](#types)) when `sandbox` came from [`getSandbox<Env>()`](/api/lifecycle#getsandbox), otherwise plain `string`.
   - Passing neither `context` nor `binding` fails with `ValidationFailedError` ("Pass a context or a binding").
   - `envVars` — environment variables for this call (`Record<string, string | undefined>`; `undefined` unsets a key for this call rather than being sent).
   - `timeout` — a request timeout in milliseconds; internally builds `AbortSignal.timeout(timeout)`. The guest is still separately bounded by its fuel budget regardless of `timeout`.
@@ -176,7 +176,17 @@ interface CodeContext {
 }
 ```
 
-`binding` is the Service Binding name the context was created against; `language` is that binding's runtime language, reported by `GET /interpreter`.
+`binding` is the Service Binding name the context was created against; `language` is that binding's runtime language, reported by `GET /interpreter`. `binding` here is always plain `string` — it comes back from the Durable Object, not from your own `Env`.
+
+### `ServiceBindingName<Env>`
+
+```ts
+type ServiceBindingName<Env> = {
+  [K in keyof Env & string]: Env[K] extends ServiceBindingTarget ? K : never;
+}[keyof Env & string];
+```
+
+The names of the Service Bindings (values with a `fetch` method) in an `Env` type; this is what `binding` options are narrowed to when `sandbox` came from [`getSandbox<Env>()`](/api/lifecycle#getsandbox).
 
 ### `ExecutionResult`
 

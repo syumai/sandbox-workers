@@ -20,6 +20,7 @@
     "packages/javascript/src/**/*.ts",
     "packages/python/src/**/*.ts",
     "packages/perl/src/**/*.ts",
-    "packages/ruby/src/**/*.ts"
+    "packages/ruby/src/**/*.ts",
+    "tests/types/**/*.ts"
   ]
 }

@@ -27,6 +27,9 @@ can offer:
   a Service Binding** in the caller's own environment, passed to
   `createCodeContext({ binding: "PYTHON" })`. There is no `language`
   option anywhere: the binding determines the language.
+- The binding name is narrowed at the type level, not just validated at
+  runtime: `getSandbox<Env>(env.Sandbox, id)` types `binding` options as
+  `ServiceBindingName<Env>`, so a misspelled name is a compile-time error.
 - One sandbox can hold contexts of **several languages** at once, all
   sharing the sandbox's single `/workspace`.
 
@@ -331,7 +334,7 @@ Behavior of every existing operation is unchanged.
 import { getSandbox, runCode, Sandbox } from "@sandbox-workers/core";
 export { Sandbox };                                       // the Durable Object class, from the caller's entry
 
-const sandbox = getSandbox(env.Sandbox, "user-42");       // SandboxClient
+const sandbox = getSandbox<Env>(env.Sandbox, "user-42");  // SandboxClient<ServiceBindingName<Env>>; binding options below are narrowed to Env's Service Bindings
 const py = await sandbox.interpreter.createCodeContext({ binding: "PYTHON", cwd: "/workspace", envVars: { A: "1" } });
 const js = await sandbox.interpreter.createCodeContext({ binding: "JAVASCRIPT" });
 await sandbox.interpreter.runCode("open('/workspace/a.txt','w').write('hi')", { context: py });
@@ -350,25 +353,31 @@ await runCode(env.PYTHON, "1 + 1", { envVars });            // stateless, unchan
 ```ts
 export type SandboxNamespace = { idFromName(name: string): unknown; get(id: unknown): { fetch(request: Request): Promise<Response> } };
 export interface SandboxOptions { normalizeId?: boolean }
-export function getSandbox(namespace: SandboxNamespace, id: string, options?: SandboxOptions): SandboxClient;
 
-export interface CreateContextOptions { binding: string; cwd?: string; envVars?: Record<string, string | undefined> }
+// Any environment: every binding name is allowed, so ServiceBindingName<AnyEnv> is `string`.
+export type AnyEnv = Record<string, ServiceBindingTarget>;
+// The names of the Service Bindings (Fetcher-like values, i.e. anything with a `fetch` method) in Env.
+export type ServiceBindingName<Env> = { [K in keyof Env & string]: Env[K] extends ServiceBindingTarget ? K : never }[keyof Env & string];
+
+export function getSandbox<Env = AnyEnv>(namespace: SandboxNamespace, id: string, options?: SandboxOptions): SandboxClient<ServiceBindingName<Env>>;
+
+export interface CreateContextOptions<B extends string = string> { binding: B; cwd?: string; envVars?: Record<string, string | undefined> }
 export interface CodeContext { readonly id: string; readonly binding: string; readonly language: string; readonly cwd: string; readonly createdAt: Date; readonly lastUsed: Date }
-export interface RunCodeOptions {
-  context?: CodeContext; binding?: string;
+export interface RunCodeOptions<B extends string = string> {
+  context?: CodeContext; binding?: B;
   envVars?: Record<string, string | undefined>;
   timeout?: number; signal?: AbortSignal;
   onStdout?; onStderr?; onResult?; onError?;              // unchanged, fired after the response
 }
-export interface CodeInterpreter {
-  createCodeContext(options: CreateContextOptions): Promise<CodeContext>;
+export interface CodeInterpreter<B extends string = string> {
+  createCodeContext(options: CreateContextOptions<B>): Promise<CodeContext>;
   listCodeContexts(): Promise<CodeContext[]>;
   deleteCodeContext(id: string): Promise<void>;
-  runCode(code: string, options?: RunCodeOptions): Promise<ExecutionResult>;
+  runCode(code: string, options?: RunCodeOptions<B>): Promise<ExecutionResult>;
 }
-export interface SandboxClient {
+export interface SandboxClient<B extends string = string> {
   readonly id: string;
-  readonly interpreter: CodeInterpreter;
+  readonly interpreter: CodeInterpreter<B>;
   setEnvVars(envVars: Record<string, string | undefined>): Promise<void>;
   writeFile / readFile / mkdir / deleteFile / renameFile / moveFile / listFiles / exists;   // unchanged
   getInfo(): Promise<SandboxInfo>;
@@ -378,6 +387,8 @@ export class Sandbox { constructor(state: unknown, env: unknown); fetch(request:
 export type StatelessRunCodeOptions = Omit<RunCodeOptions, "context" | "binding">;
 export function runCode(target: { fetch(request: Request): Promise<Response> }, code: string, options?: StatelessRunCodeOptions): Promise<ExecutionResult>;
 ```
+
+`B` (default `string`) is the caller's binding-name type: `getSandbox<Env>()` instantiates it to `ServiceBindingName<Env>`, so `sandbox.interpreter`'s `binding` options are checked against `Env`'s Service Bindings at compile time; plain `getSandbox(namespace, id)` (no `Env`) keeps `B` as `string`, exactly as before this existed. `CodeContext.binding` stays plain `string` regardless -- it's data read back from the Durable Object, not a caller-supplied value to narrow.
 
 The client interface is named `SandboxClient` because `Sandbox` is the
 Durable Object class (the 1.0 preview uses `Sandbox` for the class too).
