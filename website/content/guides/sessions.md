@@ -100,7 +100,7 @@ await sandbox.destroy();
 
 ## Calling the HTTP API directly
 
-Every route is under `/sandboxes/:id` on the runtime Worker (or `/languages/:language/sandboxes/:id` through the Playground gateway — see [API reference](/reference/api)):
+Every route is under `/sandboxes/:id` on the runtime Worker (or `/languages/:language/sandboxes/:id` through the Playground gateway):
 
 | Method and path | Body | Response |
 | --- | --- | --- |
@@ -129,7 +129,7 @@ Every route is under `/sandboxes/:id` on the runtime Worker (or `/languages/:lan
 | `list` | `recursive?`, `includeHidden?` | `{success, path, files: FileInfo[], count, timestamp}` |
 | `exists` | | `{success, path, exists, timestamp}` |
 
-`FileInfo` is `{name, absolutePath, relativePath, type, size, modifiedAt, mode, permissions}`; hidden entries (name starting with `.`) are omitted from `list` unless `includeHidden` is set. Limits: 1 MiB per file, 16 MiB per workspace, 4096 entries. A file operation failure returns the `ErrorResponse` shape described in [API reference](/reference/api) (`FILE_NOT_FOUND` 404, `FILE_EXISTS` 409, `PERMISSION_DENIED` 403, `IS_DIRECTORY`/`NOT_DIRECTORY` 400, `FILE_TOO_LARGE` 413, `NO_SPACE` 507, `FILESYSTEM_ERROR` 400), with the Node-style errno in `context.errno`.
+`FileInfo` is `{name, absolutePath, relativePath, type, size, modifiedAt, mode, permissions}`; hidden entries (name starting with `.`) are omitted from `list` unless `includeHidden` is set. Limits: 1 MiB per file, 16 MiB per workspace, 4096 entries. A file operation failure returns the `ErrorResponse` shape `{code, message, context, httpStatus, timestamp}` (`FILE_NOT_FOUND` 404, `FILE_EXISTS` 409, `PERMISSION_DENIED` 403, `IS_DIRECTORY`/`NOT_DIRECTORY` 400, `FILE_TOO_LARGE` 413, `NO_SPACE` 507, `FILESYSTEM_ERROR` 400), with the Node-style errno in `context.errno`.
 
 ## REPL semantics per language
 

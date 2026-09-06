@@ -12,7 +12,7 @@ sandbox-workers packages JavaScript, Python, Perl, and Ruby interpreters as sepa
 - [Deploy to Cloudflare](/getting-started/deploy): one button per runtime, with no local toolchain.
 - [CLI](/getting-started/cli): initialize a Worker from a published runtime package.
 - [Service Bindings](/guides/service-bindings): connect your application without exposing the engine publicly.
-- [API reference](/reference/api): request fields, responses, and error handling.
+- [Sandboxes and code contexts](/guides/sessions): the typed client, HTTP routes, files API, and error handling.
 
 ## Choose an engine
 
