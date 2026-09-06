@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile, copyFile } from "node:fs/promises";
-const commit = "1866fce069fa344891f292c87501254ce1f7394d";
+const commit = "875fb00b325fc3814f99f8897771078cb72b20b7";
 const sha256 =
-  "d0e7f4fab34a9b43738791a6d8e9c28994fc8f7a4b85362cb507b24d11f85f71";
+  "5479b86e97abfeba5f12847737d2fd66d5965cf4ed4b2683ac2e0c635e643f7f";
 for (const language of ["javascript", "python", "perl", "ruby"]) {
   const directory = `templates/${language}`;
   await mkdir(directory, { recursive: true });
