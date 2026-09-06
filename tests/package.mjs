@@ -55,20 +55,20 @@ try {
   );
   assert.equal(config.workers_dev, false);
   assert.equal(config.preview_urls, false);
-  // JavaScript supports durable sandboxes (a Durable Object-backed code
-  // interpreter); see docs/sdk-parity-design.md.
+  // JavaScript supports durable sandboxes (an Interpreter Durable Object
+  // backing memory snapshots); see docs/sandbox-1-0-design.md.
   assert.deepEqual(config.durable_objects, {
-    bindings: [{ name: "SANDBOX", class_name: "Sandbox" }],
+    bindings: [{ name: "INTERPRETER", class_name: "Interpreter" }],
   });
   assert.deepEqual(config.migrations, [
-    { tag: "v1", new_sqlite_classes: ["Sandbox"] },
+    { tag: "v1", new_sqlite_classes: ["Interpreter"] },
   ]);
   const indexSource = await readFile(join(worker, "index.js"), "utf8");
   assert.equal(
     indexSource,
-    'export { default, Sandbox } from "@sandbox-workers/javascript";\n',
+    'export { default, Interpreter } from "@sandbox-workers/javascript";\n',
   );
-  assert.match(indexSource, /Sandbox/);
+  assert.match(indexSource, /Interpreter/);
   run(
     "npm",
     ["install", "--ignore-scripts", "--no-audit", "--no-fund", js],
@@ -91,8 +91,30 @@ try {
   const clientTest = `import { getSandbox, SandboxError, FileNotFoundError, ContextNotFoundError } from '@sandbox-workers/core';
 import assert from 'node:assert/strict';
 
+function fakeNamespace(handler) {
+  return {
+    idFromName(name) {
+      return 'id:' + name;
+    },
+    get(id) {
+      return { fetch: (request) => handler(request, id) };
+    },
+  };
+}
+
 // getSandbox() validates the id synchronously, before any request is made.
-assert.throws(() => getSandbox({ async fetch() { throw new Error('should not be called'); } }, 'bad id!'), /Invalid sandbox id/);
+assert.throws(
+  () => getSandbox(fakeNamespace(() => { throw new Error('should not be called'); }), 'bad id!'),
+  /Invalid sandbox id/,
+);
+
+// A Service Binding (Fetcher-shaped) target is rejected synchronously: the
+// caller-hosted Sandbox Durable Object is reached only through a Durable
+// Object namespace (see docs/sandbox-1-0-design.md).
+assert.throws(
+  () => getSandbox({ async fetch() { throw new Error('should not be called'); } }, 'demo'),
+  /requires a Durable Object namespace/,
+);
 
 const now = new Date().toISOString();
 const calls = [];
@@ -102,75 +124,74 @@ function route(request) {
   return { method: request.method, pathname: url.pathname };
 }
 
-const fetcher = {
-  async fetch(request) {
-    const { method, pathname } = route(request);
-    if (pathname === '/sandboxes/demo/contexts' && method === 'POST')
-      return Response.json({ id: 'ctx-1', language: 'javascript', cwd: '/workspace', createdAt: now, lastUsed: now }, { status: 201 });
-    if (pathname === '/sandboxes/demo/contexts' && method === 'GET')
-      return Response.json({ contexts: [{ id: 'ctx-1', language: 'javascript', cwd: '/workspace', createdAt: now, lastUsed: now }] });
-    if (pathname === '/sandboxes/demo/contexts/ctx-1' && method === 'DELETE')
-      return Response.json({ success: true });
-    if (pathname === '/sandboxes/demo/execute' && method === 'POST') {
-      const body = JSON.parse(await request.text());
-      assert.equal(body.contextId, 'ctx-1');
-      assert.deepEqual(body.envVars, { CALL: 'x' });
-      assert.equal('language' in body, false);
+const namespace = fakeNamespace(async (request, id) => {
+  const { method, pathname } = route(request);
+  assert.equal(request.headers.get('x-sandbox-id'), 'demo');
+  assert.equal(id, 'id:demo');
+  if (pathname === '/contexts' && method === 'POST')
+    return Response.json({ id: 'ctx-1', binding: 'JAVASCRIPT', language: 'javascript', cwd: '/workspace', createdAt: now, lastUsed: now }, { status: 201 });
+  if (pathname === '/contexts' && method === 'GET')
+    return Response.json({ contexts: [{ id: 'ctx-1', binding: 'JAVASCRIPT', language: 'javascript', cwd: '/workspace', createdAt: now, lastUsed: now }] });
+  if (pathname === '/contexts/ctx-1' && method === 'DELETE')
+    return Response.json({ success: true });
+  if (pathname === '/execute' && method === 'POST') {
+    const body = JSON.parse(await request.text());
+    assert.equal(body.contextId, 'ctx-1');
+    assert.deepEqual(body.envVars, { CALL: 'x' });
+    assert.equal('binding' in body, false);
+    return Response.json({
+      code: body.code,
+      logs: { stdout: [], stderr: [] },
+      results: [{ text: '2' }],
+      language: 'javascript',
+      engine: 'x',
+      durationMs: 1,
+      executionCount: 1,
+      context: { id: 'ctx-1', cwd: '/workspace', executions: 1 },
+    });
+  }
+  if (pathname === '/files' && method === 'POST') {
+    const body = JSON.parse(await request.text());
+    if (body.op === 'read')
       return Response.json({
-        code: body.code,
-        logs: { stdout: [], stderr: [] },
-        results: [{ text: '2' }],
-        language: 'javascript',
-        engine: 'x',
-        durationMs: 1,
-        executionCount: 1,
-        context: { id: 'ctx-1', cwd: '/workspace', executions: 1 },
-      });
-    }
-    if (pathname === '/sandboxes/demo/files' && method === 'POST') {
-      const body = JSON.parse(await request.text());
-      if (body.op === 'read')
-        return Response.json({
-          code: 'FILE_NOT_FOUND',
-          message: 'no such file',
-          context: { path: '/workspace/missing.txt', operation: 'file.read', errno: 'ENOENT' },
-          httpStatus: 404,
-          timestamp: now,
-        }, { status: 404 });
-      if (body.op === 'write')
-        return Response.json({ success: true, path: '/workspace/a.txt', timestamp: now });
-      throw new Error('unexpected files op ' + body.op);
-    }
-    if (pathname === '/sandboxes/demo/env' && method === 'POST')
-      return Response.json({ success: true });
-    if (pathname === '/sandboxes/demo' && method === 'GET')
-      return Response.json({
-        id: 'demo',
-        language: 'javascript',
-        engine: 'x',
-        createdAt: now,
-        lastUsed: now,
-        envVars: {},
-        contexts: [],
-        workspace: { files: 0, bytes: 0 },
-        expiresAt: null,
-      });
-    if (pathname === '/sandboxes/demo' && method === 'DELETE')
-      return Response.json({ success: true });
-    throw new Error('unexpected request ' + method + ' ' + pathname);
-  },
-};
-const sandbox = getSandbox(fetcher, 'demo');
+        code: 'FILE_NOT_FOUND',
+        message: 'no such file',
+        context: { path: '/workspace/missing.txt', operation: 'file.read', errno: 'ENOENT' },
+        httpStatus: 404,
+        timestamp: now,
+      }, { status: 404 });
+    if (body.op === 'write')
+      return Response.json({ success: true, path: '/workspace/a.txt', timestamp: now });
+    throw new Error('unexpected files op ' + body.op);
+  }
+  if (pathname === '/env' && method === 'POST')
+    return Response.json({ success: true });
+  if (pathname === '/' && method === 'GET')
+    return Response.json({
+      id: 'demo',
+      createdAt: now,
+      lastUsed: now,
+      envVars: {},
+      contexts: [],
+      workspace: { files: 0, bytes: 0 },
+      expiresAt: null,
+    });
+  if (pathname === '/' && method === 'DELETE')
+    return Response.json({ success: true });
+  throw new Error('unexpected request ' + method + ' ' + pathname);
+});
+const sandbox = getSandbox(namespace, 'demo');
 
-const ctx = await sandbox.createCodeContext();
+const ctx = await sandbox.interpreter.createCodeContext({ binding: 'JAVASCRIPT' });
 assert.ok(ctx.createdAt instanceof Date);
 assert.ok(ctx.lastUsed instanceof Date);
+assert.equal(ctx.binding, 'JAVASCRIPT');
 
-const contexts = await sandbox.listCodeContexts();
+const contexts = await sandbox.interpreter.listCodeContexts();
 assert.equal(contexts.length, 1);
 assert.ok(contexts[0].createdAt instanceof Date);
 
-const executed = await sandbox.runCode('1 + 1', { context: ctx, envVars: { CALL: 'x' } });
+const executed = await sandbox.interpreter.runCode('1 + 1', { context: ctx, envVars: { CALL: 'x' } });
 assert.deepEqual(executed.results, [{ text: '2' }]);
 assert.equal(executed.context.id, 'ctx-1');
 
@@ -186,25 +207,25 @@ await assert.rejects(sandbox.readFile('/workspace/missing.txt'), (error) => {
 await sandbox.setEnvVars({ TOKEN: 'abc' });
 const info = await sandbox.getInfo();
 assert.equal(info.id, 'demo');
-await sandbox.deleteCodeContext('ctx-1');
+await sandbox.interpreter.deleteCodeContext('ctx-1');
 await sandbox.destroy();
 
 assert.deepEqual(calls, [
-  'POST /sandboxes/demo/contexts',
-  'GET /sandboxes/demo/contexts',
-  'POST /sandboxes/demo/execute',
-  'POST /sandboxes/demo/files',
-  'POST /sandboxes/demo/files',
-  'POST /sandboxes/demo/env',
-  'GET /sandboxes/demo',
-  'DELETE /sandboxes/demo/contexts/ctx-1',
-  'DELETE /sandboxes/demo',
+  'POST /contexts',
+  'GET /contexts',
+  'POST /execute',
+  'POST /files',
+  'POST /files',
+  'POST /env',
+  'GET /',
+  'DELETE /contexts/ctx-1',
+  'DELETE /',
 ]);
 
 // A non-JSON error response (e.g. a raw 503 from an unhealthy Worker) maps
 // to a generic SandboxError, not a thrown parse error.
-const broken = getSandbox({ async fetch() { return new Response('down', { status: 503 }); } }, 'demo');
-await assert.rejects(broken.runCode('1'), (error) => {
+const broken = getSandbox(fakeNamespace(() => new Response('down', { status: 503 })), 'demo');
+await assert.rejects(broken.interpreter.runCode('1'), (error) => {
   assert.ok(error instanceof SandboxError);
   assert.equal(error.code, 'INTERNAL_ERROR');
   return true;
@@ -212,27 +233,19 @@ await assert.rejects(broken.runCode('1'), (error) => {
 
 // Durable Object namespace transport: idFromName is used to resolve the
 // stub, the id travels as the x-sandbox-id header (not in the path), and
-// the forwarded path has no /sandboxes/<id> prefix.
+// the forwarded path has no /sandboxes/<id> prefix -- there is no such
+// prefix at all any more (see docs/sandbox-1-0-design.md).
 const namespaceCalls = [];
-const namespace = {
-  idFromName(name) {
-    return 'id:' + name;
-  },
-  get(id) {
-    return {
-      async fetch(request) {
-        const url = new URL(request.url);
-        namespaceCalls.push({ id, headers: Object.fromEntries(request.headers), pathname: url.pathname });
-        return Response.json({ success: true, path: '/workspace/a.txt', exists: true, timestamp: now });
-      },
-    };
-  },
-};
-const nsSandbox = getSandbox(namespace, 'demo');
+const nsForFiles = fakeNamespace(async (request, id) => {
+  const url = new URL(request.url);
+  namespaceCalls.push({ id, headers: Object.fromEntries(request.headers), pathname: url.pathname });
+  return Response.json({ success: true, path: '/workspace/a.txt', exists: true, timestamp: now });
+});
+const nsSandbox = getSandbox(nsForFiles, 'demo');
 await nsSandbox.exists('/workspace/a.txt');
 assert.equal(namespaceCalls[0].id, 'id:demo');
 assert.equal(namespaceCalls[0].headers['x-sandbox-id'], 'demo');
-assert.equal(namespaceCalls[0].pathname.includes('/sandboxes/'), false);
+assert.equal(namespaceCalls[0].pathname, '/files');
 
 // ContextNotFoundError is importable and part of the error hierarchy, even
 // though this smoke test doesn't need to trigger it over the wire.

@@ -45,7 +45,7 @@ pnpm run deploy
 The generated Worker entrypoint is one line:
 
 ```js
-export { default } from "@sandbox-workers/javascript";
+export { default, Interpreter } from "@sandbox-workers/javascript";
 ```
 
 Packages include **prebuilt Wasm**, so consumers do not need Binaryen or a C++ compiler. The default Worker name is `sandbox-javascript`; choose a unique name in your account before deploying. Public and preview URLs are disabled.
@@ -54,7 +54,7 @@ Add a Service Binding to your application's `wrangler.jsonc`:
 
 ```jsonc
 {
-  "services": [{ "binding": "SANDBOX", "service": "sandbox-javascript" }],
+  "services": [{ "binding": "JAVASCRIPT", "service": "sandbox-javascript" }],
 }
 ```
 
@@ -66,7 +66,7 @@ import { runCode } from "@sandbox-workers/core";
 export default {
   async fetch(request, env) {
     const output = await runCode(
-      env.SANDBOX,
+      env.JAVASCRIPT,
       "console.log(process.env.X);\nawait Promise.resolve(Number(process.env.X) ** 2);",
       { envVars: { X: "12" } },
     );
@@ -75,38 +75,39 @@ export default {
 };
 ```
 
-A Service Binding targets a **Worker deployed in your account**. Deploy the runtime before the calling application. `runCode` sends code only to that binding, never to the public Playground; it requires a Service Binding specifically (not a Durable Object namespace — see below). The core package is optional if you call `binding.fetch()` directly.
+A Service Binding targets a **Worker deployed in your account**. Deploy the runtime before the calling application. `runCode` sends code only to that binding, never to the public Playground; it requires a Service Binding specifically (a `Sandbox` Durable Object namespace throws synchronously — see below). The core package is optional if you call `binding.fetch()` directly.
 
 ### Python, Perl, and Ruby
 
-Replace `javascript` in the installation commands with `python`, `perl`, or `ruby`. The client takes only the binding, the code, and options, for example `runCode(env.SANDBOX, code)`; the runtime is whichever Worker that binding targets. Each initializer generates the required configuration, including Data module rules for the Python and Perl standard libraries.
+Replace `javascript` in the installation commands with `python`, `perl`, or `ruby`. The client takes only the binding, the code, and options, for example `runCode(env.PYTHON, code)`; the runtime is whichever Worker that binding targets. Each initializer generates the required configuration, including Data module rules for the Python and Perl standard libraries.
 
 ### Sandboxes and code contexts
 
-`runCode` above is stateless: every call boots a fresh Wasm instance, with no persistence between calls. `getSandbox(env.SANDBOX, id)` opens a durable sandbox instead, with a shared `/workspace` and one or more **code contexts** — named, stateful REPLs where top-level variables persist across calls, surviving Durable Object eviction, hibernation, and redeploys via a memory snapshot taken after each execution. A sandbox is backed by a Durable Object the runtime Worker exports (`SANDBOX` / `Sandbox`, already wired into the CLI initializer and deploy templates for JavaScript, Python, and Perl; Ruby does not support code contexts, and neither does a Worker generated with the CLI's `--stateless` flag).
+`runCode` above is stateless: every call boots a fresh Wasm instance, with no persistence between calls. For a durable, stateful alternative, **your own Worker** — not the runtime Worker — hosts a `Sandbox` Durable Object (from `@sandbox-workers/core`) with a shared `/workspace` and one or more **code contexts**, each bound to a runtime Worker by the **name of a Service Binding** — there is no `language` option. Top-level variables persist across calls in the same context, surviving Durable Object eviction, hibernation, and redeploys via a memory snapshot taken after each execution. Code contexts are supported for JavaScript, Python, and Perl; Ruby does not support them, and neither does a runtime Worker generated with the CLI's `--stateless` flag — both report `contexts: false`.
+
+```jsonc
+// your wrangler.jsonc
+{
+  "durable_objects": { "bindings": [{ "name": "Sandbox", "class_name": "Sandbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+  "services": [{ "binding": "JAVASCRIPT", "service": "sandbox-javascript" }],
+}
+```
 
 ```ts
 import { getSandbox } from "@sandbox-workers/core";
 
-const sandbox = getSandbox(env.SANDBOX, "user-42");
-const ctx = await sandbox.createCodeContext({ cwd: "/workspace" });
-await sandbox.runCode("counter = 1", { context: ctx });
-await sandbox.runCode("counter += 1; counter", { context: ctx }); // 2
+export { Sandbox } from "@sandbox-workers/core";
+
+const sandbox = getSandbox(env.Sandbox, "user-42");
+const ctx = await sandbox.interpreter.createCodeContext({ binding: "JAVASCRIPT", cwd: "/workspace" });
+await sandbox.interpreter.runCode("counter = 1", { context: ctx });
+await sandbox.interpreter.runCode("counter += 1; counter", { context: ctx }); // 2
 await sandbox.writeFile("/workspace/notes.txt", "hi");
 await sandbox.readFile("/workspace/notes.txt");
 ```
 
-`env.SANDBOX` can also be a Durable Object namespace bound directly to the runtime Worker's `Sandbox` class with `script_name` (no migration needed in the caller):
-
-```jsonc
-{
-  "durable_objects": {
-    "bindings": [{ "name": "SANDBOX", "class_name": "Sandbox", "script_name": "sandbox-javascript" }],
-  },
-}
-```
-
-See the [sandboxes and code contexts guide](website/content/guides/code-contexts.md) and [language runtimes](docs/languages.md) for the client API, the files API, per-language REPL semantics, and the snapshot mechanism.
+One sandbox can hold contexts of several languages at once, all sharing the same `/workspace`. See the [sandboxes and code contexts guide](website/content/guides/code-contexts.md) and [language runtimes](docs/languages.md) for the client API, the files API, per-language REPL semantics, and the snapshot mechanism.
 
 ## Develop the Playground
 

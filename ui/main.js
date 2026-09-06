@@ -446,12 +446,16 @@ function switchLanguage(next, restore = false) {
   $("install-command").textContent =
     `pnpm dlx @sandbox-workers/cli init ${next} my-sandbox\ncd my-sandbox\npnpm install\npnpm dry-run\npnpm run deploy`;
   $("binding-command").textContent = JSON.stringify(
-    { services: [{ binding: "SANDBOX", service: `sandbox-${next}` }] },
+    {
+      durable_objects: { bindings: [{ name: "Sandbox", class_name: "Sandbox" }] },
+      migrations: [{ tag: "v1", new_sqlite_classes: ["Sandbox"] }],
+      services: [{ binding: next.toUpperCase(), service: `sandbox-${next}` }],
+    },
     null,
     2,
   );
   $("client-command").textContent =
-    `import { createSandbox } from "@sandbox-workers/core";\n\nconst sandbox = createSandbox(env.SANDBOX);\nconst output = await sandbox.runCode(\n  ${JSON.stringify(clientSnippets[next])},\n  { envVars: { X: "12" } },\n);\n// { results: [{ text: "144" }], ... }`;
+    `export { Sandbox } from "@sandbox-workers/core";\n\nimport { getSandbox } from "@sandbox-workers/core";\n\nconst sandbox = getSandbox(env.Sandbox, "user-42");\nconst output = await sandbox.interpreter.runCode(\n  ${JSON.stringify(clientSnippets[next])},\n  { binding: "${next.toUpperCase()}", envVars: { X: "12" } },\n);\n// { results: [{ text: "144" }], ... }`;
   response = undefined;
   historyCursor = null;
   historyDraft = "";

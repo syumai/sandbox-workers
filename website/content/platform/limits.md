@@ -18,7 +18,9 @@ Code is limited to 64 KiB and the request to 96 KiB. Python, Perl, and Ruby stdo
 
 ## Sandboxes and code contexts
 
-Sandboxes (JavaScript, Python, Perl; not Ruby) add limits on top of the execution limits above: at most 8 code contexts per sandbox, with only 1 interpreter resident in memory at a time (the rest are restored from their snapshot on next use). The shared `/workspace` is limited to 1 MiB per file, 16 MiB total, and 4096 entries. See [Code contexts](/concepts/code-contexts) for the full contract and [Files](/api/files) for the files API.
+A sandbox adds limits on top of the execution limits above: at most **8 code contexts per sandbox**, across all bindings — not 8 per binding — with only 1 interpreter resident in memory per runtime Worker (the rest are restored from their snapshot on next use). Code contexts are supported for JavaScript, Python, and Perl; not Ruby (see [Code contexts](/concepts/code-contexts)).
+
+The shared `/workspace` is limited to 1 MiB per file, 16 MiB total, and 4096 entries (files and directories together) — see [Files](/api/files) for the files API. The workspace **sync payload** between a sandbox and a runtime Worker's interpreter (`POST /interpreters/:key/execute`'s `workspace` field, carrying up to the whole workspace as base64 after an eviction) has its own, larger request-size cap of **24 MiB**, separate from every other route's limits — see [HTTP API](/api/http-api#workspace-sync-payload).
 
 ## Isolation and compatibility
 

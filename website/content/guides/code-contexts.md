@@ -1,46 +1,66 @@
 ---
 title: Use code contexts
-description: Keep state between executions with a durable, stateful REPL.
+description: Keep state between executions with a durable, stateful REPL bound to a runtime Worker.
 ---
 
-`runCode` without a context boots a fresh Wasm instance on every call: nothing persists. A **code context** is the stateful alternative — a named, durable REPL that keeps a language interpreter's globals alive between executions. This guide shows you how to create one, run code in it, and manage its lifecycle with the typed `@sandbox-workers/core` client.
+The free `runCode` function boots a fresh Wasm instance on every call: nothing persists. A **code context** is the stateful alternative — a named, durable REPL, bound to one runtime Worker, that keeps a language interpreter's globals alive between executions. This guide shows you how to create one, run code in it, and manage its lifecycle with the typed `@sandbox-workers/core` client.
 
-Code contexts are supported for **JavaScript, Python, and Perl**. **Ruby is not supported** — code contexts require the memory-snapshot mechanism the other languages use, which Ruby's engine does not support.
+Code contexts live inside a `Sandbox` Durable Object hosted by **your own** Worker (`export { Sandbox } from "@sandbox-workers/core"`) — see [Getting started](/get-started) for the binding and migration. Each context is bound to a runtime Worker by the **name of a Service Binding** in your own environment; there is no `language` option. One sandbox can hold contexts of several languages at once, all sharing the sandbox's single `/workspace`.
+
+Code contexts are supported for **JavaScript, Python, and Perl**. **Ruby is not supported** — code contexts require the memory-snapshot mechanism the other languages use, which Ruby's engine does not support. A runtime Worker deployed with the CLI's `--stateless` flag reports the same `contexts: false` as Ruby.
 
 ## Create a context
 
 ```ts
 import { getSandbox } from "@sandbox-workers/core";
 
-const sandbox = getSandbox(env.SANDBOX, "user-42");
+const sandbox = getSandbox(env.Sandbox, "user-42");
 
-const ctx = await sandbox.createCodeContext({
-  language: "python",
+const ctx = await sandbox.interpreter.createCodeContext({
+  binding: "PYTHON",
   cwd: "/workspace",
   envVars: { MODE: "test" },
 });
 ```
 
+`binding` must name a Service Binding in your own environment to a sandbox-workers runtime Worker; an unknown or non-runtime binding fails with `ValidationFailedError` (`VALIDATION_FAILED`), and a binding that reports `contexts: false` (Ruby, or `--stateless`) fails with the same error naming the binding and its language.
+
 ## Run code in a context
 
 ```ts
-await sandbox.runCode("count = 1", { context: ctx });
-const result = await sandbox.runCode("count += 1\ncount", { context: ctx });
+await sandbox.interpreter.runCode("count = 1", { context: ctx });
+const result = await sandbox.interpreter.runCode("count += 1\ncount", { context: ctx });
 // result.results[0].text === "2"
 ```
 
-One execution's top-level variables, functions, classes, and imported modules are visible to the next execution in the same context. `/workspace` is shared by every context in the sandbox, so files written from one context are visible from another. See [Manage files](/guides/manage-files) for the files API.
+One execution's top-level variables, functions, classes, and imported modules are visible to the next execution in the same context. `/workspace` is shared by every context in the sandbox, regardless of binding — so a file written by a Python context is visible to a JavaScript one. See [Manage files](/guides/manage-files) for the files API.
 
-`sandbox.runCode` resolves to the same `ExecutionResult` shape whether or not a `context` is passed, plus a `context: {id, cwd, executions, snapshotMs?, expiresAt?}` field when running in a context, and — like stateless execution — always resolves rather than throwing for a guest error; check `result.error`. See [the interpreter API reference](/api/interpreter) for the full signature and result shape, and [Memory snapshots](/concepts/code-contexts#memory-snapshots) for how a context's state survives Durable Object eviction, hibernation, and redeploys.
+`sandbox.interpreter.runCode` resolves to an `ExecutionResult` with a `context: {id, cwd, executions, snapshotMs?, expiresAt?}` field when it ran in a context, and — like the stateless `runCode` — always resolves rather than throwing for a guest error; check `result.error`. See [the interpreter API reference](/api/interpreter) for the full signature and result shape, and [Memory snapshots](/concepts/code-contexts#memory-snapshots) for how a context's state survives Durable Object eviction, hibernation, and redeploys.
+
+## Multiple languages, one workspace
+
+```ts
+const py = await sandbox.interpreter.createCodeContext({ binding: "PYTHON" });
+const js = await sandbox.interpreter.createCodeContext({ binding: "JAVASCRIPT" });
+
+await sandbox.interpreter.runCode("open('/workspace/shared.txt','w').write('hi')", { context: py });
+await sandbox.interpreter.runCode("fs.readFileSync('/workspace/shared.txt','utf8')", { context: js });
+// "hi"
+```
+
+Each context keeps its own globals, but `/workspace` belongs to the sandbox, not to any single context — every binding's interpreter mirrors the same files on demand.
 
 ## Use the default context
 
 ```ts
-// Default context for the runtime's language, created on first use:
-await sandbox.runCode("import os\nos.environ['X']", { envVars: { X: "12" } });
+// Default context for the PYTHON binding, created on first use:
+await sandbox.interpreter.runCode("import os\nos.environ['X']", {
+  binding: "PYTHON",
+  envVars: { X: "12" },
+});
 ```
 
-`runCode` without a context uses (or creates) the first context whose language matches the request, so simple callers never need to think about contexts at all.
+`runCode` without a `context` requires `binding` and uses (or creates) the oldest existing context for that binding, so simple callers never need to think about contexts at all. Passing neither `context` nor `binding` fails with `ValidationFailedError` ("Pass a context or a binding").
 
 ## Update environment variables
 
@@ -48,14 +68,16 @@ await sandbox.runCode("import os\nos.environ['X']", { envVars: { X: "12" } });
 await sandbox.setEnvVars({ NAME: "value", OLD: undefined }); // undefined unsets a key
 ```
 
+`setEnvVars` is layered onto every context in the sandbox, regardless of binding. See [Environment variables](/configuration/environment-variables) for the full layering order.
+
 ## List and delete contexts
 
 ```ts
-await sandbox.listCodeContexts();
-await sandbox.deleteCodeContext(ctx.id);
+await sandbox.interpreter.listCodeContexts();
+await sandbox.interpreter.deleteCodeContext(ctx.id);
 ```
 
-A sandbox holds at most 8 code contexts, with one interpreter resident in memory at a time; the rest are restored from their snapshot on next use. Deleting a context drops both the live interpreter and its stored snapshot; `/workspace` is untouched, since it belongs to the sandbox rather than the context.
+A sandbox holds at most 8 code contexts across all bindings, with one interpreter resident in memory per runtime Worker; the rest are restored from their snapshot on next use. Deleting a context drops both the live interpreter and its stored snapshot; `/workspace` is untouched, since it belongs to the sandbox rather than the context.
 
 ## REPL semantics per language
 

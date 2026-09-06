@@ -27,7 +27,7 @@ The initializer refuses to overwrite existing files. Choose a Worker name in `wr
 Use this entrypoint in a dedicated Worker:
 
 ```js
-export { default } from "@sandbox-workers/python";
+export { default, Interpreter } from "@sandbox-workers/python";
 ```
 
 Add a Data module rule for the bundled standard library. The initializer includes this configuration automatically:
@@ -41,40 +41,49 @@ Add a Data module rule for the bundled standard library. The initializer include
 Disable `workers_dev` and `preview_urls`, deploy the runtime, and add a Service Binding to the calling application's configuration:
 
 ```json
-{ "services": [{ "binding": "SANDBOX", "service": "sandbox-python" }] }
+{ "services": [{ "binding": "PYTHON", "service": "sandbox-python" }] }
 ```
 
-The service name must match the deployed Worker. Install `@sandbox-workers/core` in the calling application:
+The service name must match the deployed Worker. Install `@sandbox-workers/core` in the calling application for stateless, one-shot execution:
 
 ```js
-import { getSandbox } from "@sandbox-workers/core";
-const sandbox = getSandbox(env.SANDBOX, "user-42");
-const output = await sandbox.runCode(
+import { runCode } from "@sandbox-workers/core";
+const output = await runCode(
+  env.PYTHON,
   'import os\nint(os.environ["X"]) ** 2',
   { envVars: { X: "12" } },
 );
 // output.results[0].text === "144"
 ```
 
-This package also exports the `Sandbox` Durable Object class, so a dedicated
-Worker can open durable, stateful **code contexts** (globals persist across
-calls) instead of only the stateless `/execute` above:
-
-```js
-export { default, Sandbox } from "@sandbox-workers/python";
-```
+This package's `INTERPRETER` Durable Object binding (`Interpreter`, already
+in this Worker's `wrangler.jsonc`) is what backs durable, stateful **code
+contexts** (globals persist across calls). To use them, your own Worker (not
+this one) hosts a `Sandbox` Durable Object from `@sandbox-workers/core` and
+opens contexts bound to this Worker by name, instead of the stateless
+`runCode` above:
 
 ```jsonc
+// your wrangler.jsonc
 {
-  "durable_objects": { "bindings": [{ "name": "SANDBOX", "class_name": "Sandbox" }] },
+  "durable_objects": { "bindings": [{ "name": "Sandbox", "class_name": "Sandbox" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+  "services": [{ "binding": "PYTHON", "service": "sandbox-python" }]
 }
 ```
 
 ```js
-const ctx = await sandbox.createCodeContext();
-await sandbox.runCode("counter = 1", { context: ctx });
-await sandbox.runCode("counter + 1", { context: ctx }); // 2
+// your Worker's entry
+export { Sandbox } from "@sandbox-workers/core";
+```
+
+```js
+import { getSandbox } from "@sandbox-workers/core";
+
+const sandbox = getSandbox(env.Sandbox, "user-42");
+const ctx = await sandbox.interpreter.createCodeContext({ binding: "PYTHON" });
+await sandbox.interpreter.runCode("counter = 1", { context: ctx });
+await sandbox.interpreter.runCode("counter + 1", { context: ctx }); // 2
 ```
 
 See the [sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/code-contexts.md)

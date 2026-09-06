@@ -29,52 +29,61 @@ The initializer refuses to overwrite existing files. Choose a Worker name in `wr
 Use this entrypoint in a dedicated Worker:
 
 ```js
-export { default } from "@sandbox-workers/javascript";
+export { default, Interpreter } from "@sandbox-workers/javascript";
 ```
 
 Disable `workers_dev` and `preview_urls`, deploy the runtime, and add a Service Binding to the calling application's configuration:
 
 ```json
-{ "services": [{ "binding": "SANDBOX", "service": "sandbox-javascript" }] }
+{ "services": [{ "binding": "JAVASCRIPT", "service": "sandbox-javascript" }] }
 ```
 
-The service name must match the deployed Worker. Install `@sandbox-workers/core` in the calling application:
+The service name must match the deployed Worker. Install `@sandbox-workers/core` in the calling application for stateless, one-shot execution:
 
 ```js
-import { getSandbox } from "@sandbox-workers/core";
-const sandbox = getSandbox(env.SANDBOX, "user-42");
-const result = await sandbox.runCode(
+import { runCode } from "@sandbox-workers/core";
+const result = await runCode(
+  env.JAVASCRIPT,
   "const x = Number(process.env.X);\nx ** 2",
   { envVars: { X: "12" } },
 );
 ```
 
-Or use `env.SANDBOX.fetch(new Request('https://sandbox.internal/execute', ...))`
+Or use `env.JAVASCRIPT.fetch(new Request('https://sandbox.internal/execute', ...))`
 with a JSON POST body `{ "code": "42" }`.
 Both Workers must be deployed in your own Cloudflare account. A Service Binding
 is to a deployed Worker name; installing this npm package alone does not create it.
 For local development run both Wrangler projects, or pass both `-c` configs to
 one `wrangler dev` command.
 
-This package also exports the `Sandbox` Durable Object class, so a dedicated
-Worker can open durable, stateful **code contexts** (globals persist across
-calls) instead of only the stateless `/execute` above:
-
-```js
-export { default, Sandbox } from "@sandbox-workers/javascript";
-```
+This package's `INTERPRETER` Durable Object binding (`Interpreter`, already
+in this Worker's `wrangler.jsonc`) is what backs durable, stateful **code
+contexts** (globals persist across calls). To use them, your own Worker (not
+this one) hosts a `Sandbox` Durable Object from `@sandbox-workers/core` and
+opens contexts bound to this Worker by name, instead of the stateless
+`runCode` above:
 
 ```jsonc
+// your wrangler.jsonc
 {
-  "durable_objects": { "bindings": [{ "name": "SANDBOX", "class_name": "Sandbox" }] },
+  "durable_objects": { "bindings": [{ "name": "Sandbox", "class_name": "Sandbox" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+  "services": [{ "binding": "JAVASCRIPT", "service": "sandbox-javascript" }]
 }
 ```
 
 ```js
-const ctx = await sandbox.createCodeContext();
-await sandbox.runCode("counter = 1", { context: ctx });
-await sandbox.runCode("counter += 1; counter", { context: ctx }); // 2
+// your Worker's entry
+export { Sandbox } from "@sandbox-workers/core";
+```
+
+```js
+import { getSandbox } from "@sandbox-workers/core";
+
+const sandbox = getSandbox(env.Sandbox, "user-42");
+const ctx = await sandbox.interpreter.createCodeContext({ binding: "JAVASCRIPT" });
+await sandbox.interpreter.runCode("counter = 1", { context: ctx });
+await sandbox.interpreter.runCode("counter += 1; counter", { context: ctx }); // 2
 ```
 
 See the [sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/code-contexts.md)

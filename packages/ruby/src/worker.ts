@@ -1,31 +1,15 @@
 import wasm from "./engine.wasm";
 import { ExecutionLimitError } from "../../../runtime/wasi.mjs";
 import { runRuby } from "../../../runtime/ruby.mjs";
-import {
-  ApiError,
-  errorResponse,
-  handleStatelessSandboxRoute,
-  readExecution,
-  validateSandboxId,
-} from "@sandbox-workers/core";
+import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
 
 const ENGINE_NAME = "CRuby 4.0.0 / ruby.wasm 2.10.1";
 const NO_CONTEXTS = "Code contexts are not supported for ruby";
 
-const SANDBOX_ROUTE = /^\/sandboxes\/([^/]+)(\/.*)?$/;
+const INTERPRETER_ROUTE = /^\/interpreters\/([^/]+)(\/.*)?$/;
 
-// A context-less POST /sandboxes/:id/execute runs statelessly, the same as
-// plain /execute (see docs/sdk-parity-design.md, "Ruby"); a `contextId` in
-// the body means the caller wants a durable code context, which isn't
-// supported, and neither is any other method/sub-path.
-async function handleExecute(
-  request: Request,
-  options?: { rejectContextId?: string },
-): Promise<Response> {
-  const payload = await readExecution(request, {
-    runtimeLanguage: "ruby",
-    ...options,
-  });
+async function handleExecute(request: Request): Promise<Response> {
+  const payload = await readExecution(request, { runtimeLanguage: "ruby" });
   const start = performance.now();
   try {
     const result = await runRuby(wasm, payload);
@@ -64,22 +48,14 @@ async function handleExecute(
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const sandboxMatch = SANDBOX_ROUTE.exec(url.pathname);
-    if (sandboxMatch) {
-      const [, id, subpath] = sandboxMatch;
-      try {
-        validateSandboxId(id);
-      } catch (error) {
-        return errorResponse(
-          new ApiError(400, error instanceof Error ? error.message : "Invalid sandbox id"),
-        );
-      }
-      // Every /sandboxes/* route other than a context-less execute is
-      // unsupported for ruby: no Durable Object backs it.
-      return handleStatelessSandboxRoute(request, subpath, {
-        reason: NO_CONTEXTS,
-        execute: (req) => handleExecute(req, { rejectContextId: NO_CONTEXTS }),
-      });
+    if (url.pathname === "/interpreter") {
+      return Response.json(
+        { language: "ruby", engine: ENGINE_NAME, contexts: false },
+        { headers: { "cache-control": "no-store" } },
+      );
+    }
+    if (INTERPRETER_ROUTE.test(url.pathname)) {
+      return errorResponse(new ApiError(400, NO_CONTEXTS));
     }
     if (url.pathname !== "/execute") return new Response("Not found", { status: 404 });
     if (request.method !== "POST")

@@ -1,11 +1,11 @@
 ---
 title: Execute code
-description: Run stateless code with the typed client and handle results and errors.
+description: Run stateless code with the free runCode function and handle results and errors.
 ---
 
-This guide shows you how to run code with `runCode`, read the result, and handle errors, using the typed `@sandbox-workers/core` client.
+This guide shows you how to run code with the free `runCode` function, read the result, and handle errors. For a durable alternative with state and files, see [Use code contexts](/guides/code-contexts) instead.
 
-## Use the typed client
+## Use the free `runCode` function
 
 ```sh
 pnpm add @sandbox-workers/core
@@ -30,9 +30,9 @@ try {
 }
 ```
 
-This is the **stateless** path: `runCode(target, code, options?)` boots a fresh Wasm instance for every call — no code context, no files, nothing persists between calls. `target` must be a Service Binding (`Fetcher`) to the runtime Worker; a Durable Object namespace throws synchronously (use `getSandbox` for that transport instead). `runCode` always resolves to an `ExecutionResult`; it does not validate the result's shape at runtime. Guest errors set `output.error` instead of throwing. Transport failures (a malformed response or a non-2xx status) throw a `SandboxError` subclass. The client sends code only to the supplied binding, never to a public URL.
+This is the **stateless** path: `runCode(target, code, options?)` boots a fresh Wasm instance for every call — no code context, no files, nothing persists between calls. `target` must be a Service Binding (`Fetcher`) to the runtime Worker; a `Sandbox` Durable Object namespace throws synchronously — use `getSandbox(env.Sandbox, id).interpreter.runCode()` for that instead, since a stateless call has no sandbox id to route through. `runCode` always resolves to an `ExecutionResult`; it does not validate the result's shape at runtime. Guest errors set `output.error` instead of throwing. Transport failures (a malformed response or a non-2xx status) throw a `SandboxError` subclass. The client sends code only to the supplied binding, never to a public URL.
 
-For a durable, stateful alternative — top-level variables persisting across calls in a named code context — use `getSandbox(env.PYTHON, id).runCode(code, options)` instead. Without a `context` option, that call still runs in (or creates) the sandbox's *default* code context, so it is not stateless the way the free `runCode` function is. See [Use code contexts](/guides/code-contexts) for the full walkthrough.
+For a durable, stateful alternative — top-level variables persisting across calls in a named code context, shared `/workspace`, several languages in one sandbox — use `getSandbox(env.Sandbox, id).interpreter.runCode(code, { context })` instead. See [Use code contexts](/guides/code-contexts) for the full walkthrough.
 
 Before publication, install the local core tarball produced by `pnpm run pack` (see [Deploy a runtime Worker](/guides/deploy)).
 
@@ -63,7 +63,7 @@ Only the key/value pairs passed in `envVars` are visible to the script; nothing 
 
 ## Use multiple runtimes
 
-Create one client per binding. `getSandbox(binding, id)` takes the binding and a sandbox id — the runtime is whichever Worker that binding targets, not something the client selects.
+Bind one Service Binding per runtime Worker. `runCode(binding, id)` takes the binding directly — the runtime is whichever Worker that binding targets, not something the client selects.
 
 ```jsonc
 {
@@ -80,4 +80,4 @@ In local development, run the target Workers too. The repository's `pnpm dev` st
 
 ## Public callers
 
-Keep runtime URLs disabled. If your caller accepts user-supplied code, apply authentication, rate limiting, and application-specific input validation at that boundary. A private engine does not secure an unrestricted public caller automatically. See [the security concepts page](/concepts/security) for more.
+Keep runtime URLs disabled. If your caller accepts user-supplied code, apply authentication, rate limiting, and application-specific input validation at that boundary. A private runtime Worker does not secure an unrestricted public caller automatically. See [the security concepts page](/concepts/security) for more.

@@ -1,8 +1,9 @@
-// End-to-end test for stateless mode (see docs/sdk-parity-design.md,
-// "Stateless mode") against a real `wrangler dev` process:
-// tests/fixtures/stateless/worker.ts is the caller Worker, bound via a plain
-// Service Binding (SANDBOX_SERVICE) to a runtime Worker built from the
-// javascript package WITHOUT a SANDBOX Durable Object binding
+// End-to-end test for a stateless runtime deployment (no INTERPRETER
+// Durable Object binding; see docs/sandbox-1-0-design.md, "Ruby" /
+// stateless deployments) against a real `wrangler dev` process:
+// tests/fixtures/stateless/worker.ts is the caller Worker, bound via a
+// plain Service Binding (SANDBOX_SERVICE) to a runtime Worker built from
+// the javascript package WITHOUT an INTERPRETER Durable Object binding
 // (tests/fixtures/stateless/engine-entry.ts / engine-wrangler.jsonc).
 //
 // How to run:
@@ -39,29 +40,25 @@ check(
   `onResult fired once for r1's result (got ${JSON.stringify(summary.resultFormats)})`,
 );
 check(
-  JSON.stringify(summary.ts.results) === JSON.stringify([{ text: "2" }]),
-  `language: "ts" is accepted and runs on the javascript runtime (got ${JSON.stringify(summary.ts.results)})`,
+  summary.ts.status === 200 && JSON.stringify(summary.ts.results) === JSON.stringify([{ text: "2" }]),
+  `the runtime's own POST /execute accepts language: "ts" and runs it on the javascript runtime (got ${JSON.stringify(summary.ts)})`,
 );
 check(
-  summary.pythonRejected?.isClass === true && summary.pythonRejected?.code === "VALIDATION_FAILED",
-  `language: "python" is rejected with a ValidationFailedError (got ${JSON.stringify(summary.pythonRejected)})`,
+  summary.pythonRejected?.status === 400 && summary.pythonRejected?.code === "VALIDATION_FAILED",
+  `POST /execute rejects language: "python" on this runtime (got ${JSON.stringify(summary.pythonRejected)})`,
 );
 check(
   summary.guestError.errorName === "SyntaxError" && summary.guestError.results.length === 0,
   `a guest error surfaces in result.error rather than throwing (got ${JSON.stringify(summary.guestError)})`,
 );
 check(
-  summary.exec.status === 200,
-  "the runtime's context-less POST /sandboxes/x/execute succeeds with no SANDBOX binding",
+  summary.interpreterInfo?.language === "javascript" && summary.interpreterInfo?.contexts === false,
+  `GET /interpreter reports contexts: false with no INTERPRETER binding (got ${JSON.stringify(summary.interpreterInfo)})`,
 );
+check(summary.contexts.status === 400, "POST /interpreters/x/contexts answers 400 with no INTERPRETER binding");
 check(
-  JSON.stringify(summary.exec.results) === JSON.stringify([{ text: "2" }]),
-  `.../execute returns the expected result (got ${JSON.stringify(summary.exec.results)})`,
-);
-check(summary.contexts.status === 400, "POST /sandboxes/x/contexts answers 400 with no SANDBOX binding");
-check(
-  /no SANDBOX Durable Object binding/.test(summary.contexts.message),
-  `the 400 explains there is no SANDBOX binding (got ${JSON.stringify(summary.contexts.message)})`,
+  /no INTERPRETER Durable Object binding/.test(summary.contexts.message),
+  `the 400 explains there is no INTERPRETER binding (got ${JSON.stringify(summary.contexts.message)})`,
 );
 
 console.log(`${checks} checks passed`);

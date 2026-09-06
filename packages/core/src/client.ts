@@ -1,25 +1,15 @@
 import type { ExecutionError, ExecutionResult, JsonValue } from "./protocol.js";
 import { ErrorCode, SandboxError, createErrorFromResponse } from "./errors.js";
 
-export type SandboxLanguage =
-  | "python"
-  | "javascript"
-  | "typescript"
-  | "perl"
-  | "ruby";
-
 /**
- * Either a Service Binding (`Fetcher`-shaped) targeting the runtime Worker
- * directly, or a Durable Object namespace bound with `script_name` to it.
- * Declared structurally so this package doesn't depend on
- * `@cloudflare/workers-types` being installed.
+ * A Durable Object namespace bound to the caller's own `Sandbox` class (see
+ * docs/sandbox-1-0-design.md). Declared structurally so this package doesn't
+ * depend on `@cloudflare/workers-types` being installed.
  */
-export type SandboxTarget =
-  | { fetch(request: Request): Promise<Response> }
-  | {
-      idFromName(name: string): unknown;
-      get(id: unknown): { fetch(request: Request): Promise<Response> };
-    };
+export type SandboxNamespace = {
+  idFromName(name: string): unknown;
+  get(id: unknown): { fetch(request: Request): Promise<Response> };
+};
 
 export interface SandboxOptions {
   /** Lowercase `id` before validating/using it. */
@@ -27,12 +17,14 @@ export interface SandboxOptions {
 }
 
 export interface CreateContextOptions {
-  language?: SandboxLanguage;
+  /** Name of a Service Binding, in the caller's own environment, to a runtime Worker. */
+  binding: string;
   cwd?: string;
   envVars?: Record<string, string | undefined>;
 }
 export interface CodeContext {
   readonly id: string;
+  readonly binding: string;
   readonly language: string;
   readonly cwd: string;
   readonly createdAt: Date;
@@ -51,7 +43,8 @@ export interface Result {
 
 export interface RunCodeOptions {
   context?: CodeContext;
-  language?: SandboxLanguage;
+  /** Name of a Service Binding to run against when `context` is omitted (uses/creates the default context for that binding). */
+  binding?: string;
   envVars?: Record<string, string | undefined>;
   /** Request timeout; builds an `AbortSignal.timeout(timeout)`. The guest is still bounded by fuel. */
   timeout?: number;
@@ -64,10 +57,10 @@ export interface RunCodeOptions {
 
 /**
  * Options for the free `runCode(target, code, options?)` function: the same
- * as `RunCodeOptions` minus `context`, since a stateless call has no code
- * context to run in.
+ * as `RunCodeOptions` minus `context`/`binding`, since a stateless call has
+ * no code context and no sandbox to route a binding name through.
  */
-export type StatelessRunCodeOptions = Omit<RunCodeOptions, "context">;
+export type StatelessRunCodeOptions = Omit<RunCodeOptions, "context" | "binding">;
 
 export type FileEncoding = "utf-8" | "utf8" | "base64" | "none";
 export interface WriteFileOptions {
@@ -159,14 +152,14 @@ export interface ListFilesResult {
 
 export interface SandboxInfo {
   id: string;
-  language: string;
-  engine: string;
   createdAt: string;
   lastUsed: string;
   envVars: Record<string, string>;
   contexts: Array<{
     id: string;
+    binding: string;
     language: string;
+    engine: string;
     cwd: string;
     createdAt: string;
     lastUsed: string;
@@ -183,17 +176,27 @@ export interface SandboxInfo {
       stale: boolean;
     } | null;
   }>;
+  /** `files` counts entries (files + directories), as before. */
   workspace: { files: number; bytes: number };
   expiresAt: number | null;
 }
 
-/** A container-backed sandbox: a code interpreter plus a shared `/workspace`. */
-export interface Sandbox {
-  readonly id: string;
-  createCodeContext(options?: CreateContextOptions): Promise<CodeContext>;
+export interface CodeInterpreter {
+  createCodeContext(options: CreateContextOptions): Promise<CodeContext>;
   listCodeContexts(): Promise<CodeContext[]>;
   deleteCodeContext(id: string): Promise<void>;
   runCode(code: string, options?: RunCodeOptions): Promise<ExecutionResult>;
+}
+
+/**
+ * A caller-hosted sandbox: a code interpreter (`sandbox.interpreter`, always
+ * present, spanning every language bound in the caller's own environment)
+ * plus a shared `/workspace`. Named `SandboxClient` because `Sandbox` is the
+ * Durable Object class itself (see docs/sandbox-1-0-design.md).
+ */
+export interface SandboxClient {
+  readonly id: string;
+  readonly interpreter: CodeInterpreter;
   setEnvVars(envVars: Record<string, string | undefined>): Promise<void>;
   writeFile(
     path: string,
@@ -285,11 +288,28 @@ function isRealFunction(value: unknown): value is (...args: unknown[]) => unknow
   return !String(value).startsWith("[object ");
 }
 
-function isNamespaceTarget(
-  target: SandboxTarget,
-): target is Extract<SandboxTarget, { idFromName(name: string): unknown }> {
-  // workerd tags its binding objects, which is the most direct signal; the
-  // function check below only has to cover structural fakes and unknown hosts.
+/**
+ * `getSandbox` requires a real Durable Object namespace: throws synchronously
+ * (a plain `Error`, matching `docs/sandbox-1-0-design.md`) unless
+ * `target.idFromName` is a real function.
+ */
+function assertNamespace(
+  target: SandboxNamespace,
+): asserts target is SandboxNamespace {
+  const tag = Object.prototype.toString.call(target);
+  if (tag === "[object DurableObjectNamespace]") return;
+  if (isRealFunction((target as { idFromName?: unknown }).idFromName)) return;
+  throw new Error(
+    "getSandbox() requires a Durable Object namespace bound to the caller's own Sandbox class (see docs/sandbox-1-0-design.md); export { Sandbox } from \"@sandbox-workers/core\" and bind it with durable_objects",
+  );
+}
+
+/** A `SandboxTarget`-shaped value narrowed to the Service Binding branch, for the free `runCode`. */
+type ServiceBindingTarget = { fetch(request: Request): Promise<Response> };
+
+function isNamespaceShaped(
+  target: ServiceBindingTarget | SandboxNamespace,
+): target is SandboxNamespace {
   const tag = Object.prototype.toString.call(target);
   if (tag === "[object DurableObjectNamespace]") return true;
   if (tag === "[object Fetcher]") return false;
@@ -357,6 +377,7 @@ async function readStreamToBytes(
 function toCodeContext(raw: unknown): CodeContext {
   const value = raw as {
     id: string;
+    binding: string;
     language: string;
     cwd: string;
     createdAt: string;
@@ -364,6 +385,7 @@ function toCodeContext(raw: unknown): CodeContext {
   };
   return {
     id: value.id,
+    binding: value.binding,
     language: value.language,
     cwd: value.cwd,
     createdAt: new Date(value.createdAt),
@@ -395,7 +417,7 @@ function buildSignal(options: RunCodeOptions): AbortSignal | undefined {
 /**
  * Parses a fetch `Response` into a JSON body, mapping a non-JSON body or a
  * non-2xx status to the matching `SandboxError` subclass (via
- * `createErrorFromResponse`). Shared by `SandboxClient.request` and the
+ * `createErrorFromResponse`). Shared by `SandboxClientImpl.request` and the
  * free `runCode` function below.
  */
 async function parseJsonResponse(response: Response): Promise<unknown> {
@@ -415,8 +437,8 @@ async function parseJsonResponse(response: Response): Promise<unknown> {
 
 /**
  * Builds the JSON body for `POST .../execute`, omitting unset keys and
- * dropping `undefined` env values. Shared by `SandboxClient.runCode` and the
- * free `runCode` function (whose options never carry `context`).
+ * dropping `undefined` env values. Shared by `SandboxClientImpl.runCode` and
+ * the free `runCode` function (whose options never carry `context`/`binding`).
  */
 function buildExecutionRequestBody(
   code: string,
@@ -426,7 +448,7 @@ function buildExecutionRequestBody(
   return {
     code,
     ...(options.context?.id !== undefined ? { contextId: options.context.id } : {}),
-    ...(options.language !== undefined ? { language: options.language } : {}),
+    ...(options.binding !== undefined ? { binding: options.binding } : {}),
     ...(envVars !== undefined ? { envVars } : {}),
   };
 }
@@ -453,7 +475,7 @@ function validateExecutionResult(body: unknown): ExecutionResult {
 /**
  * Fires `onStdout`/`onStderr`/`onResult`/`onError` in order, after the
  * response has arrived (there is no streaming). Shared by
- * `SandboxClient.runCode` and the free `runCode` function.
+ * `SandboxClientImpl.runCode` and the free `runCode` function.
  */
 async function dispatchRunCodeCallbacks(
   result: ExecutionResult,
@@ -471,25 +493,64 @@ async function dispatchRunCodeCallbacks(
   if (result.error && options.onError) await options.onError(result.error);
 }
 
-class SandboxClient implements Sandbox {
+class CodeInterpreterImpl implements CodeInterpreter {
+  constructor(private readonly client: SandboxClientImpl) {}
+
+  async createCodeContext(options: CreateContextOptions): Promise<CodeContext> {
+    const envVars = withoutUndefined(options.envVars);
+    const body = await this.client.request("/contexts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        binding: options.binding,
+        ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+        ...(envVars !== undefined ? { envVars } : {}),
+      }),
+    });
+    return toCodeContext(body);
+  }
+
+  async listCodeContexts(): Promise<CodeContext[]> {
+    const body = (await this.client.request("/contexts", { method: "GET" })) as {
+      contexts: unknown[];
+    };
+    return body.contexts.map(toCodeContext);
+  }
+
+  async deleteCodeContext(id: string): Promise<void> {
+    await this.client.request(`/contexts/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async runCode(code: string, options: RunCodeOptions = {}): Promise<ExecutionResult> {
+    const signal = buildSignal(options);
+    const body = await this.client.request("/execute", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(buildExecutionRequestBody(code, options)),
+      ...(signal ? { signal } : {}),
+    });
+    const result = validateExecutionResult(body);
+    await dispatchRunCodeCallbacks(result, options);
+    return result;
+  }
+}
+
+class SandboxClientImpl implements SandboxClient {
+  readonly interpreter: CodeInterpreter = new CodeInterpreterImpl(this);
+
   constructor(
-    private readonly target: SandboxTarget,
+    private readonly namespace: SandboxNamespace,
     public readonly id: string,
   ) {}
 
-  private async request(path: string, init: RequestInit = {}): Promise<unknown> {
-    let response: Response;
-    if (isNamespaceTarget(this.target)) {
-      const headers = new Headers(init.headers);
-      headers.set("x-sandbox-id", this.id);
-      response = await this.target
-        .get(this.target.idFromName(this.id))
-        .fetch(new Request(`https://sandbox.internal${path}`, { ...init, headers }));
-    } else {
-      response = await this.target.fetch(
-        new Request(`https://sandbox.internal/sandboxes/${this.id}${path}`, init),
-      );
-    }
+  async request(path: string, init: RequestInit = {}): Promise<unknown> {
+    const headers = new Headers(init.headers);
+    headers.set("x-sandbox-id", this.id);
+    const response = await this.namespace
+      .get(this.namespace.idFromName(this.id))
+      .fetch(new Request(`https://sandbox.internal${path}`, { ...init, headers }));
     return parseJsonResponse(response);
   }
 
@@ -499,51 +560,6 @@ class SandboxClient implements Sandbox {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
-  }
-
-  async createCodeContext(
-    options: CreateContextOptions = {},
-  ): Promise<CodeContext> {
-    const envVars = withoutUndefined(options.envVars);
-    const body = await this.request("/contexts", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        ...(options.language !== undefined ? { language: options.language } : {}),
-        ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-        ...(envVars !== undefined ? { envVars } : {}),
-      }),
-    });
-    return toCodeContext(body);
-  }
-
-  async listCodeContexts(): Promise<CodeContext[]> {
-    const body = (await this.request("/contexts", { method: "GET" })) as {
-      contexts: unknown[];
-    };
-    return body.contexts.map(toCodeContext);
-  }
-
-  async deleteCodeContext(id: string): Promise<void> {
-    await this.request(`/contexts/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
-  }
-
-  async runCode(
-    code: string,
-    options: RunCodeOptions = {},
-  ): Promise<ExecutionResult> {
-    const signal = buildSignal(options);
-    const body = await this.request("/execute", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(buildExecutionRequestBody(code, options)),
-      ...(signal ? { signal } : {}),
-    });
-    const result = validateExecutionResult(body);
-    await dispatchRunCodeCallbacks(result, options);
-    return result;
   }
 
   async setEnvVars(envVars: Record<string, string | undefined>): Promise<void> {
@@ -673,35 +689,30 @@ class SandboxClient implements Sandbox {
   }
 
   async getInfo(): Promise<SandboxInfo> {
-    return (await this.request("", { method: "GET" })) as SandboxInfo;
+    return (await this.request("/", { method: "GET" })) as SandboxInfo;
   }
 
   async destroy(): Promise<void> {
-    await this.request("", { method: "DELETE" });
+    await this.request("/", { method: "DELETE" });
   }
 }
 
 /**
- * Returns a typed client for one sandbox (a Durable Object, keyed by `id`,
- * inside the runtime Worker). `target` is either a Service Binding to the
- * runtime Worker or a Durable Object namespace bound with `script_name` to
- * it. See docs/sdk-parity-design.md.
+ * Returns a typed client for one sandbox: a `Sandbox` Durable Object (the
+ * class exported by this package, re-exported from the caller's own entry),
+ * keyed by `id`, inside `namespace` -- the caller's own Durable Object
+ * namespace binding for that class. See docs/sandbox-1-0-design.md.
  */
 export function getSandbox(
-  target: SandboxTarget,
+  namespace: SandboxNamespace,
   id: string,
   options: SandboxOptions = {},
-): Sandbox {
+): SandboxClient {
+  assertNamespace(namespace);
   const normalizedId = options.normalizeId ? id.toLowerCase() : id;
   validateSandboxId(normalizedId);
-  return new SandboxClient(target, normalizedId);
+  return new SandboxClientImpl(namespace, normalizedId);
 }
-
-/** A `SandboxTarget` narrowed to the Service Binding (`Fetcher`-shaped) branch. */
-type ServiceBindingTarget = Extract<
-  SandboxTarget,
-  { fetch(request: Request): Promise<Response> }
->;
 
 async function runCodeOverServiceBinding(
   target: ServiceBindingTarget,
@@ -726,7 +737,7 @@ async function runCodeOverServiceBinding(
 /**
  * Runs code statelessly against a runtime Worker: a fresh Wasm instance per
  * call, no code context, no files -- the plain `POST /execute` route (see
- * docs/sdk-parity-design.md, "Stateless mode"). Unlike `getSandbox(...).runCode()`,
+ * docs/sandbox-1-0-design.md). Unlike `getSandbox(namespace, id).interpreter.runCode()`,
  * `target` must be a Service Binding (`Fetcher`) to the runtime Worker, not a
  * Durable Object namespace -- there is no sandbox id to route through here.
  *
@@ -735,13 +746,13 @@ async function runCodeOverServiceBinding(
  * rejecting the returned promise.
  */
 export function runCode(
-  target: SandboxTarget,
+  target: ServiceBindingTarget | SandboxNamespace,
   code: string,
   options: StatelessRunCodeOptions = {},
 ): Promise<ExecutionResult> {
-  if (isNamespaceTarget(target))
+  if (isNamespaceShaped(target))
     throw new Error(
-      "runCode() requires a Service Binding to a runtime Worker; use getSandbox(namespace, id).runCode() with a Durable Object namespace",
+      "runCode() requires a Service Binding to a runtime Worker; use getSandbox(namespace, id).interpreter.runCode() with a Durable Object namespace",
     );
   return runCodeOverServiceBinding(target, code, options);
 }

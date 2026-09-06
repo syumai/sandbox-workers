@@ -48,22 +48,22 @@ for (const language of ["python", "perl", "ruby"]) {
     );
     assert.equal(config.workers_dev, false);
     assert.equal(config.preview_urls, false);
-    // Durable sandboxes (a Durable Object-backed code interpreter) are
-    // supported for python and perl but not ruby; see
-    // docs/sdk-parity-design.md.
+    // Durable sandboxes (an Interpreter Durable Object backing memory
+    // snapshots) are supported for python and perl but not ruby; see
+    // docs/sandbox-1-0-design.md.
     const indexSource = await readFile(join(worker, "index.js"), "utf8");
     if (language === "ruby") {
       assert.equal(config.durable_objects, undefined);
       assert.equal(config.migrations, undefined);
-      assert.doesNotMatch(indexSource, /Sandbox/);
+      assert.doesNotMatch(indexSource, /Interpreter/);
     } else {
       assert.deepEqual(config.durable_objects, {
-        bindings: [{ name: "SANDBOX", class_name: "Sandbox" }],
+        bindings: [{ name: "INTERPRETER", class_name: "Interpreter" }],
       });
       assert.deepEqual(config.migrations, [
-        { tag: "v1", new_sqlite_classes: ["Sandbox"] },
+        { tag: "v1", new_sqlite_classes: ["Interpreter"] },
       ]);
-      assert.match(indexSource, /Sandbox/);
+      assert.match(indexSource, /Interpreter/);
     }
     const output = run(
       [

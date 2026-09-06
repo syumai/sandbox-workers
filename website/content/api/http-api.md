@@ -1,13 +1,17 @@
 ---
 title: HTTP API
-description: The raw JSON contract behind the typed client, for callers that talk to a runtime Worker directly.
+description: The raw JSON contract behind the typed client — the runtime Worker's routes, the sandbox's wire protocol, and the gateway paths.
 ---
 
-`@sandbox-workers/core`'s typed client (see [Lifecycle](/api/lifecycle), [Code interpreter](/api/interpreter), and [Files](/api/files)) is a thin wrapper over this HTTP contract. Use this page if you're calling a runtime Worker's Service Binding directly instead.
+`@sandbox-workers/core`'s typed client (see [Lifecycle](/api/lifecycle), [Code interpreter](/api/interpreter), and [Files](/api/files)) sits on top of two separate HTTP contracts: the runtime Worker's own routes (stable, and useful if you call a runtime Worker directly), and the wire protocol between your `Sandbox` Durable Object and that runtime Worker (documented here for completeness — **the `Sandbox` Durable Object's own routes are internal to the client** and not meant to be called directly).
 
-## `POST /execute`
+## The runtime Worker's routes
 
-Stateless execution: a runtime Worker (the one behind your Service Binding) always executes a single language — the runtime is chosen by the Service Binding (or, on the Playground gateway, the URL path), never by the request. Use `Content-Type: application/json`.
+Every `@sandbox-workers/<language>` Worker serves these routes, whether or not it has an `INTERPRETER` Durable Object binding.
+
+### `POST /execute`
+
+Stateless execution: a runtime Worker always executes a single language — the runtime is chosen by the Service Binding (or, on the Playground gateway, the URL path), never by the request. Use `Content-Type: application/json`.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
@@ -26,9 +30,9 @@ The complete request is limited to 96 KiB. `envVars` keys must match `/^[A-Za-z_
 }
 ```
 
-Code is a **script**: the value of the last top-level expression is the result. There is no persistent context between calls — every call boots a fresh Wasm instance. For a durable, stateful alternative, see [Sandboxes](#sandboxes) below.
+Code is a **script**: the value of the last top-level expression is the result. There is no persistent context on this route — every call boots a fresh Wasm instance. For a durable, stateful alternative, see "Code contexts" later on this page.
 
-### Responses
+#### Responses
 
 Every execution — success, a guest error, or a fuel/output/result limit — returns HTTP 200 with an `ExecutionResult` (see [Code interpreter](/api/interpreter#types) for the full shape and the result-mapping rules):
 
@@ -66,7 +70,7 @@ A guest error looks like this instead — `logs` produced before the error are s
 }
 ```
 
-### Status codes
+#### Status codes
 
 | Status | Meaning |
 | --- | --- |
@@ -81,77 +85,83 @@ Only request/transport failures (400, 405, 413, 415, 502) use a non-200 status, 
 
 Always check the `error` field, not the HTTP status, to see whether guest code succeeded.
 
-## Sandboxes
+### `GET /interpreter`
 
-A **sandbox** is a Durable Object, keyed by a caller-chosen id, that owns a shared `/workspace` and one or more named code contexts. See [Sandboxes](/concepts/sandboxes) and [Code contexts](/concepts/code-contexts) for the full behavior. Code contexts are supported for JavaScript, Python, and Perl; on a Ruby runtime Worker every `/sandboxes/:id/*` route answers 400 `Code contexts are not supported for ruby`, except a context-less `execute`, which runs statelessly. Sandbox ids match `^[A-Za-z0-9._-]{1,63}$`, must not start or end with a hyphen, and must not be one of the reserved names `www`, `api`, `admin`, `root`, `system`, `cloudflare`, `workers` (checked case-insensitively).
+Served by every runtime Worker without a Durable Object round trip:
 
-A JavaScript, Python, or Perl runtime Worker deployed **without** a `SANDBOX` Durable Object binding (see the CLI's `--stateless` flag in [Deploy a runtime Worker](/guides/deploy)) behaves like Ruby: a context-less `POST /sandboxes/:id/execute` still succeeds and runs statelessly, but a body with `contextId`, or any other `/sandboxes/:id/*` route, answers 400 `VALIDATION_FAILED` ("Code contexts are not supported: this Worker has no SANDBOX Durable Object binding").
+```json
+{ "language": "python", "engine": "CPython 3.14.6", "contexts": true }
+```
+
+`contexts` is `false` for Ruby and for any runtime Worker deployed without an `INTERPRETER` Durable Object binding (the CLI's `--stateless` flag). This is the probe a `Sandbox` Durable Object runs before creating a code context against a binding.
+
+### Code contexts (`/interpreters/:key/*`)
+
+These routes exist only when the runtime Worker has an `INTERPRETER` Durable Object binding (`contexts: true`); otherwise every one of them answers 400 `VALIDATION_FAILED` ("Code contexts are not supported for ruby" / "Code contexts are not supported: this Worker has no INTERPRETER Durable Object binding"). `:key` is the calling `Sandbox` Durable Object's own id (a 64-hex string), so two callers using the same sandbox id against the same runtime Worker never collide; it must match `/^[A-Za-z0-9._-]{1,128}$/`. **These routes are called by the `Sandbox` Durable Object, not directly by application code** — use `sandbox.interpreter.*` (see [Code interpreter](/api/interpreter)) instead.
 
 | Method and path | Body | Response |
 | --- | --- | --- |
-| `POST /sandboxes/:id/execute` | `{code, contextId?, language?, envVars?}` | The `/execute` result plus `context: {id, cwd, executions, snapshotMs?, expiresAt?}`; always 200 for guest errors |
-| `POST /sandboxes/:id/contexts` | `{language?, cwd?, envVars?}` | `{id, language, cwd, createdAt, lastUsed}` (201) |
-| `GET /sandboxes/:id/contexts` | | `{contexts: [{id, language, cwd, createdAt, lastUsed}]}` |
-| `DELETE /sandboxes/:id/contexts/:contextId` | | `{success: true}`; 404 `CONTEXT_NOT_FOUND` |
-| `POST /sandboxes/:id/env` | `{envVars: Record<string, string \| null>}` (`null` unsets a key) | `{success: true}` |
-| `POST /sandboxes/:id/files` | `{op, path, newPath?, content?, encoding?, recursive?, force?, includeHidden?}` | Per operation — see the files table below |
-| `GET /sandboxes/:id` | | `SandboxInfo` — see [Types](#types) below |
-| `DELETE /sandboxes/:id` | | `{success: true}` — wipes storage and drops every context |
+| `POST /interpreters/:key/contexts` | `{ id, cwd }` | `{ id, cwd, createdAt }` (201); 400 when over 8 contexts |
+| `DELETE /interpreters/:key/contexts/:id` | | `{ success: true }`; 404 `CONTEXT_NOT_FOUND` |
+| `POST /interpreters/:key/execute` | `{ contextId, code, envVars, workspace }` | see [Workspace sync payload](#workspace-sync-payload) below; 404 `CONTEXT_NOT_FOUND` |
+| `DELETE /interpreters/:key` | | `{ success: true }` — wipes this interpreter's snapshots and contexts |
 
-### Files API
+Context ids are minted by the sandbox and passed in on create — the interpreter never generates its own. `envVars` on `POST /interpreters/:key/execute` arrives flat and already merged (sandbox-level, context-level, and call-level `envVars`, computed by the sandbox) — the interpreter applies it as-is.
 
-`op` is `read`, `write`, `mkdir`, `delete`, `rename`, `move`, `list`, or `exists`. `path` (and `newPath` for `rename`/`move`) is absolute under `/workspace`; it is normalized and rejected if it would escape `/workspace`. `encoding` is `utf-8` (default) or `base64`, for `read` and `write`. `rename` and `move` are the same operation; `move` additionally requires the destination's parent directory to exist.
+#### Workspace sync payload
 
-| `op` | Extra fields | Response |
-| --- | --- | --- |
-| `read` | `encoding?` | `{success, path, content, encoding, isBinary, mimeType, size, timestamp}` |
-| `write` | `content`, `encoding?` | `{success, path, timestamp}` |
-| `mkdir` | `recursive?` | `{success, path, recursive, timestamp}` |
-| `delete` | `recursive?`, `force?` | `{success, path, timestamp}` — a directory needs `recursive: true`; `force: true` ignores a missing path |
-| `rename` / `move` | `newPath` | `{success, path, newPath, timestamp}` |
-| `list` | `recursive?`, `includeHidden?` | `{success, path, files: FileInfo[], count, timestamp}` |
-| `exists` | | `{success, path, exists, timestamp}` |
-
-A `FileInfo` entry is `{name, absolutePath, relativePath, type, size, modifiedAt, mode, permissions}`; hidden entries (name starting with `.`) are omitted unless `includeHidden` is set. See [Files](/api/files) for the typed-client equivalents and their per-method result shapes.
-
-### Errors
-
-Every non-200 response on `/sandboxes/*` (and on `/execute`) is an `ErrorResponse`: `{code, message, context, httpStatus, timestamp, operation?}`. See [Errors](/api/errors) for the full `code` → HTTP status table and what each `context` carries. File-operation errors carry `context.errno`, the Node-style code (`ENOENT`, `EEXIST`, `EACCES`, `EISDIR`, `ENOTDIR`, `EFBIG`, `ENOSPC`, `ENOTEMPTY`, ...) alongside the mapped `code`.
-
-## Types
-
-`SandboxInfo`, the `GET /sandboxes/:id` response:
+`/workspace` has one source of truth, the `Sandbox` Durable Object; each interpreter keeps an in-memory mirror, reconciled on every `POST /interpreters/:key/execute` call. The request's `workspace` field:
 
 ```ts
-interface SandboxInfo {
-  id: string;
-  language: string;
-  engine: string;
-  createdAt: string;
-  lastUsed: string;
-  envVars: Record<string, string>;
-  contexts: Array<{
-    id: string;
-    language: string;
-    cwd: string;
-    createdAt: string;
-    lastUsed: string;
-    executions: number;
-    snapshot: { build: string; pages: number; bytes: number; storedBytes: number; takenAt: string; stale: boolean } | null;
-  }>;
-  workspace: { files: number; bytes: number };
-  expiresAt: number | null;
+{
+  dirs: string[];                        // every directory under /workspace (absolute paths), full list
+  manifest: Record<string, string>;      // every file: absolute path -> content hash
+  files: Array<{ path: string; data: string /* base64 */; updatedAt: number }>;  // contents the interpreter may not have
 }
 ```
 
-`snapshot` is `null` before a context's first memory snapshot. `storedBytes` is the actual on-disk footprint of the snapshot — always a multiple of 1 MiB and at least `bytes`, since snapshots are stored in 1 MiB chunks. `expiresAt` is the epoch-millisecond deadline of the sandbox's idle-expiry alarm, or `null` when expiry is disabled; the execute response's `context.expiresAt` is then omitted instead. See [Sandboxes](/concepts/sandboxes) and [Environment variables](/configuration/environment-variables).
+The interpreter reconciles its mirror before running anything: create every directory in `dirs`, apply `files`, delete anything in the mirror that isn't in `manifest`/`dirs`. If `manifest` still names a path the interpreter can't match (it was evicted, or the sandbox's view was stale), it answers 200 with `{ resync: true, missing: string[] }` **without executing**; the sandbox resends the same request with those files added. A second `resync` on the retry is `INTERNAL_ERROR`.
+
+A successful (non-`resync`) response carries `ExecutionResult`'s fields, the interpreter's own view of the context, and the workspace diff:
+
+```ts
+{
+  ...ExecutionResult,                    // code, language, engine, durationMs, logs, results, error?, usage?
+  executionCount: number,
+  context: { id, cwd, executions, snapshotMs?, snapshot: SnapshotInfo | null },
+  workspace: {
+    dirs: string[];                      // full directory list after the run
+    files: Array<{ path; data; updatedAt }>;  // created or updated by the run
+    deleted: string[];                   // files removed by the run
+  }
+}
+```
+
+The `Sandbox` Durable Object applies `workspace` to its own tree, persists the diff, and strips `workspace` (and replaces `context`/`executionCount` with its own registry's view) before answering the caller — see `ExecutionResult.context` in [Code interpreter](/api/interpreter#types) for the shape the client actually sees. This route has its own, larger request-size cap (24 MiB) to accommodate a full workspace re-sync after eviction.
+
+## Wire protocol: client → `Sandbox` Durable Object
+
+**Internal to the typed client** — documented here for completeness, not a contract application code should call directly. The client sends `x-sandbox-id: <id>` and talks to `https://sandbox.internal<path>` over the Durable Object namespace given to `getSandbox()`.
+
+| Method and path | Body | Response |
+| --- | --- | --- |
+| `POST /execute` | `{ code, contextId?, binding?, envVars? }` | `ExecutionResult` (+ `executionCount`, `context: { id, cwd, executions, snapshotMs?, expiresAt? }` when a context ran; neither for a stateless binding) |
+| `POST /contexts` | `{ binding, cwd?, envVars? }` | `{ id, binding, language, cwd, createdAt, lastUsed }` (201) |
+| `GET /contexts` | | `{ contexts: [{ id, binding, language, cwd, createdAt, lastUsed }] }` |
+| `DELETE /contexts/:contextId` | | `{ success: true }`; 404 `CONTEXT_NOT_FOUND` |
+| `POST /env` | `{ envVars: Record<string, string \| null> }` | `{ success: true }` |
+| `POST /files` | `{ op, path, newPath?, content?, encoding?, recursive?, force?, includeHidden? }` | Per operation — see [Files](/api/files) |
+| `GET /` | | `SandboxInfo` — see [Lifecycle](/api/lifecycle#types) |
+| `DELETE /` | | `{ success: true }` — wipes storage and drops every context |
+
+`binding` must match `/^[A-Za-z_][A-Za-z0-9_]*$/` and resolve to a real sandbox-workers runtime Worker (see [Errors: binding validation](/api/errors#binding-validation-errors)).
 
 ## Gateway paths
 
-Only the Playground gateway fronts more than one runtime Worker; it picks one from the URL path. Individual runtime Workers behind a Service Binding expose `/execute` and `/sandboxes/:id/*` (on Ruby, only a context-less `/sandboxes/:id/execute` succeeds; every other `/sandboxes/:id/*` route answers 400).
+Only the Playground gateway fronts more than one runtime Worker and hosts its own `Sandbox` Durable Object; it picks a runtime from the URL path.
 
 - `POST /execute/<language>`, where `<language>` is `javascript`, `python`, `perl`, or `ruby`. `POST /execute` on the gateway is an alias for `/execute/javascript`. An unsupported `<language>` returns 400.
-- `/languages/:language/sandboxes/:id` and any further sub-path (for example `/languages/:language/sandboxes/:id/execute` or `/languages/:language/sandboxes/:id/files`) forward, for `GET`, `POST`, and `DELETE`, to the matching runtime binding's `/sandboxes/:id[/...]`, preserving the body and status code. An unsupported `:language` returns 400, the same as `/execute`.
+- `/languages/:language/sandboxes/:id` and any further sub-path forward, for `GET`, `POST`, and `DELETE`, to the gateway's **own** `Sandbox` Durable Object keyed by `:id` — the same sandbox id reached through two languages is one sandbox with two contexts, one per binding. For `POST .../contexts` and `POST .../execute`, the JSON body's `binding` is forced to `:language.toUpperCase()` (the gateway's Service Binding names: `JAVASCRIPT`, `PYTHON`, `PERL`, `RUBY`), overriding anything the client sent. Every other sub-path is forwarded unchanged.
 
 ### `GET /languages`
 
@@ -159,4 +169,4 @@ The Playground gateway returns `{languages:[...]}` with runtime IDs, names, pack
 
 ## Raw Service Binding calls
 
-The request URL may use any placeholder hostname — the binding determines the destination Worker. The path must be `/execute` or `/sandboxes/...`. This API provides no host-network capability to the submitted code.
+The request URL may use any placeholder hostname — the binding determines the destination Worker. This API provides no host-network capability to the submitted code.

@@ -23,31 +23,52 @@ After deployment, add this to your application's Wrangler configuration. Use the
 { "services": [{ "binding": "SANDBOX", "service": "sandbox-{{language}}" }] }
 ```
 
-Call `env.SANDBOX.fetch()` with a JSON POST to `https://sandbox.internal/execute` containing `{ code, envVars }`. This Worker always executes {{language}}; the runtime is determined by the Service Binding, not by the request. Code is a script: the value of the last expression is the result. Env vars (string values only) are available as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby). The JavaScript runtime also accepts TypeScript automatically, with no separate option: it parses code as JavaScript first, then strips (but does not check) TypeScript-only syntax only if that parse fails; `import`/`export` remain unsupported in both dialects.
+Call `env.SANDBOX.fetch()` with a JSON POST to `https://sandbox.internal/execute` containing `{ code, envVars }` for one-shot, stateless execution, or use the free `runCode` helper instead:
+
+```ts
+import { runCode } from "@sandbox-workers/core";
+const result = await runCode(env.SANDBOX, code, { envVars: { X: "12" } });
+```
+
+This Worker always executes {{language}}; the runtime is determined by the Service Binding, not by the request. Code is a script: the value of the last expression is the result. Env vars (string values only) are available as `process.env.NAME` (JavaScript), `os.environ["NAME"]` (Python), `$ENV{NAME}` (Perl), or `ENV["NAME"]` (Ruby). The JavaScript runtime also accepts TypeScript automatically, with no separate option: it parses code as JavaScript first, then strips (but does not check) TypeScript-only syntax only if that parse fails; `import`/`export` remain unsupported in both dialects.
 
 Public and preview URLs are disabled. Deploying the runtime does not deploy the Playground or create the caller's Service Binding.
 
 {{#sessions}}
 ## Sandboxes and code contexts
 
-This template's `wrangler.jsonc` includes a `SANDBOX` Durable Object binding (`Sandbox`, with a `new_sqlite_classes` migration), so callers can also open a durable sandbox with one or more named **code contexts** instead of the stateless `runCode`:
+This template's `wrangler.jsonc` includes an `INTERPRETER` Durable Object binding (`Interpreter`, with a `new_sqlite_classes` migration), so your own Worker (the caller) can host a `Sandbox` Durable Object (from `@sandbox-workers/core`) and open a durable sandbox with one or more named **code contexts** bound to this Worker by name, instead of the stateless `runCode` above:
+
+```jsonc
+// your wrangler.jsonc
+{
+  "durable_objects": { "bindings": [{ "name": "Sandbox", "class_name": "Sandbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+  "services": [{ "binding": "{{BINDING}}", "service": "sandbox-{{language}}" }]
+}
+```
+
+```ts
+// your Worker's entry
+export { Sandbox } from "@sandbox-workers/core";
+```
 
 ```ts
 import { getSandbox } from "@sandbox-workers/core";
 
-const sandbox = getSandbox(env.SANDBOX, "user-42");
-const ctx = await sandbox.createCodeContext({ cwd, envVars });
-await sandbox.runCode(code, { context: ctx });
+const sandbox = getSandbox(env.Sandbox, "user-42");
+const ctx = await sandbox.interpreter.createCodeContext({ binding: "{{BINDING}}", cwd, envVars });
+await sandbox.interpreter.runCode(code, { context: ctx });
 ```
 
-A code context keeps top-level variables and functions alive across calls, surviving Durable Object eviction, hibernation, and redeploys via a linear-memory snapshot taken after each execution; a `/workspace` is shared by every context in the sandbox. See [the sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/code-contexts.md) for language-specific REPL semantics, the files API, the snapshot mechanism, and limits.
+A code context keeps top-level variables and functions alive across calls, surviving Durable Object eviction, hibernation, and redeploys via a linear-memory snapshot taken after each execution; a `/workspace` is shared by every context in the sandbox, including contexts bound to other runtime Workers. See [the sandboxes and code contexts guide](https://github.com/syumai/sandbox-workers/blob/main/website/content/guides/code-contexts.md) for language-specific REPL semantics, the files API, the snapshot mechanism, and limits.
 
-An idle sandbox is deleted automatically by a Durable Object alarm. Set `SESSION_IDLE_TTL_MS` (milliseconds, as a string) under `vars` in this template's `wrangler.jsonc` to change the timeout — it defaults to 24 hours (`86400000`) if unset, and `"0"` disables expiry entirely, for example:
+An idle sandbox is deleted automatically by your caller's own `Sandbox` Durable Object, based on `SANDBOX_IDLE_TTL_MS` (milliseconds, as a string) under `vars` in *your* `wrangler.jsonc` — it defaults to 24 hours (`86400000`) if unset, and `"0"` disables expiry entirely. This Worker's own `Interpreter` Durable Object (holding each context's memory snapshot) expires independently via `INTERPRETER_IDLE_TTL_MS` under `vars` in *this* `wrangler.jsonc`, with the same defaults — set it to at least `SANDBOX_IDLE_TTL_MS`, or a context's globals can already be gone (`ContextNotFoundError`) while the sandbox still lists it. For example:
 
 ```jsonc
-// wrangler.jsonc
+// this Worker's wrangler.jsonc
 {
-  "vars": { "SESSION_IDLE_TTL_MS": "3600000" }, // 1 hour; "0" disables expiry
+  "vars": { "INTERPRETER_IDLE_TTL_MS": "3600000" }, // 1 hour; "0" disables expiry
 }
 ```
 {{/sessions}}

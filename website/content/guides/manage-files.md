@@ -3,14 +3,16 @@ title: Manage files
 description: Read, write, and organize files under /workspace with the typed client and from guest code.
 ---
 
-Every sandbox owns a writable `/workspace` directory, reachable both from guest code and from the caller through a files API. `/workspace` is shared by every code context in the sandbox, so files written from one context are visible from another. This guide shows you how to work with those files from your Worker and from the code you execute.
+Every sandbox owns a writable `/workspace` directory, reachable both from guest code and from the caller through a files API. `/workspace` is shared by every code context in the sandbox regardless of binding, so files written from a Python context are visible from a JavaScript one. This guide shows you how to work with those files from your Worker and from the code you execute.
 
 ## Use the client's file methods
 
 ```ts
 import { getSandbox } from "@sandbox-workers/core";
 
-const sandbox = getSandbox(env.SANDBOX, "user-42");
+export { Sandbox } from "@sandbox-workers/core";
+
+const sandbox = getSandbox(env.Sandbox, "user-42");
 ```
 
 ### Write a file

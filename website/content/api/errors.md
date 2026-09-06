@@ -26,6 +26,19 @@ Every thrown error is `SandboxError` or one of its subclasses, all exported by `
 | `ValidationFailedError` | `VALIDATION_FAILED` | `validationErrors?` (an array of `{ field, message }`) |
 | `CodeExecutionError` | `CODE_EXECUTION_ERROR` | `contextId?`, `ename?`, `evalue?` |
 
+## Binding validation errors
+
+`createCodeContext({ binding })` (and default-context resolution for `runCode({ binding })`) probes the named binding before creating anything, and throws `ValidationFailedError` with one of these messages when it fails:
+
+| Message | Cause |
+| --- | --- |
+| `Unknown binding 'X'` | No such key in your Worker's `env`, or the name doesn't match `/^[A-Za-z_][A-Za-z0-9_]*$/` |
+| `Binding 'X' is not a sandbox-workers runtime Worker` | The binding exists but has no `fetch` method, or `GET /interpreter` on it didn't return `{ language, engine, contexts }` |
+| `Code contexts are not supported by binding 'X' (language)` | The binding is a real runtime Worker, but it reports `contexts: false` (Ruby, or `--stateless`) |
+| `Pass a context or a binding` | `runCode()` was called with neither `context` nor `binding` |
+
+This probe runs only on `createCodeContext` and default-context creation, never on every execution.
+
 Every instance also carries `error.code`, `error.context`, `error.httpStatus`, `error.timestamp`, and `error.operation` (getters backed by `error.errorResponse`, the raw `ErrorResponse`).
 
 For filesystem failures specifically, `error.context.errno` carries the Node-style error code (`ENOENT`, `EEXIST`, `EACCES`, `EISDIR`, `ENOTDIR`, `EFBIG`, `ENOSPC`, `ENOTEMPTY`, ...) alongside the mapped `code` in the table above.
