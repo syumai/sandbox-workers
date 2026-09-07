@@ -173,8 +173,25 @@ contents:
 interface WorkspaceManifest {
   dirs: string[];                    // every directory under /workspace (absolute paths), full list
   manifest: Record<string, string>;  // every file: absolute path -> content hash (Workspace.hashBytes)
+  disabled?: boolean;                 // true when this Worker's SANDBOX_FILE_API is "disabled"
 }
 ```
+
+**`SANDBOX_FILE_API`** (caller `vars`; unset or any other value = enabled,
+`"disabled"` turns it off) is read by the `Sandbox` Durable Object, not
+passed through to guest code as an env var. When disabled, the sandbox
+skips its `files` table entirely (no read on `executeInContext`, no write
+of the returned diff) and always sends `{ dirs: [], manifest: [],
+disabled: true }`; every HTTP file route (`POST /files`) answers 403
+`NOT_SUPPORTED` (`context: { feature: "files" }`) instead of touching
+storage. The interpreter treats `disabled: true` as an instruction to
+refuse every `/workspace` read, write, mkdir, delete, rename, and directory
+listing with `EACCES`, regardless of what its own mirror currently holds —
+this requires a runtime Worker built after this flag was added; an older
+one ignores `disabled` and reconciles as usual, but since the sandbox never
+persists anything while disabled, guest writes are silently lost rather
+than exposed with `EACCES`. `sandbox.getInfo()` reports `fileApi: false` in
+this state, with `workspace` fixed at `{ files: 0, bytes: 0 }`.
 
 `getFiles` is a plain closure over the sandbox's in-memory `workspace`:
 `(paths: string[]) => WorkspaceFileEntry[]`, `WorkspaceFileEntry` being
@@ -264,7 +281,7 @@ real function (same `isRealFunction` check as before).
 | `GET /contexts` | | `{ contexts: [{ id, binding, language, cwd, createdAt, lastUsed }] }` |
 | `DELETE /contexts/:contextId` | | `{ success: true }`; 404 `CONTEXT_NOT_FOUND` |
 | `POST /env` | `{ envVars: Record<string, string \| null> }` | `{ success: true }` |
-| `POST /files` | unchanged (`op`, `path`, …) | unchanged |
+| `POST /files` | unchanged (`op`, `path`, …); 403 `NOT_SUPPORTED` when `SANDBOX_FILE_API=disabled` | unchanged |
 | `GET /` | | `SandboxInfo` |
 | `DELETE /` | | `{ success: true }` |
 
@@ -275,7 +292,8 @@ interface SandboxInfo {
   id: string; createdAt: string; lastUsed: string;
   envVars: Record<string, string>;
   contexts: Array<{ id; binding; language; engine; cwd; createdAt; lastUsed; executions; snapshot: SnapshotInfo | null }>;
-  workspace: { files: number; bytes: number };   // files counts entries (files + directories), as today
+  fileApi: boolean;                              // false when SANDBOX_FILE_API=disabled
+  workspace: { files: number; bytes: number };   // files counts entries (files + directories), as today; always { files: 0, bytes: 0 } when fileApi is false
   expiresAt: number | null;
 }
 ```
@@ -471,7 +489,10 @@ subclasses, `createErrorFromResponse`, `Operation`) are unchanged.
     { "binding": "PYTHON", "service": "sandbox-python" },
     { "binding": "JAVASCRIPT", "service": "sandbox-javascript" },
   ],
-  "vars": { "SANDBOX_IDLE_TTL_MS": "86400000" },   // optional; "0" disables expiry
+  "vars": {
+    "SANDBOX_IDLE_TTL_MS": "86400000",   // optional; "0" disables expiry
+    // "SANDBOX_FILE_API": "disabled",   // optional; turns the File API off (see "Workspace mirror and sync protocol" below)
+  },
 }
 ```
 
@@ -513,6 +534,12 @@ other sub-path is forwarded unchanged. The same sandbox id reached through
 two languages is therefore one sandbox with two bindings — the UI keeps
 one generated id per language so it never mixes them. `/execute[/lang]`
 and `/languages` are unchanged.
+
+The deployed gateway's `wrangler.jsonc` also sets
+`vars.SANDBOX_FILE_API: "disabled"`, so nothing written to `/workspace`
+through the public Playground is ever stored. `ui/main.js` reads `fileApi`
+off `GET /`'s `SandboxInfo` and hides the Workspace tab when it is `false`,
+rather than hard-coding the gateway's own configuration into the UI.
 
 UI (`ui/main.js`): no protocol change is needed (`GET` info still has
 `contexts[0].executions/cwd/snapshot` and `expiresAt`). Only the

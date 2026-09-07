@@ -52,6 +52,16 @@ async function readFile(language, id, path) {
   return res.json();
 }
 
+async function filesOp(language, id, body, status = 200) {
+  const res = await fetch(sandboxUrl(language, id, "/files"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(res.status, status, `files ${language}/${id}: unexpected status`);
+  return res.json();
+}
+
 async function info(language, id) {
   const res = await fetch(sandboxUrl(language, id));
   assert.equal(res.status, 200);
@@ -65,34 +75,69 @@ function check(condition, message) {
   console.log(`  ok - ${message}`);
 }
 
+// GET / reports fileApi (SandboxInfo); the Playground's own wrangler.jsonc
+// now sets SANDBOX_FILE_API=disabled, so this probe determines which branch
+// below to run in each phase. To exercise the enabled branch, start both
+// wrangler dev processes without that var (see tests/sandboxes.mjs for the
+// full command).
+const probeInfo = await info("javascript", ids.javascript);
+const fileApi = probeInfo.fileApi !== false;
+console.log(`file API ${fileApi ? "enabled" : "disabled"} on ${base} (PHASE=${phase})`);
+
 if (phase === "1") {
   console.log(`PHASE 1: defining state in sandboxes ${JSON.stringify(ids)} against ${base}`);
 
-  const js = await execute("javascript", ids.javascript, {
-    code:
-      "var counter = 41; function inc(n) { return n + 1; } " +
+  const jsCode = fileApi
+    ? "var counter = 41; function inc(n) { return n + 1; } " +
       "class Greeter { hello(name) { return 'hello ' + name; } } " +
-      "fs.writeFileSync('/workspace/marker.txt', 'phase1'); 'defined'",
-  });
-  check(js.results?.[0]?.text === "'defined'", "javascript: definitions + file write executed");
+      "fs.writeFileSync('/workspace/marker.txt', 'phase1'); 'defined'"
+    : "var counter = 41; function inc(n) { return n + 1; } " +
+      "class Greeter { hello(name) { return 'hello ' + name; } } " +
+      "let fsCode; try { fs.writeFileSync('/workspace/marker.txt', 'phase1'); fsCode = 'wrote'; } catch (e) { fsCode = e.code; } fsCode";
+  const js = await execute("javascript", ids.javascript, { code: jsCode });
+  if (fileApi) {
+    check(js.results?.[0]?.text === "'defined'", "javascript: definitions + file write executed");
+  } else {
+    check(
+      js.results?.[0]?.text === "'EACCES'",
+      "javascript: definitions executed; guest file write is EACCES with the File API disabled",
+    );
+  }
   check(typeof js.context.snapshotMs === "number", "javascript: execute() reports context.snapshotMs");
 
-  const py = await execute("python", ids.python, {
-    code:
-      "class Box:\n    def __init__(self, v):\n        self.v = v\n    def get(self):\n        return self.v\n" +
+  const pyCode = fileApi
+    ? "class Box:\n    def __init__(self, v):\n        self.v = v\n    def get(self):\n        return self.v\n" +
       "counter = 41\ndef inc(n):\n    return n + 1\nb = Box(9)\n" +
-      "open('/workspace/marker.txt', 'w').write('phase1')\n'defined'",
-  });
-  check(py.results?.[0]?.text === "'defined'", "python: definitions + file write executed");
+      "open('/workspace/marker.txt', 'w').write('phase1')\n'defined'"
+    : "class Box:\n    def __init__(self, v):\n        self.v = v\n    def get(self):\n        return self.v\n" +
+      "counter = 41\ndef inc(n):\n    return n + 1\nb = Box(9)\n" +
+      "try:\n    open('/workspace/marker.txt', 'w')\n    r = 'wrote'\nexcept PermissionError as e:\n    r = 'perm'\nr";
+  const py = await execute("python", ids.python, { code: pyCode });
+  if (fileApi) {
+    check(py.results?.[0]?.text === "'defined'", "python: definitions + file write executed");
+  } else {
+    check(
+      py.results?.[0]?.text === "'perm'",
+      "python: definitions executed; guest file write raises PermissionError with the File API disabled",
+    );
+  }
   check(typeof py.context.snapshotMs === "number", "python: execute() reports context.snapshotMs");
 
-  const pl = await execute("perl", ids.perl, {
-    code:
-      "our $counter = 41; sub inc { return $_[0] + 1; } " +
+  const plCode = fileApi
+    ? "our $counter = 41; sub inc { return $_[0] + 1; } " +
       "open(my $fh, '>', '/workspace/marker.txt') or die $!; print $fh 'phase1'; close($fh); " +
-      "'defined';",
-  });
-  check(pl.results?.[0]?.text === "defined", "perl: definitions + file write executed");
+      "'defined';"
+    : "our $counter = 41; sub inc { return $_[0] + 1; } " +
+      "open(my $fh, '>', '/workspace/marker.txt') ? 'wrote' : $!;";
+  const pl = await execute("perl", ids.perl, { code: plCode });
+  if (fileApi) {
+    check(pl.results?.[0]?.text === "defined", "perl: definitions + file write executed");
+  } else {
+    check(
+      /Permission denied/.test(pl.results?.[0]?.text ?? ""),
+      "perl: definitions executed; guest file write fails with Permission denied with the File API disabled",
+    );
+  }
   check(typeof pl.context.snapshotMs === "number", "perl: execute() reports context.snapshotMs");
 
   for (const [language, id] of Object.entries(ids)) {
@@ -131,8 +176,16 @@ if (phase === "1") {
   );
 
   for (const [language, id] of Object.entries(ids)) {
-    const file = await readFile(language, id, "/workspace/marker.txt");
-    check(file.content === "phase1", `${language}: /workspace/marker.txt survived the restart`);
+    if (fileApi) {
+      const file = await readFile(language, id, "/workspace/marker.txt");
+      check(file.content === "phase1", `${language}: /workspace/marker.txt survived the restart`);
+    } else {
+      const denied = await filesOp(language, id, { op: "read", path: "/workspace/marker.txt" }, 403);
+      check(
+        denied.code === "NOT_SUPPORTED",
+        `${language}: /files stays 403 NOT_SUPPORTED after restart with the File API disabled`,
+      );
+    }
   }
 
   console.log(`PHASE 2 complete: ${checks} checks passed. Durable sandboxes survived a full wrangler dev restart.`);

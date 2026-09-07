@@ -15,6 +15,7 @@ export const ErrorCode = {
   VALIDATION_FAILED: "VALIDATION_FAILED",
   CODE_EXECUTION_ERROR: "CODE_EXECUTION_ERROR",
   INTERNAL_ERROR: "INTERNAL_ERROR",
+  NOT_SUPPORTED: "NOT_SUPPORTED",
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 
@@ -31,6 +32,7 @@ const HTTP_STATUS_FOR_CODE: Record<ErrorCode, number> = {
   VALIDATION_FAILED: 400,
   CODE_EXECUTION_ERROR: 500,
   INTERNAL_ERROR: 500,
+  NOT_SUPPORTED: 403,
 };
 export function httpStatusForCode(code: ErrorCode): number {
   return HTTP_STATUS_FOR_CODE[code] ?? 500;
@@ -187,6 +189,17 @@ export class ContextNotFoundError extends SandboxError<{
     this.name = "ContextNotFoundError";
   }
 }
+export class NotSupportedError extends SandboxError<{
+  feature: string;
+}> {
+  constructor(
+    errorResponse: ErrorResponse<{ feature: string }>,
+    options?: { cause?: unknown },
+  ) {
+    super(errorResponse, options);
+    this.name = "NotSupportedError";
+  }
+}
 export class ValidationFailedError extends SandboxError<{
   validationErrors?: Array<{ field: string; message: string }>;
 }> {
@@ -327,6 +340,11 @@ export function createErrorFromResponse(
           ename?: string;
           evalue?: string;
         }>,
+        causeOptions,
+      );
+    case ErrorCode.NOT_SUPPORTED:
+      return new NotSupportedError(
+        errorResponse as ErrorResponse<{ feature: string }>,
         causeOptions,
       );
     default:

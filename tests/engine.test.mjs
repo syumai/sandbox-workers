@@ -381,3 +381,56 @@ test("session: an ordinary guest exception does not clobber prior globals", () =
   const result = session.execute({ code: "kept" });
   assert.deepEqual(result.results, [{ text: "1" }]);
 });
+
+// ---- workspace.disabled: guest /workspace lockout (runtime/wasi.mjs) -----
+
+test("session: workspace.disabled gates fs.* with EACCES", () => {
+  const { session, workspace } = makeSession();
+  workspace.disabled = true;
+
+  // Each `let` below uses a fresh name -- the session persists top-level
+  // declarations across execute() calls (see the earlier "var/let/const ..."
+  // test), so redeclaring the same `let` in a later call would itself be a
+  // SyntaxError.
+  const write = session.execute({
+    code: 'let codeW; try { fs.writeFileSync("/workspace/a.txt", "x"); } catch (e) { codeW = e.code; } codeW',
+  });
+  assert.deepEqual(write.results, [{ text: "'EACCES'" }]);
+
+  const read = session.execute({
+    code: 'let codeR; try { fs.readFileSync("/workspace/a.txt", "utf8"); } catch (e) { codeR = e.code; } codeR',
+  });
+  assert.deepEqual(read.results, [{ text: "'EACCES'" }]);
+
+  const exists = session.execute({ code: 'fs.existsSync("/workspace/a.txt")' });
+  assert.deepEqual(exists.results, [{ text: "false" }]);
+});
+
+test("session: workspace.disabled keeps process.cwd() at /workspace and rejects chdir", () => {
+  const { session, workspace } = makeSession();
+  workspace.disabled = true;
+
+  const cwd = session.execute({ code: "process.cwd()" });
+  assert.deepEqual(cwd.results, [{ text: "'/workspace'" }]);
+
+  const chdir = session.execute({
+    code: 'let code; try { process.chdir("sub"); } catch (e) { code = e.code; } code',
+  });
+  assert.deepEqual(chdir.results, [{ text: "'EACCES'" }]);
+});
+
+test("session: workspace.disabled is read live, not captured at session boot", () => {
+  const { session, workspace } = makeSession();
+  workspace.disabled = true;
+  const denied = session.execute({
+    code: 'let code; try { fs.writeFileSync("/workspace/a.txt", "x"); } catch (e) { code = e.code; } code',
+  });
+  assert.deepEqual(denied.results, [{ text: "'EACCES'" }]);
+
+  workspace.disabled = false;
+  const allowed = session.execute({
+    code: 'fs.writeFileSync("/workspace/a.txt", "x"); fs.readFileSync("/workspace/a.txt", "utf8")',
+  });
+  assert.deepEqual(allowed.results, [{ text: "'x'" }]);
+  assert.equal(allowed.error, undefined);
+});

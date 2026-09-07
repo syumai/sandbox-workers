@@ -26,7 +26,10 @@ same `/workspace`.
     { "binding": "PYTHON", "service": "sandbox-python" },
     { "binding": "JAVASCRIPT", "service": "sandbox-javascript" },
   ],
-  "vars": { "SANDBOX_IDLE_TTL_MS": "86400000" }, // optional; "0" disables expiry
+  "vars": {
+    "SANDBOX_IDLE_TTL_MS": "86400000", // optional; "0" disables expiry
+    // "SANDBOX_FILE_API": "disabled", // optional; turns the File API off, see docs/sandbox-1-0-design.md
+  },
 }
 ```
 

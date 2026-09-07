@@ -3,7 +3,7 @@ title: Manage files
 description: Read, write, and organize files under /workspace with the typed client and from guest code.
 ---
 
-Every sandbox owns a writable `/workspace` directory, reachable both from guest code and from the caller through a files API. `/workspace` is shared by every code context in the sandbox regardless of binding, so files written from a Python context are visible from a JavaScript one. This guide shows you how to work with those files from your Worker and from the code you execute.
+Every sandbox owns a writable `/workspace` directory, reachable both from guest code and from the caller through a files API. `/workspace` is shared by every code context in the sandbox regardless of binding, so files written from a Python context are visible from a JavaScript one. This guide shows you how to work with those files from your Worker and from the code you execute. Your own Worker can turn the whole File API off with `SANDBOX_FILE_API=disabled` (see [Environment variables](/configuration/environment-variables#sandbox_file_api--your-own-worker)) — everything below assumes it's enabled, which it is by default.
 
 ## Use the client's file methods
 

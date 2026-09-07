@@ -59,12 +59,18 @@ export interface DurableObjectStateLike {
   blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
 }
 /**
- * `SANDBOX_IDLE_TTL_MS` plus arbitrary bindings (Service Bindings to runtime
- * Workers, named however the caller likes -- `createCodeContext({ binding })`
- * looks them up by name at request time).
+ * `SANDBOX_IDLE_TTL_MS` and `SANDBOX_FILE_API` plus arbitrary bindings
+ * (Service Bindings to runtime Workers, named however the caller likes --
+ * `createCodeContext({ binding })` looks them up by name at request time).
  */
 export interface SandboxEnv {
   SANDBOX_IDLE_TTL_MS?: string;
+  /**
+   * `"disabled"` turns the File API off (POST /files -> 403 NOT_SUPPORTED),
+   * stops workspace persistence, and makes /workspace read-only-empty for
+   * guest code; any other value or unset = enabled.
+   */
+  SANDBOX_FILE_API?: string;
   [binding: string]: unknown;
 }
 
@@ -400,6 +406,15 @@ export class Sandbox {
 
   private ensureWorkspace(): Workspace {
     if (!this.workspace) {
+      if (!this.fileApiEnabled()) {
+        // Never reads the `files` table: the workspace is empty for the
+        // lifetime of this DO instance, and nothing gets persisted either
+        // (see `persistWorkspace`).
+        this.workspace = new Workspace();
+        this.changesSince = this.workspace.changes().snapshot;
+        this.persistedDirs = new Set();
+        return this.workspace;
+      }
       const rows = this.loadFileRows();
       this.workspace = Workspace.load(rows);
       this.changesSince = this.workspace.changes().snapshot;
@@ -415,6 +430,12 @@ export class Sandbox {
   // (kept in memory, per docs/sandbox-1-0-design.md), so an empty directory
   // (nothing `changes()` would ever report) still gets persisted.
   private persistWorkspace(context?: ContextRecord): void {
+    if (!this.fileApiEnabled()) {
+      // The workspace is never persisted while the File API is disabled --
+      // skip the file/dir diff entirely and only save the context row.
+      if (context) this.saveContext(context);
+      return;
+    }
     const workspace = this.ensureWorkspace();
     const fileDiff = workspace.changes(this.changesSince);
     this.changesSince = fileDiff.snapshot;
@@ -621,6 +642,10 @@ export class Sandbox {
     return Number.isFinite(ms) && ms >= 0 ? ms : DEFAULT_IDLE_TTL_MS;
   }
 
+  private fileApiEnabled(): boolean {
+    return this.env.SANDBOX_FILE_API !== "disabled";
+  }
+
   // Same throttled alarm policy as runtime/interpreter.mjs's _touchAlarm
   // (docs/snapshot-cost-design.md, "Alarm policy"): re-arms only when the new
   // deadline is more than TTL/10 past the deadline actually armed, so a
@@ -759,6 +784,7 @@ export class Sandbox {
         snapshot: context.snapshot,
       })),
       workspace: workspace.stats(),
+      fileApi: this.fileApiEnabled(),
       expiresAt,
     });
   }
@@ -885,6 +911,8 @@ export class Sandbox {
     // through `this.queue`, so nothing else can mutate `workspace` while
     // this RPC call is in flight.
     const getFiles: GetWorkspaceFiles = (paths) => {
+      // The File API is disabled: there's nothing to pull, ever.
+      if (!this.fileApiEnabled()) return [];
       const entries: WorkspaceFileEntry[] = [];
       for (const path of paths) {
         try {
@@ -917,11 +945,17 @@ export class Sandbox {
     }
     const result = this.applyInterpreterResult(rpcResult, context);
 
-    workspace.applySync({
-      dirs: result.workspace.dirs,
-      files: result.workspace.files,
-      deleted: result.workspace.deleted,
-    });
+    // While the File API is disabled the interpreter's workspace mirror is
+    // never populated (empty `payload`, `getFiles` always `[]`), so any
+    // diff it reports back is guest writes to a workspace this sandbox
+    // never persists -- discard it rather than reconciling `workspace`.
+    if (this.fileApiEnabled()) {
+      workspace.applySync({
+        dirs: result.workspace.dirs,
+        files: result.workspace.files,
+        deleted: result.workspace.deleted,
+      });
+    }
 
     context.executions++;
     context.lastUsed = new Date().toISOString();
@@ -949,6 +983,7 @@ export class Sandbox {
   // `getFiles` (see docs/sandbox-1-0-design.md, "Workspace mirror and sync
   // protocol").
   private buildSyncPayload(workspace: Workspace): InterpreterWorkspaceManifest {
+    if (!this.fileApiEnabled()) return { dirs: [], manifest: {}, disabled: true };
     const manifest = workspace.manifest();
     return { dirs: manifest.dirs, manifest: manifest.files };
   }
@@ -972,6 +1007,13 @@ export class Sandbox {
   }
 
   private async handleFiles(request: Request, sandboxMeta: SandboxMeta): Promise<Response> {
+    if (!this.fileApiEnabled())
+      throw new ApiError(
+        403,
+        "The File API is disabled for this sandbox (SANDBOX_FILE_API=disabled)",
+        ErrorCode.NOT_SUPPORTED,
+        { feature: "files" },
+      );
     const body = await readJsonBody(request, MAX_FILES_REQUEST_BYTES);
     validateFilesBody(body);
     const workspace = this.ensureWorkspace();

@@ -350,3 +350,45 @@ test("applySync with a manifest deletes files not listed and reports a hash mism
   // interpreter would pull it from the sandbox via getFiles.
   assert.deepEqual(result.missing, ["/workspace/c.txt"]);
 });
+
+test("disabled workspace rejects every guest op with EACCES", () => {
+  const ws = new Workspace();
+  ws.write("/workspace/a.txt", "/workspace", "hello");
+
+  ws.disabled = true;
+
+  const assertEacces = (fn) => {
+    assert.throws(
+      fn,
+      (err) => err instanceof WorkspaceError && err.code === "EACCES",
+    );
+  };
+  assertEacces(() => ws.read("/workspace/a.txt", "/workspace"));
+  assertEacces(() => ws.readBytes("/workspace/a.txt", "/workspace"));
+  assertEacces(() => ws.write("/workspace/a.txt", "/workspace", "bye"));
+  assertEacces(() => ws.mkdir("/workspace/sub", "/workspace"));
+  assertEacces(() => ws.list("/workspace", "/workspace"));
+  assertEacces(() => ws.delete("/workspace/a.txt", "/workspace"));
+  assertEacces(() => ws.rename("/workspace/a.txt", "/workspace/b.txt", "/workspace"));
+  assertEacces(() => ws.stat("/workspace/a.txt", "/workspace"));
+
+  // exists() never throws (mirrors Node's existsSync), it just reports false.
+  assert.deepEqual(ws.exists("/workspace/a.txt", "/workspace"), { exists: false });
+
+  // moduleSource() reports the same "not found" shape as an unknown module.
+  assert.deepEqual(ws.moduleSource("./a.txt", "/workspace/entry.js"), { ok: false });
+
+  // Non-guest-facing helpers keep working while disabled.
+  assert.deepEqual(ws.normalize("/workspace/a", "/workspace").absolute, "/workspace/a");
+  assert.ok(ws.manifest());
+  assert.ok(ws.serialize());
+  assert.ok(ws.changes());
+  const syncResult = ws.applySync({ dirs: [], files: [], manifest: {} });
+  assert.deepEqual(syncResult, { missing: [] });
+  assert.deepEqual(ws.serialize(), []);
+
+  // Re-enabling restores normal guest access.
+  ws.disabled = false;
+  ws.write("/workspace/c.txt", "/workspace", "hi");
+  assert.equal(ws.read("/workspace/c.txt", "/workspace").content, "hi");
+});

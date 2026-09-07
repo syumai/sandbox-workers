@@ -186,6 +186,9 @@ if (
 // pane, and whether the log should keep following the newest cell.
 let selectedCellId = {};
 let followLatest = {};
+// Per-session-id: whether the File API is enabled for that sandbox, learned
+// from GET / (SandboxInfo.fileApi). Unknown sessions default to true.
+const sessionFileApi = {};
 for (const [sid, list] of Object.entries(cells)) {
   followLatest[sid] = true;
   selectedCellId[sid] = list.length ? list[list.length - 1].id : undefined;
@@ -676,7 +679,7 @@ function syncModeUI() {
     : "Evaluate code in a durable, per-browser REPL session";
   $("session-bar").hidden = !isRepl;
   $("session-strip").hidden = !isRepl;
-  $("workspace-tab").hidden = !isRepl;
+  updateWorkspaceTabVisibility();
   $("editor-pane").classList.toggle("repl", isRepl);
   $("repl-log").hidden = !isRepl;
   $("reset").hidden = isRepl;
@@ -698,11 +701,6 @@ function syncModeUI() {
   editor.dispatch({
     effects: replKeys.reconfigure(isRepl ? replKeymapExtension() : []),
   });
-  if (!isRepl && tab === "workspace") {
-    tab = "result";
-    for (const t of TABS)
-      $(t + "-tab").setAttribute("aria-selected", String(t === tab));
-  }
   if (isRepl) {
     const sid = sessionIdFor(language);
     $("session-id").textContent = sid;
@@ -722,6 +720,22 @@ function sessionBaseUrl(lang, sid) {
   return `/languages/${lang}/sandboxes/${sid}`;
 }
 
+// Shows the Workspace tab only in REPL mode when the current session's File
+// API is enabled (or not yet known). Switches away from the workspace tab if
+// it becomes hidden while selected.
+function updateWorkspaceTabVisibility() {
+  const sid = sessionIdFor(language);
+  $("workspace-tab").hidden = !(
+    effectiveMode() === "repl" && (sessionFileApi[sid] ?? true)
+  );
+  if ($("workspace-tab").hidden && tab === "workspace") {
+    tab = "result";
+    for (const t of TABS)
+      $(t + "-tab").setAttribute("aria-selected", String(t === tab));
+    display();
+  }
+}
+
 async function refreshSessionInfo() {
   if (effectiveMode() !== "repl") return;
   const lang = language;
@@ -735,8 +749,10 @@ async function refreshSessionInfo() {
     info = null;
   }
   if (!(language === lang && sessionIds[lang] === sid)) return; // a newer run is now current
+  sessionFileApi[sid] = info ? info.fileApi !== false : (sessionFileApi[sid] ?? true);
   renderSessionStrip(info);
-  if (tab === "workspace") loadWorkspace();
+  updateWorkspaceTabVisibility();
+  if (tab === "workspace" && (sessionFileApi[sid] ?? true)) loadWorkspace();
 }
 
 function relativeTime(ts) {
@@ -1063,6 +1079,7 @@ $("session-new").onclick = async () => {
   $("status").textContent = "New session started";
   renderReplLog(sid, true);
   renderSessionStrip(null);
+  updateWorkspaceTabVisibility();
   display();
   await refreshSessionInfo();
 };

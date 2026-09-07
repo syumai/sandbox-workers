@@ -282,6 +282,9 @@ function buildEmbeddedApi({ instance, handle, host, meter, fuel, workspace, lang
         // Persist the reported cwd only if it still resolves to a directory
         // under /workspace; otherwise fall back to /workspace, matching the
         // design doc's leniency for an execution that chdir'd outside it.
+        // When workspace.disabled is true, workspace.stat() throws EACCES
+        // here too, and the catch below's "/workspace" fallback is exactly
+        // right (cwd stays reported as /workspace either way).
         try {
           if (workspace && reportedCwd) {
             const info = workspace.stat(reportedCwd, "/workspace");
@@ -335,7 +338,9 @@ export function createEmbeddedSession(module, archive, language, options = {}) {
   const cwd = options.cwd ?? "/workspace";
   const fuel = language === "perl" ? 10_000_000 : 100_000_000;
   const meter = budget(fuel);
-  const host = createWasi(module, archive, meter, {}, workspace?.root ?? null);
+  const host = createWasi(module, archive, meter, {}, workspace?.root ?? null, {
+    workspaceDisabled: () => workspace?.disabled === true,
+  });
   const instance = new WebAssembly.Instance(module, host.imports);
   host.wasi.initialize(instance);
   instance.exports.wasm_init();
@@ -369,7 +374,9 @@ export function restoreEmbeddedSession(module, archive, language, options = {}) 
   const cwd = options.cwd ?? "/workspace";
   const fuel = language === "perl" ? 10_000_000 : 100_000_000;
   const meter = budget(fuel);
-  const host = createWasi(module, archive, meter, {}, workspace?.root ?? null);
+  const host = createWasi(module, archive, meter, {}, workspace?.root ?? null, {
+    workspaceDisabled: () => workspace?.disabled === true,
+  });
   const instance = new WebAssembly.Instance(module, host.imports);
   host.wasi.inst = instance;
 

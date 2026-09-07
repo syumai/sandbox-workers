@@ -290,8 +290,17 @@ export interface LoadRow {
 export class Workspace {
   root: WorkspaceDirectory;
 
+  // Set by the interpreter Durable Object per execute, from
+  // `InterpreterWorkspaceManifest.disabled` -- the sandbox Durable Object
+  // never sets it. When true, every guest op below rejects with EACCES.
+  disabled = false;
+
   constructor() {
     this.root = new WorkspaceDirectory(new Map());
+  }
+
+  private assertEnabled(): void {
+    if (this.disabled) throw new WorkspaceError("EACCES", "File API is disabled for this sandbox");
   }
 
   // Resolves `path` (absolute under /workspace, or relative to `cwd`, an
@@ -369,6 +378,7 @@ export class Workspace {
   }
 
   read(path: string, cwd: string, options: ReadOptions = {}): ReadResult {
+    this.assertEnabled();
     const encoding = options.encoding ?? "utf-8";
     const { segments } = this.normalize(path, cwd);
     const node = segments.length === 0 ? (this.root as Inode) : this._lookup(segments);
@@ -390,6 +400,7 @@ export class Workspace {
   // and sync protocol"), where file contents travel as `Uint8Array` directly
   // rather than as a JSON string.
   readBytes(path: string, cwd: string): { data: Uint8Array; updatedAt: number } {
+    this.assertEnabled();
     const { segments } = this.normalize(path, cwd);
     const node = segments.length === 0 ? (this.root as Inode) : this._lookup(segments);
     if (!node) throw new WorkspaceError("ENOENT", `No such file: ${path}`);
@@ -399,6 +410,7 @@ export class Workspace {
   }
 
   write(path: string, cwd: string, content: string | Uint8Array, options: WriteOptions = {}): WriteResult {
+    this.assertEnabled();
     const encoding = options.encoding ?? "utf-8";
     const { segments } = this.normalize(path, cwd);
     if (segments.length === 0)
@@ -424,6 +436,7 @@ export class Workspace {
   }
 
   mkdir(path: string, cwd: string, options: MkdirOptions = {}): Record<string, never> {
+    this.assertEnabled();
     const { segments } = this.normalize(path, cwd);
     if (segments.length === 0) return {};
     if (options.recursive) {
@@ -456,6 +469,7 @@ export class Workspace {
   }
 
   list(path: string, cwd: string, options: ListOptions = {}): ListResult {
+    this.assertEnabled();
     const { segments, absolute } = this.normalize(path, cwd);
     const node = segments.length === 0 ? (this.root as Inode) : this._lookup(segments);
     if (!node) throw new WorkspaceError("ENOENT", `No such directory: ${path}`);
@@ -480,6 +494,7 @@ export class Workspace {
   }
 
   delete(path: string, cwd: string, options: DeleteOptions = {}): Record<string, never> {
+    this.assertEnabled();
     const { segments } = this.normalize(path, cwd);
     if (segments.length === 0)
       throw new WorkspaceError("EACCES", "Cannot delete the /workspace root");
@@ -509,6 +524,7 @@ export class Workspace {
   }
 
   rename(from: string, to: string, cwd: string): Record<string, never> {
+    this.assertEnabled();
     const src = this.normalize(from, cwd);
     const dst = this.normalize(to, cwd);
     if (src.segments.length === 0)
@@ -536,6 +552,7 @@ export class Workspace {
   }
 
   exists(path: string, cwd: string): ExistsResult {
+    if (this.disabled) return { exists: false };
     try {
       const { segments } = this.normalize(path, cwd);
       return { exists: segments.length === 0 || this._lookup(segments) !== undefined };
@@ -545,6 +562,7 @@ export class Workspace {
   }
 
   stat(path: string, cwd: string): StatResult {
+    this.assertEnabled();
     const { segments } = this.normalize(path, cwd);
     const node = segments.length === 0 ? (this.root as Inode) : this._lookup(segments);
     if (!node) throw new WorkspaceError("ENOENT", `No such file or directory: ${path}`);
@@ -562,6 +580,7 @@ export class Workspace {
   // interpreting relative to the workspace root.
   moduleSource(spec: string, referrer: string): ModuleSourceResult {
     void referrer;
+    if (this.disabled) return { ok: false };
     if (!/\.(m?js|json)$/i.test(spec)) return { ok: false };
     let segments: string[];
     try {

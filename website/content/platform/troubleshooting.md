@@ -47,6 +47,10 @@ Reduce computation or imported libraries. Fuel includes interpreter initializati
 
 This build cannot initialize `_decimal` because mpdecimal host imports are unresolved. `decimal`, `fractions`, and `statistics` are consequently unsupported. Installing pip packages or arbitrary native extensions is not supported.
 
+## `NotSupportedError`: "The File API is disabled for this sandbox"
+
+The caller Worker handling this sandbox has `"SANDBOX_FILE_API": "disabled"` in its `vars`. Every file method throws `NotSupportedError` (`code: "NOT_SUPPORTED"`, HTTP 403), and guest code gets `EACCES` on `/workspace`. Unset the var, or set it to anything other than `"disabled"`, to turn the File API back on — see [Environment variables](/configuration/environment-variables#sandbox_file_api--your-own-worker).
+
 ## Ruby JavaScript bridge is disabled
 
 `JS.global` and related bridge functions are intentionally blocked to keep guest code from accessing the Worker host. Pass the data you need with `envVars`.

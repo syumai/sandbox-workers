@@ -20,6 +20,7 @@ import {
   ContextNotFoundError,
   ValidationFailedError,
   CodeExecutionError,
+  NotSupportedError,
   ErrorCode,
   Operation,
 } from "../packages/core/dist/index.js";
@@ -728,6 +729,7 @@ test("createErrorFromResponse maps each ErrorCode to its class", () => {
     [ErrorCode.CONTEXT_NOT_FOUND, ContextNotFoundError],
     [ErrorCode.VALIDATION_FAILED, ValidationFailedError],
     [ErrorCode.CODE_EXECUTION_ERROR, CodeExecutionError],
+    [ErrorCode.NOT_SUPPORTED, NotSupportedError],
   ];
   for (const [code, Class] of cases) {
     const err = createErrorFromResponse(errorResponseBody(code));

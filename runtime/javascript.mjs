@@ -469,7 +469,9 @@ export function runJavaScript(module, payload) {
 function createSessionHost(module, workspace, getCwd, setCwd, onCwdChange) {
   const fuel = 50_000_000;
   const meter = createMeter(fuel);
-  const host = createWasi(module, null, meter, {}, workspace?.root ?? null);
+  const host = createWasi(module, null, meter, {}, workspace?.root ?? null, {
+    workspaceDisabled: () => workspace?.disabled === true,
+  });
   (host.imports.wasi ??= {})["thread-spawn"] = () => -1;
 
   const box = { instance: null };

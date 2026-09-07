@@ -119,8 +119,11 @@ Running code in a context is **not** an HTTP route: it's the Workers RPC method 
 interface WorkspaceManifest {
   dirs: string[];                    // every directory under /workspace (absolute paths), full list
   manifest: Record<string, string>;  // every file: absolute path -> content hash
+  disabled?: boolean;                 // true when this Worker's SANDBOX_FILE_API is "disabled"
 }
 ```
+
+When `SANDBOX_FILE_API=disabled`, the sandbox sends `{ dirs: [], manifest: [], disabled: true }` on every call and `getFiles` returns `[]` for any path it's asked for — nothing is read from or written to the sandbox's `files` table while disabled. The interpreter refuses every read, write, mkdir, delete, rename, and directory listing under `/workspace` with `EACCES` instead of reconciling its mirror. See [Environment variables](/configuration/environment-variables#sandbox_file_api--your-own-worker).
 
 The interpreter reconciles its mirror before running anything: create every directory in `dirs`, delete anything in the mirror that isn't in `manifest`/`dirs`. If `manifest` still names a path the interpreter can't match (it was evicted, or never held this workspace), it calls back `getFiles(missing)` — an RPC stub the sandbox passed as an argument — to pull exactly those paths' contents, then reconciles again. A path still missing after that is `INTERNAL_ERROR`: the sandbox is the interpreter's only source of truth for `/workspace`, so this means the sandbox itself failed to answer `getFiles` correctly, not a race to retry.
 
@@ -160,7 +163,7 @@ The `Sandbox` Durable Object applies `workspace` to its own tree, persists the d
 | `GET /contexts` | | `{ contexts: [{ id, binding, language, cwd, createdAt, lastUsed }] }` |
 | `DELETE /contexts/:contextId` | | `{ success: true }`; 404 `CONTEXT_NOT_FOUND` |
 | `POST /env` | `{ envVars: Record<string, string \| null> }` | `{ success: true }` |
-| `POST /files` | `{ op, path, newPath?, content?, encoding?, recursive?, force?, includeHidden? }` | Per operation — see [Files](/api/files) |
+| `POST /files` | `{ op, path, newPath?, content?, encoding?, recursive?, force?, includeHidden? }` | Per operation — see [Files](/api/files); 403 `NOT_SUPPORTED` when `SANDBOX_FILE_API=disabled` |
 | `GET /` | | `SandboxInfo` — see [Lifecycle](/api/lifecycle#types) |
 | `DELETE /` | | `{ success: true }` — wipes storage and drops every context |
 

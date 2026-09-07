@@ -89,6 +89,17 @@ function uniqueId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+const fileApi = (await info("javascript", uniqueId("probe"))).fileApi !== false;
+console.log(`file API ${fileApi ? "enabled" : "disabled"} on ${base}`);
+// The Playground's own wrangler.jsonc now sets SANDBOX_FILE_API=disabled, so
+// this probe determines which branch below to run. To exercise the enabled
+// branch, start a second dev server without that var and point this file at
+// it:
+//
+//   pnpm exec wrangler dev -c wrangler.jsonc -c engine/wrangler.jsonc -c engine/wrangler-python.jsonc \
+//     -c engine/wrangler-perl.jsonc -c engine/wrangler-ruby.jsonc --var SANDBOX_FILE_API:enabled --port 8797
+//   SANDBOX_URL=http://localhost:8797 node tests/sandboxes.mjs
+
 // ---- JavaScript: default context REPL semantics ------------------------
 
 {
@@ -130,41 +141,75 @@ function uniqueId(prefix) {
 
 {
   const id = uniqueId("js-fs");
-  await execute("javascript", id, {
-    code: 'fs.writeFileSync("/workspace/from-guest.txt", "hello from guest")',
-  });
-  const readViaApi = await files("javascript", id, { op: "read", path: "/workspace/from-guest.txt" });
-  assert.equal(readViaApi.content, "hello from guest");
+  if (fileApi) {
+    await execute("javascript", id, {
+      code: 'fs.writeFileSync("/workspace/from-guest.txt", "hello from guest")',
+    });
+    const readViaApi = await files("javascript", id, { op: "read", path: "/workspace/from-guest.txt" });
+    assert.equal(readViaApi.content, "hello from guest");
 
-  await files("javascript", id, {
-    op: "write",
-    path: "/workspace/from-api.txt",
-    content: "hello from api",
-  });
-  const readViaGuest = await execute("javascript", id, {
-    code: 'fs.readFileSync("/workspace/from-api.txt", "utf8")',
-  });
-  assert.deepEqual(readViaGuest.results, [{ text: "'hello from api'" }]);
-  console.log("javascript: files written by guest/API are visible to each other");
+    await files("javascript", id, {
+      op: "write",
+      path: "/workspace/from-api.txt",
+      content: "hello from api",
+    });
+    const readViaGuest = await execute("javascript", id, {
+      code: 'fs.readFileSync("/workspace/from-api.txt", "utf8")',
+    });
+    assert.deepEqual(readViaGuest.results, [{ text: "'hello from api'" }]);
+    console.log("javascript: files written by guest/API are visible to each other");
+  } else {
+    const writeDenied = await files(
+      "javascript",
+      id,
+      { op: "write", path: "/workspace/x.txt", content: "x" },
+      403,
+    );
+    assert.equal(writeDenied.code, "NOT_SUPPORTED");
+    const listDenied = await files("javascript", id, { op: "list", path: "/workspace" }, 403);
+    assert.equal(listDenied.code, "NOT_SUPPORTED");
+
+    const writeAttempt = await execute("javascript", id, {
+      code: '(() => { try { fs.writeFileSync("/workspace/a.txt", "x"); return "wrote" } catch (e) { return e.code } })()',
+    });
+    assert.deepEqual(writeAttempt.results, [{ text: "'EACCES'" }]);
+    const readAttempt = await execute("javascript", id, {
+      code: '(() => { try { fs.readFileSync("/workspace/a.txt", "utf8"); return "read" } catch (e) { return e.code } })()',
+    });
+    assert.deepEqual(readAttempt.results, [{ text: "'EACCES'" }]);
+    const cwdResult = await execute("javascript", id, { code: "process.cwd()" });
+    assert.deepEqual(cwdResult.results, [{ text: "'/workspace'" }]);
+
+    const shown = await info("javascript", id);
+    assert.equal(shown.fileApi, false);
+    assert.deepEqual(shown.workspace, { files: 0, bytes: 0 });
+    console.log(
+      "javascript: the File API is disabled -- /files rejects with 403 NOT_SUPPORTED, guest fs access is EACCES, and /workspace stays empty",
+    );
+  }
 }
 
 {
   const id = uniqueId("js-cwd");
-  await execute("javascript", id, { code: 'fs.mkdirSync("/workspace/sub"); process.chdir("sub")' });
-  const r = await execute("javascript", id, { code: "process.cwd()" });
-  assert.deepEqual(r.results, [{ text: "'/workspace/sub'" }]);
-  assert.equal(r.context.cwd, "/workspace/sub");
-  console.log("javascript: cwd persists after process.chdir, reported on context.cwd");
+  if (fileApi) {
+    await execute("javascript", id, { code: 'fs.mkdirSync("/workspace/sub"); process.chdir("sub")' });
+    const r = await execute("javascript", id, { code: "process.cwd()" });
+    assert.deepEqual(r.results, [{ text: "'/workspace/sub'" }]);
+    assert.equal(r.context.cwd, "/workspace/sub");
+    console.log("javascript: cwd persists after process.chdir, reported on context.cwd");
+  }
 }
 
 {
   const id = uniqueId("js-import");
-  await execute("javascript", id, {
-    code: 'fs.writeFileSync("/workspace/lib.mjs", "export const val = 99;")',
-  });
-  const r = await execute("javascript", id, { code: 'const m = await import("./lib.mjs"); m.val' });
-  assert.deepEqual(r.results, [{ text: "99" }]);
-  console.log('javascript: import("./lib.mjs") is served from the workspace');
+  if (fileApi) {
+    await execute("javascript", id, {
+      code: 'fs.writeFileSync("/workspace/lib.mjs", "export const val = 99;")',
+    });
+    const r = await execute("javascript", id, { code: 'const m = await import("./lib.mjs"); m.val' });
+    assert.deepEqual(r.results, [{ text: "99" }]);
+    console.log('javascript: import("./lib.mjs") is served from the workspace');
+  }
 }
 
 {
@@ -191,36 +236,70 @@ function uniqueId(prefix) {
 
 {
   const id = uniqueId("py-fs");
-  await execute("python", id, {
-    code: 'open("/workspace/from-guest.txt", "w").write("hello from guest")',
-  });
-  const readViaApi = await files("python", id, { op: "read", path: "/workspace/from-guest.txt" });
-  assert.equal(readViaApi.content, "hello from guest");
-  await files("python", id, { op: "write", path: "/workspace/from-api.txt", content: "hello from api" });
-  const readViaGuest = await execute("python", id, {
-    code: 'open("/workspace/from-api.txt").read()',
-  });
-  assert.deepEqual(readViaGuest.results, [{ text: "'hello from api'" }]);
-  console.log("python: files written by guest/API are visible to each other");
+  if (fileApi) {
+    await execute("python", id, {
+      code: 'open("/workspace/from-guest.txt", "w").write("hello from guest")',
+    });
+    const readViaApi = await files("python", id, { op: "read", path: "/workspace/from-guest.txt" });
+    assert.equal(readViaApi.content, "hello from guest");
+    await files("python", id, { op: "write", path: "/workspace/from-api.txt", content: "hello from api" });
+    const readViaGuest = await execute("python", id, {
+      code: 'open("/workspace/from-api.txt").read()',
+    });
+    assert.deepEqual(readViaGuest.results, [{ text: "'hello from api'" }]);
+    console.log("python: files written by guest/API are visible to each other");
+  } else {
+    const writeDenied = await files(
+      "python",
+      id,
+      { op: "write", path: "/workspace/x.txt", content: "x" },
+      403,
+    );
+    assert.equal(writeDenied.code, "NOT_SUPPORTED");
+    const listDenied = await files("python", id, { op: "list", path: "/workspace" }, 403);
+    assert.equal(listDenied.code, "NOT_SUPPORTED");
+
+    const writeAttempt = await execute("python", id, {
+      code: 'try:\n    open("/workspace/a.txt", "w")\nexcept PermissionError as e:\n    r = "perm"\nr',
+    });
+    assert.deepEqual(writeAttempt.results, [{ text: "'perm'" }]);
+    const readAttempt = await execute("python", id, {
+      code: 'try:\n    open("/workspace/a.txt")\nexcept PermissionError as e:\n    r = "perm"\nr',
+    });
+    assert.deepEqual(readAttempt.results, [{ text: "'perm'" }]);
+    const cwdResult = await execute("python", id, { code: "import os\nos.getcwd()" });
+    assert.deepEqual(cwdResult.results, [{ text: "'/workspace'" }]);
+
+    const shown = await info("python", id);
+    assert.equal(shown.fileApi, false);
+    assert.deepEqual(shown.workspace, { files: 0, bytes: 0 });
+    console.log(
+      "python: the File API is disabled -- /files rejects with 403 NOT_SUPPORTED, guest fs access raises PermissionError, and /workspace stays empty",
+    );
+  }
 }
 
 {
   const id = uniqueId("py-cwd");
-  await execute("python", id, { code: 'import os\nos.mkdir("/workspace/sub")\nos.chdir("sub")' });
-  const r = await execute("python", id, { code: "import os\nos.getcwd()" });
-  assert.deepEqual(r.results, [{ text: "'/workspace/sub'" }]);
-  assert.equal(r.context.cwd, "/workspace/sub");
-  console.log("python: cwd persists after os.chdir");
+  if (fileApi) {
+    await execute("python", id, { code: 'import os\nos.mkdir("/workspace/sub")\nos.chdir("sub")' });
+    const r = await execute("python", id, { code: "import os\nos.getcwd()" });
+    assert.deepEqual(r.results, [{ text: "'/workspace/sub'" }]);
+    assert.equal(r.context.cwd, "/workspace/sub");
+    console.log("python: cwd persists after os.chdir");
+  }
 }
 
 {
   const id = uniqueId("py-import");
-  await execute("python", id, {
-    code: 'open("/workspace/lib.py", "w").write("val = 99\\n")',
-  });
-  const r = await execute("python", id, { code: "import lib\nlib.val" });
-  assert.deepEqual(r.results, [{ text: "99" }]);
-  console.log("python: import lib from /workspace");
+  if (fileApi) {
+    await execute("python", id, {
+      code: 'open("/workspace/lib.py", "w").write("val = 99\\n")',
+    });
+    const r = await execute("python", id, { code: "import lib\nlib.val" });
+    assert.deepEqual(r.results, [{ text: "99" }]);
+    console.log("python: import lib from /workspace");
+  }
 }
 
 // ---- Perl ------------------------------------------------------------------
@@ -235,27 +314,53 @@ function uniqueId(prefix) {
 
 {
   const id = uniqueId("pl-fs");
-  await execute("perl", id, {
-    code:
-      'open(my $fh, ">", "/workspace/from-guest.txt") or die $!; print $fh "hello from guest"; close($fh); 1;',
-  });
-  const readViaApi = await files("perl", id, { op: "read", path: "/workspace/from-guest.txt" });
-  assert.equal(readViaApi.content, "hello from guest");
-  await files("perl", id, { op: "write", path: "/workspace/from-api.txt", content: "hello from api" });
-  const readViaGuest = await execute("perl", id, {
-    code:
-      'open(my $fh, "<", "/workspace/from-api.txt") or die $!; my $data = do { local $/; <$fh> }; $data;',
-  });
-  assert.deepEqual(readViaGuest.results, [{ text: "hello from api" }]);
-  console.log("perl: files written by guest/API are visible to each other");
+  if (fileApi) {
+    await execute("perl", id, {
+      code:
+        'open(my $fh, ">", "/workspace/from-guest.txt") or die $!; print $fh "hello from guest"; close($fh); 1;',
+    });
+    const readViaApi = await files("perl", id, { op: "read", path: "/workspace/from-guest.txt" });
+    assert.equal(readViaApi.content, "hello from guest");
+    await files("perl", id, { op: "write", path: "/workspace/from-api.txt", content: "hello from api" });
+    const readViaGuest = await execute("perl", id, {
+      code:
+        'open(my $fh, "<", "/workspace/from-api.txt") or die $!; my $data = do { local $/; <$fh> }; $data;',
+    });
+    assert.deepEqual(readViaGuest.results, [{ text: "hello from api" }]);
+    console.log("perl: files written by guest/API are visible to each other");
+  } else {
+    const writeDenied = await files(
+      "perl",
+      id,
+      { op: "write", path: "/workspace/x.txt", content: "x" },
+      403,
+    );
+    assert.equal(writeDenied.code, "NOT_SUPPORTED");
+    const listDenied = await files("perl", id, { op: "list", path: "/workspace" }, 403);
+    assert.equal(listDenied.code, "NOT_SUPPORTED");
+
+    const writeAttempt = await execute("perl", id, {
+      code: 'open(my $fh, ">", "/workspace/a.txt") ? "ok" : "$!";',
+    });
+    assert.match(writeAttempt.results[0].text, /Permission denied/);
+
+    const shown = await info("perl", id);
+    assert.equal(shown.fileApi, false);
+    assert.deepEqual(shown.workspace, { files: 0, bytes: 0 });
+    console.log(
+      "perl: the File API is disabled -- /files rejects with 403 NOT_SUPPORTED, guest fs access fails with Permission denied, and /workspace stays empty",
+    );
+  }
 }
 
 {
   const id = uniqueId("pl-cwd");
-  await execute("perl", id, { code: 'mkdir("/workspace/sub"); chdir("sub") or die $!; 1;' });
-  const r = await execute("perl", id, { code: "1;" });
-  assert.equal(r.context.cwd, "/workspace/sub");
-  console.log("perl: cwd persists after chdir");
+  if (fileApi) {
+    await execute("perl", id, { code: 'mkdir("/workspace/sub"); chdir("sub") or die $!; 1;' });
+    const r = await execute("perl", id, { code: "1;" });
+    assert.equal(r.context.cwd, "/workspace/sub");
+    console.log("perl: cwd persists after chdir");
+  }
 }
 
 // ---- Ruby: no code contexts, execute stays stateless -----------------------
@@ -348,16 +453,27 @@ function uniqueId(prefix) {
   });
   assert.deepEqual(checkB.results, [{ text: "'isolated'" }]);
 
-  await execute("javascript", id, {
-    code: 'fs.writeFileSync("/workspace/shared.txt", "from A")',
-    contextId: ctxA.id,
-  });
-  const readFromB = await execute("javascript", id, {
-    code: 'fs.readFileSync("/workspace/shared.txt", "utf8")',
-    contextId: ctxB.id,
-  });
-  assert.deepEqual(readFromB.results, [{ text: "'from A'" }]);
-  console.log("javascript: two contexts don't share globals but do share /workspace");
+  if (fileApi) {
+    await execute("javascript", id, {
+      code: 'fs.writeFileSync("/workspace/shared.txt", "from A")',
+      contextId: ctxA.id,
+    });
+    const readFromB = await execute("javascript", id, {
+      code: 'fs.readFileSync("/workspace/shared.txt", "utf8")',
+      contextId: ctxB.id,
+    });
+    assert.deepEqual(readFromB.results, [{ text: "'from A'" }]);
+    console.log("javascript: two contexts don't share globals but do share /workspace");
+  } else {
+    const writeFromA = await execute("javascript", id, {
+      code: '(() => { try { fs.writeFileSync("/workspace/shared.txt", "from A"); return "wrote" } catch (e) { return e.code } })()',
+      contextId: ctxA.id,
+    });
+    assert.deepEqual(writeFromA.results, [{ text: "'EACCES'" }]);
+    console.log(
+      "javascript: two contexts don't share globals, and /workspace writes are EACCES with the File API disabled",
+    );
+  }
 }
 
 {
@@ -376,37 +492,49 @@ function uniqueId(prefix) {
 
 {
   const id = uniqueId("cross-lang");
-  await execute("javascript", id, {
-    code: 'fs.writeFileSync("/workspace/shared.txt", "from javascript")',
-  });
-  const readFromPython = await execute("python", id, {
-    code: 'open("/workspace/shared.txt").read()',
-  });
-  assert.deepEqual(readFromPython.results, [{ text: "'from javascript'" }]);
+  if (fileApi) {
+    await execute("javascript", id, {
+      code: 'fs.writeFileSync("/workspace/shared.txt", "from javascript")',
+    });
+    const readFromPython = await execute("python", id, {
+      code: 'open("/workspace/shared.txt").read()',
+    });
+    assert.deepEqual(readFromPython.results, [{ text: "'from javascript'" }]);
 
-  const shown = await info("javascript", id);
-  assert.equal(shown.contexts.length, 2);
-  assert.deepEqual(
-    shown.contexts.map((c) => c.binding).sort(),
-    ["JAVASCRIPT", "PYTHON"],
-  );
+    const shown = await info("javascript", id);
+    assert.equal(shown.contexts.length, 2);
+    assert.deepEqual(
+      shown.contexts.map((c) => c.binding).sort(),
+      ["JAVASCRIPT", "PYTHON"],
+    );
 
-  const listedFromJs = await files("javascript", id, { op: "list", path: "/workspace" });
-  assert.ok(listedFromJs.files.some((f) => f.name === "shared.txt"));
-  const listedFromPy = await files("python", id, { op: "list", path: "/workspace" });
-  assert.ok(listedFromPy.files.some((f) => f.name === "shared.txt"));
+    const listedFromJs = await files("javascript", id, { op: "list", path: "/workspace" });
+    assert.ok(listedFromJs.files.some((f) => f.name === "shared.txt"));
+    const listedFromPy = await files("python", id, { op: "list", path: "/workspace" });
+    assert.ok(listedFromPy.files.some((f) => f.name === "shared.txt"));
 
-  // An empty directory created via the files API is visible to guest code
-  // through either language's context.
-  await files("javascript", id, { op: "mkdir", path: "/workspace/empty-dir" });
-  const isDir = await execute("python", id, {
-    code: 'import os\nos.path.isdir("/workspace/empty-dir")',
-  });
-  assert.deepEqual(isDir.results, [{ text: "True" }]);
+    // An empty directory created via the files API is visible to guest code
+    // through either language's context.
+    await files("javascript", id, { op: "mkdir", path: "/workspace/empty-dir" });
+    const isDir = await execute("python", id, {
+      code: 'import os\nos.path.isdir("/workspace/empty-dir")',
+    });
+    assert.deepEqual(isDir.results, [{ text: "True" }]);
 
-  console.log(
-    "cross-language: one sandbox id via two /languages/:language paths shares /workspace across bindings",
-  );
+    console.log(
+      "cross-language: one sandbox id via two /languages/:language paths shares /workspace across bindings",
+    );
+  } else {
+    await execute("javascript", id, { code: "1" });
+    await execute("python", id, { code: "1" });
+    const shownJs = await info("javascript", id);
+    assert.equal(shownJs.fileApi, false);
+    const shownPy = await info("python", id);
+    assert.equal(shownPy.fileApi, false);
+    console.log(
+      "cross-language: both languages report fileApi === false on the same sandbox id when the File API is disabled",
+    );
+  }
 }
 
 // ---- setEnvVars layering ---------------------------------------------------
@@ -434,120 +562,163 @@ function uniqueId(prefix) {
 
 {
   const id = uniqueId("files-move");
-  await files("javascript", id, { op: "write", path: "/workspace/a.txt", content: "hi" });
-  const moved = await files("javascript", id, {
-    op: "move",
-    path: "/workspace/a.txt",
-    newPath: "/workspace/b.txt",
-  });
-  assert.equal(moved.path, "/workspace/a.txt");
-  assert.equal(moved.newPath, "/workspace/b.txt");
-  const goneA = await files("javascript", id, { op: "exists", path: "/workspace/a.txt" });
-  assert.equal(goneA.exists, false);
-  const readB = await files("javascript", id, { op: "read", path: "/workspace/b.txt" });
-  assert.equal(readB.content, "hi");
-  console.log("javascript: moveFile behaves like rename");
+  if (fileApi) {
+    await files("javascript", id, { op: "write", path: "/workspace/a.txt", content: "hi" });
+    const moved = await files("javascript", id, {
+      op: "move",
+      path: "/workspace/a.txt",
+      newPath: "/workspace/b.txt",
+    });
+    assert.equal(moved.path, "/workspace/a.txt");
+    assert.equal(moved.newPath, "/workspace/b.txt");
+    const goneA = await files("javascript", id, { op: "exists", path: "/workspace/a.txt" });
+    assert.equal(goneA.exists, false);
+    const readB = await files("javascript", id, { op: "read", path: "/workspace/b.txt" });
+    assert.equal(readB.content, "hi");
+    console.log("javascript: moveFile behaves like rename");
+  } else {
+    const denied = await files("javascript", id, { op: "move", path: "/workspace/a.txt", newPath: "/workspace/b.txt" }, 403);
+    assert.equal(denied.code, "NOT_SUPPORTED");
+    console.log("javascript: moveFile is 403 NOT_SUPPORTED with the File API disabled");
+  }
 }
 
 {
   const id = uniqueId("files-hidden");
-  await files("javascript", id, { op: "write", path: "/workspace/visible.txt", content: "v" });
-  await files("javascript", id, { op: "write", path: "/workspace/.hidden.txt", content: "h" });
-  const listed = await files("javascript", id, { op: "list", path: "/workspace" });
-  assert.ok(!listed.files.some((f) => f.name === ".hidden.txt"));
-  const listedWithHidden = await files("javascript", id, {
-    op: "list",
-    path: "/workspace",
-    includeHidden: true,
-  });
-  assert.ok(listedWithHidden.files.some((f) => f.name === ".hidden.txt"));
-  console.log("javascript: includeHidden controls whether dotfiles are listed");
+  if (fileApi) {
+    await files("javascript", id, { op: "write", path: "/workspace/visible.txt", content: "v" });
+    await files("javascript", id, { op: "write", path: "/workspace/.hidden.txt", content: "h" });
+    const listed = await files("javascript", id, { op: "list", path: "/workspace" });
+    assert.ok(!listed.files.some((f) => f.name === ".hidden.txt"));
+    const listedWithHidden = await files("javascript", id, {
+      op: "list",
+      path: "/workspace",
+      includeHidden: true,
+    });
+    assert.ok(listedWithHidden.files.some((f) => f.name === ".hidden.txt"));
+    console.log("javascript: includeHidden controls whether dotfiles are listed");
+  } else {
+    const denied = await files("javascript", id, { op: "list", path: "/workspace", includeHidden: true }, 403);
+    assert.equal(denied.code, "NOT_SUPPORTED");
+    console.log("javascript: list(includeHidden) is 403 NOT_SUPPORTED with the File API disabled");
+  }
 }
 
 {
   const id = uniqueId("files-info");
-  await files("javascript", id, { op: "write", path: "/workspace/info.txt", content: "abc" });
-  const listed = await files("javascript", id, { op: "list", path: "/workspace" });
-  const entry = listed.files.find((f) => f.name === "info.txt");
-  assert.ok(entry);
-  assert.equal(entry.absolutePath, "/workspace/info.txt");
-  assert.equal(entry.relativePath, "info.txt");
-  assert.equal(entry.type, "file");
-  assert.equal(entry.size, 3);
-  assert.ok(!Number.isNaN(Date.parse(entry.modifiedAt)));
-  assert.equal(entry.mode, "-rw-r--r--");
-  assert.deepEqual(entry.permissions, { readable: true, writable: true, executable: false });
-  console.log("javascript: list() files carry the full FileInfo shape");
+  if (fileApi) {
+    await files("javascript", id, { op: "write", path: "/workspace/info.txt", content: "abc" });
+    const listed = await files("javascript", id, { op: "list", path: "/workspace" });
+    const entry = listed.files.find((f) => f.name === "info.txt");
+    assert.ok(entry);
+    assert.equal(entry.absolutePath, "/workspace/info.txt");
+    assert.equal(entry.relativePath, "info.txt");
+    assert.equal(entry.type, "file");
+    assert.equal(entry.size, 3);
+    assert.ok(!Number.isNaN(Date.parse(entry.modifiedAt)));
+    assert.equal(entry.mode, "-rw-r--r--");
+    assert.deepEqual(entry.permissions, { readable: true, writable: true, executable: false });
+    console.log("javascript: list() files carry the full FileInfo shape");
+  } else {
+    const denied = await files("javascript", id, { op: "write", path: "/workspace/info.txt", content: "abc" }, 403);
+    assert.equal(denied.code, "NOT_SUPPORTED");
+    console.log("javascript: files() write is 403 NOT_SUPPORTED with the File API disabled");
+  }
 }
 
 // ---- deleteFile() on a directory (IS_DIRECTORY, even when empty) ----------
 
 {
   const id = uniqueId("delete-dir");
-  await files("javascript", id, { op: "mkdir", path: "/workspace/empty" });
-  const emptyRejected = await files("javascript", id, { op: "delete", path: "/workspace/empty" }, 400);
-  assert.equal(emptyRejected.code, "IS_DIRECTORY");
-  assert.equal(emptyRejected.context.errno, "EISDIR");
-  assert.match(emptyRejected.message, /Pass \{ recursive: true \}/);
+  if (fileApi) {
+    await files("javascript", id, { op: "mkdir", path: "/workspace/empty" });
+    const emptyRejected = await files("javascript", id, { op: "delete", path: "/workspace/empty" }, 400);
+    assert.equal(emptyRejected.code, "IS_DIRECTORY");
+    assert.equal(emptyRejected.context.errno, "EISDIR");
+    assert.match(emptyRejected.message, /Pass \{ recursive: true \}/);
 
-  await files("javascript", id, { op: "mkdir", path: "/workspace/full" });
-  await files("javascript", id, { op: "write", path: "/workspace/full/f.txt", content: "x" });
-  const fullRejected = await files("javascript", id, { op: "delete", path: "/workspace/full" }, 400);
-  assert.equal(fullRejected.code, "IS_DIRECTORY");
+    await files("javascript", id, { op: "mkdir", path: "/workspace/full" });
+    await files("javascript", id, { op: "write", path: "/workspace/full/f.txt", content: "x" });
+    const fullRejected = await files("javascript", id, { op: "delete", path: "/workspace/full" }, 400);
+    assert.equal(fullRejected.code, "IS_DIRECTORY");
 
-  await files("javascript", id, { op: "delete", path: "/workspace/empty", recursive: true });
-  const emptyGone = await files("javascript", id, { op: "exists", path: "/workspace/empty" });
-  assert.equal(emptyGone.exists, false);
+    await files("javascript", id, { op: "delete", path: "/workspace/empty", recursive: true });
+    const emptyGone = await files("javascript", id, { op: "exists", path: "/workspace/empty" });
+    assert.equal(emptyGone.exists, false);
 
-  await files("javascript", id, { op: "delete", path: "/workspace/full", recursive: true });
-  const fullGone = await files("javascript", id, { op: "exists", path: "/workspace/full" });
-  assert.equal(fullGone.exists, false);
-  console.log("javascript: deleteFile() refuses any directory without recursive, even an empty one");
+    await files("javascript", id, { op: "delete", path: "/workspace/full", recursive: true });
+    const fullGone = await files("javascript", id, { op: "exists", path: "/workspace/full" });
+    assert.equal(fullGone.exists, false);
+    console.log("javascript: deleteFile() refuses any directory without recursive, even an empty one");
+  } else {
+    const denied = await files("javascript", id, { op: "mkdir", path: "/workspace/empty" }, 403);
+    assert.equal(denied.code, "NOT_SUPPORTED");
+    console.log("javascript: mkdir is 403 NOT_SUPPORTED with the File API disabled");
+  }
 }
 
 // ---- mkdir failure code is always FILESYSTEM_ERROR ------------------------
 
 {
   const id = uniqueId("mkdir-codes");
-  // FILESYSTEM_ERROR maps to HTTP 500 (see docs/sdk-parity-design.md,
-  // "Errors"), so every failed mkdir below is a 500, not the errno's usual
-  // status (ENOENT would normally be 404, EEXIST 409, ENOTDIR 400).
-  const missingParent = await files("javascript", id, { op: "mkdir", path: "/workspace/a/b" }, 500);
-  assert.equal(missingParent.code, "FILESYSTEM_ERROR");
-  assert.equal(missingParent.context.errno, "ENOENT");
+  if (fileApi) {
+    // FILESYSTEM_ERROR maps to HTTP 500 (see docs/sdk-parity-design.md,
+    // "Errors"), so every failed mkdir below is a 500, not the errno's usual
+    // status (ENOENT would normally be 404, EEXIST 409, ENOTDIR 400).
+    const missingParent = await files("javascript", id, { op: "mkdir", path: "/workspace/a/b" }, 500);
+    assert.equal(missingParent.code, "FILESYSTEM_ERROR");
+    assert.equal(missingParent.context.errno, "ENOENT");
 
-  await files("javascript", id, { op: "mkdir", path: "/workspace/a" });
-  const existing = await files("javascript", id, { op: "mkdir", path: "/workspace/a" }, 500);
-  assert.equal(existing.code, "FILESYSTEM_ERROR");
-  assert.equal(existing.context.errno, "EEXIST");
+    await files("javascript", id, { op: "mkdir", path: "/workspace/a" });
+    const existing = await files("javascript", id, { op: "mkdir", path: "/workspace/a" }, 500);
+    assert.equal(existing.code, "FILESYSTEM_ERROR");
+    assert.equal(existing.context.errno, "EEXIST");
 
-  await files("javascript", id, { op: "write", path: "/workspace/notadir", content: "x" });
-  const notDir = await files("javascript", id, { op: "mkdir", path: "/workspace/notadir/child" }, 500);
-  assert.equal(notDir.code, "FILESYSTEM_ERROR");
-  assert.equal(notDir.context.errno, "ENOTDIR");
+    await files("javascript", id, { op: "write", path: "/workspace/notadir", content: "x" });
+    const notDir = await files("javascript", id, { op: "mkdir", path: "/workspace/notadir/child" }, 500);
+    assert.equal(notDir.code, "FILESYSTEM_ERROR");
+    assert.equal(notDir.context.errno, "ENOTDIR");
 
-  // mkdir with recursive: true on an existing directory still succeeds.
-  const ok = await files("javascript", id, { op: "mkdir", path: "/workspace/a", recursive: true });
-  assert.equal(ok.success, true);
-  console.log("javascript: mkdir failures are always FILESYSTEM_ERROR, with errno kept in context.errno");
+    // mkdir with recursive: true on an existing directory still succeeds.
+    const ok = await files("javascript", id, { op: "mkdir", path: "/workspace/a", recursive: true });
+    assert.equal(ok.success, true);
+    console.log("javascript: mkdir failures are always FILESYSTEM_ERROR, with errno kept in context.errno");
+  } else {
+    const denied = await files("javascript", id, { op: "mkdir", path: "/workspace/a/b" }, 403);
+    assert.equal(denied.code, "NOT_SUPPORTED");
+    console.log("javascript: mkdir is 403 NOT_SUPPORTED (not FILESYSTEM_ERROR) with the File API disabled");
+  }
 }
 
 // ---- FileTooLargeError context carries maxSize/actualSize -----------------
 
 {
   const id = uniqueId("too-large-ctx");
-  const actualSize = 1024 * 1024 + 1;
-  const tooLarge = await files(
-    "javascript",
-    id,
-    { op: "write", path: "/workspace/big.bin", content: "z".repeat(actualSize) },
-    413,
-  );
-  assert.equal(tooLarge.code, "FILE_TOO_LARGE");
-  assert.equal(tooLarge.context.errno, "EFBIG");
-  assert.equal(tooLarge.context.maxSize, 1024 * 1024);
-  assert.equal(tooLarge.context.actualSize, actualSize);
-  console.log("javascript: FileTooLargeError context carries maxSize/actualSize");
+  if (fileApi) {
+    const actualSize = 1024 * 1024 + 1;
+    const tooLarge = await files(
+      "javascript",
+      id,
+      { op: "write", path: "/workspace/big.bin", content: "z".repeat(actualSize) },
+      413,
+    );
+    assert.equal(tooLarge.code, "FILE_TOO_LARGE");
+    assert.equal(tooLarge.context.errno, "EFBIG");
+    assert.equal(tooLarge.context.maxSize, 1024 * 1024);
+    assert.equal(tooLarge.context.actualSize, actualSize);
+    console.log("javascript: FileTooLargeError context carries maxSize/actualSize");
+  } else {
+    // With the File API disabled, an oversized write is rejected as
+    // NOT_SUPPORTED (403) before size is ever checked, not FILE_TOO_LARGE (413).
+    const denied = await files(
+      "javascript",
+      id,
+      { op: "write", path: "/workspace/big.bin", content: "z".repeat(1024 * 1024 + 1) },
+      403,
+    );
+    assert.equal(denied.code, "NOT_SUPPORTED");
+    console.log("javascript: an oversized write is 403 NOT_SUPPORTED (checked before size) with the File API disabled");
+  }
 }
 
 // ---- sandbox id rejection (reserved names, leading/trailing hyphen) -------
@@ -570,29 +741,42 @@ function uniqueId(prefix) {
 {
   const id = uniqueId("js-reset");
   await execute("javascript", id, { code: "var kept = 1" });
-  await files("javascript", id, { op: "write", path: "/workspace/keep.txt", content: "still here" });
+  if (fileApi) {
+    await files("javascript", id, { op: "write", path: "/workspace/keep.txt", content: "still here" });
+  }
   const before = await listContexts("javascript", id);
   for (const context of before.contexts) await deleteContext("javascript", id, context.id);
   const r = await execute("javascript", id, {
     code: 'typeof kept === "undefined" ? "cleared" : "kept"',
   });
   assert.deepEqual(r.results, [{ text: "'cleared'" }]);
-  const stillThere = await files("javascript", id, { op: "read", path: "/workspace/keep.txt" });
-  assert.equal(stillThere.content, "still here");
-  console.log("javascript: deleting every context clears globals but keeps files");
+  if (fileApi) {
+    const stillThere = await files("javascript", id, { op: "read", path: "/workspace/keep.txt" });
+    assert.equal(stillThere.content, "still here");
+    console.log("javascript: deleting every context clears globals but keeps files");
+  } else {
+    const denied = await files("javascript", id, { op: "write", path: "/workspace/keep.txt", content: "x" }, 403);
+    assert.equal(denied.code, "NOT_SUPPORTED");
+    console.log("javascript: deleting every context clears globals; /files stays 403 NOT_SUPPORTED");
+  }
 }
 
 {
   const id = uniqueId("js-delete");
   await execute("javascript", id, { code: "1" });
-  await files("javascript", id, { op: "write", path: "/workspace/gone.txt", content: "x" });
+  if (fileApi) await files("javascript", id, { op: "write", path: "/workspace/gone.txt", content: "x" });
   await destroy("javascript", id);
   const afterInfo = await info("javascript", id);
   // A fresh GET after DELETE creates a brand-new sandbox record with no contexts.
   assert.deepEqual(afterInfo.contexts, []);
-  const gone = await files("javascript", id, { op: "exists", path: "/workspace/gone.txt" });
-  assert.equal(gone.exists, false);
-  console.log("javascript: DELETE removes everything");
+  if (fileApi) {
+    const gone = await files("javascript", id, { op: "exists", path: "/workspace/gone.txt" });
+    assert.equal(gone.exists, false);
+    console.log("javascript: DELETE removes everything");
+  } else {
+    assert.equal(afterInfo.fileApi, false);
+    console.log("javascript: DELETE removes everything (File API stays disabled)");
+  }
 }
 
 // ---- memory snapshots ------------------------------------------------------
@@ -655,41 +839,61 @@ function uniqueId(prefix) {
 
 {
   const id = uniqueId("js-limits");
-  // The oversized content is generated INSIDE the guest (a tiny script over
-  // the wire) rather than sent as request body content: the gateway caps
-  // forwarded sandbox request bodies at the same size it uses for /execute
-  // (MAX_REQUEST_BYTES, 96 KiB — well under the 1 MiB per-file workspace
-  // limit this exercises), so a literal >1 MiB /files write can't reach the
-  // runtime through the gateway at all.
-  const big = await execute("javascript", id, {
-    code:
-      'let code; try { fs.writeFileSync("/workspace/big.txt", "x".repeat(1024*1024+1)); code = "none"; } catch (e) { code = e.code; } code',
-  });
-  assert.deepEqual(big.results, [{ text: "'EFBIG'" }]);
+  if (fileApi) {
+    // The oversized content is generated INSIDE the guest (a tiny script over
+    // the wire) rather than sent as request body content: the gateway caps
+    // forwarded sandbox request bodies at the same size it uses for /execute
+    // (MAX_REQUEST_BYTES, 96 KiB — well under the 1 MiB per-file workspace
+    // limit this exercises), so a literal >1 MiB /files write can't reach the
+    // runtime through the gateway at all.
+    const big = await execute("javascript", id, {
+      code:
+        'let code; try { fs.writeFileSync("/workspace/big.txt", "x".repeat(1024*1024+1)); code = "none"; } catch (e) { code = e.code; } code',
+    });
+    assert.deepEqual(big.results, [{ text: "'EFBIG'" }]);
 
-  const escape = await files("javascript", id, { op: "read", path: "../../etc/passwd" }, 403);
-  assert.equal(escape.code, "PERMISSION_DENIED");
-  assert.equal(escape.context.errno, "EACCES");
-  const missing = await files("javascript", id, { op: "read", path: "/workspace/missing.txt" }, 404);
-  assert.equal(missing.code, "FILE_NOT_FOUND");
-  assert.equal(missing.context.errno, "ENOENT");
-  // The gateway allows larger bodies on /files than on /execute, so an
-  // over-limit write can reach the runtime and be rejected there.
-  const tooLarge = await files(
-    "javascript",
-    id,
-    { op: "write", path: "/workspace/toolarge.txt", content: "z".repeat(1024 * 1024 + 1) },
-    413,
-  );
-  assert.equal(tooLarge.code, "FILE_TOO_LARGE");
-  assert.equal(tooLarge.context.errno, "EFBIG");
-  const large = await files("javascript", id, {
-    op: "write",
-    path: "/workspace/large.txt",
-    content: "y".repeat(600 * 1024),
-  });
-  assert.equal(large.path, "/workspace/large.txt");
-  console.log("javascript: file limits produce the ErrorResponse shape (code, context.errno)");
+    const escape = await files("javascript", id, { op: "read", path: "../../etc/passwd" }, 403);
+    assert.equal(escape.code, "PERMISSION_DENIED");
+    assert.equal(escape.context.errno, "EACCES");
+    const missing = await files("javascript", id, { op: "read", path: "/workspace/missing.txt" }, 404);
+    assert.equal(missing.code, "FILE_NOT_FOUND");
+    assert.equal(missing.context.errno, "ENOENT");
+    // The gateway allows larger bodies on /files than on /execute, so an
+    // over-limit write can reach the runtime and be rejected there.
+    const tooLarge = await files(
+      "javascript",
+      id,
+      { op: "write", path: "/workspace/toolarge.txt", content: "z".repeat(1024 * 1024 + 1) },
+      413,
+    );
+    assert.equal(tooLarge.code, "FILE_TOO_LARGE");
+    assert.equal(tooLarge.context.errno, "EFBIG");
+    const large = await files("javascript", id, {
+      op: "write",
+      path: "/workspace/large.txt",
+      content: "y".repeat(600 * 1024),
+    });
+    assert.equal(large.path, "/workspace/large.txt");
+    console.log("javascript: file limits produce the ErrorResponse shape (code, context.errno)");
+  } else {
+    // With the File API disabled, guest fs writes are EACCES regardless of
+    // size, and every /files op is 403 NOT_SUPPORTED regardless of path or
+    // size -- the escape/missing/too-large distinctions this block otherwise
+    // exercises don't apply.
+    const big = await execute("javascript", id, {
+      code:
+        'let code; try { fs.writeFileSync("/workspace/big.txt", "x".repeat(1024*1024+1)); code = "none"; } catch (e) { code = e.code; } code',
+    });
+    assert.deepEqual(big.results, [{ text: "'EACCES'" }]);
+
+    const escape = await files("javascript", id, { op: "read", path: "../../etc/passwd" }, 403);
+    assert.equal(escape.code, "NOT_SUPPORTED");
+    const missing = await files("javascript", id, { op: "read", path: "/workspace/missing.txt" }, 403);
+    assert.equal(missing.code, "NOT_SUPPORTED");
+    console.log(
+      "javascript: with the File API disabled, guest fs writes are EACCES and every /files op is 403 NOT_SUPPORTED",
+    );
+  }
 }
 
 // ---- fuel exhaustion --------------------------------------------------

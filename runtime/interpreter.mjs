@@ -95,11 +95,13 @@ function validateEnvVars(raw) {
 // Validates the `workspace` field of an `executeInContext` RPC call (see
 // docs/sandbox-1-0-design.md, "Workspace mirror and sync protocol"): the
 // shape of /workspace only, no contents -- those are pulled separately via
-// `getFiles`.
+// `getFiles` -- plus the `disabled` flag that gates all guest access to
+// /workspace for this execution (see Workspace.disabled in
+// packages/core/src/workspace.ts).
 function validateWorkspaceManifest(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     throw new ApiError(400, "workspace is required");
-  const { dirs, manifest } = raw;
+  const { dirs, manifest, disabled } = raw;
   if (!Array.isArray(dirs) || !dirs.every((d) => typeof d === "string"))
     throw new ApiError(400, "workspace.dirs must be an array of strings");
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest))
@@ -108,7 +110,9 @@ function validateWorkspaceManifest(raw) {
     if (typeof path !== "string" || typeof hash !== "string")
       throw new ApiError(400, "workspace.manifest must map string paths to string hashes");
   }
-  return { dirs, manifest };
+  if (disabled !== undefined && typeof disabled !== "boolean")
+    throw new ApiError(400, "workspace.disabled must be a boolean");
+  return { dirs, manifest, disabled: disabled === true };
 }
 
 // Validates what `getFiles(missing)` returned: an array of
@@ -664,6 +668,16 @@ export function createInterpreterClass(engine) {
           throw new ApiError(404, `Code context '${args.contextId}' not found`, ErrorCode.CONTEXT_NOT_FOUND, {
             contextId: args.contextId,
           });
+
+        // Must be set before _run() -> _ensureInstance() boots/restores the
+        // instance and wires the WASI host's workspaceDisabled getter to
+        // this flag (see runtime/wasi.mjs, runtime/javascript.mjs's
+        // createSessionHost, runtime/embedded.mjs). applySync below ignores
+        // this flag entirely -- an empty manifest still wipes the mirror
+        // down to nothing even while disabled -- and _destroy() builds a
+        // fresh Workspace (disabled defaults to false), so the flag always
+        // resets on eviction.
+        this.workspace.disabled = workspaceManifest.disabled;
 
         // Reconcile the mirror before running anything (docs/sandbox-1-0-
         // design.md, "Workspace mirror and sync protocol"): create dirs,

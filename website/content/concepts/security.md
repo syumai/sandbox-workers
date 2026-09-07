@@ -40,7 +40,7 @@ Apply these at the boundary where your application accepts untrusted input, befo
 
 ## The Playground has none of this
 
-The Playground gateway that ships with this repository is a demonstration: it has no authentication, no rate limiting, and no per-user id scoping. Treat it as a local development and evaluation tool, not as a template for a public-facing deployment.
+The Playground gateway that ships with this repository is a demonstration: it has no authentication, no rate limiting, and no per-user id scoping. Treat it as a local development and evaluation tool, not as a template for a public-facing deployment. The public Playground deployment does disable the File API (`SANDBOX_FILE_API=disabled`, see [Environment variables](/configuration/environment-variables#sandbox_file_api--your-own-worker)), so nothing anyone writes to `/workspace` there is stored — but that's a mitigation for one specific risk, not a substitute for the items above.
 
 ## Related resources
 

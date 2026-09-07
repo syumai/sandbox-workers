@@ -181,6 +181,115 @@ for (const language of ["python", "perl"]) {
   });
 }
 
+// ---- workspace.disabled: guest /workspace lockout (runtime/wasi.mjs) -----
+
+test("python session: workspace.disabled gates open()/os.* with PermissionError", () => {
+  const module = new WebAssembly.Module(readFileSync("packages/python/dist/engine.wasm"));
+  const archive = readFileSync("packages/python/dist/stdlib.bin");
+  const workspace = new Workspace();
+  const session = createEmbeddedSession(module, archive, "python", { workspace, cwd: "/workspace" });
+  workspace.disabled = true;
+
+  const write = session.execute({
+    code:
+      "try:\n    open('/workspace/a.txt', 'w')\n    r = 'ok'\nexcept Exception as e:\n    r = type(e).__name__\nr",
+  });
+  assert.deepEqual(write.results, [{ text: "'PermissionError'" }]);
+
+  const read = session.execute({
+    code:
+      "try:\n    open('/workspace/a.txt')\n    r = 'ok'\nexcept Exception as e:\n    r = type(e).__name__\nr",
+  });
+  assert.deepEqual(read.results, [{ text: "'PermissionError'" }]);
+
+  const mkdir = session.execute({
+    code:
+      "import os\ntry:\n    os.mkdir('/workspace/d')\n    r = 'ok'\nexcept Exception as e:\n    r = type(e).__name__\nr",
+  });
+  assert.deepEqual(mkdir.results, [{ text: "'PermissionError'" }]);
+
+  const listdir = session.execute({
+    code:
+      "try:\n    os.listdir('/workspace')\n    r = 'ok'\nexcept Exception as e:\n    r = type(e).__name__\nr",
+  });
+  assert.deepEqual(listdir.results, [{ text: "'PermissionError'" }]);
+
+  const cwd = session.execute({ code: "os.getcwd()" });
+  assert.deepEqual(cwd.results, [{ text: "'/workspace'" }]);
+
+  const json = session.execute({ code: "import json\njson.dumps([1])" });
+  assert.deepEqual(json.results, [{ text: "'[1]'" }]);
+  assert.equal(json.error, undefined);
+
+  assert.equal(session.canSnapshot(), true);
+});
+
+test("python session: workspace.disabled is read live, not captured at session boot", () => {
+  const module = new WebAssembly.Module(readFileSync("packages/python/dist/engine.wasm"));
+  const archive = readFileSync("packages/python/dist/stdlib.bin");
+  const workspace = new Workspace();
+  const session = createEmbeddedSession(module, archive, "python", { workspace, cwd: "/workspace" });
+  workspace.disabled = true;
+
+  const denied = session.execute({
+    code:
+      "try:\n    open('/workspace/a.txt', 'w')\n    r = 'ok'\nexcept Exception as e:\n    r = type(e).__name__\nr",
+  });
+  assert.deepEqual(denied.results, [{ text: "'PermissionError'" }]);
+
+  workspace.disabled = false;
+  const allowed = session.execute({
+    code: "open('/workspace/a.txt', 'w').write('y')\nopen('/workspace/a.txt').read()",
+  });
+  assert.deepEqual(allowed.results, [{ text: "'y'" }]);
+  assert.equal(allowed.error, undefined);
+});
+
+test("perl session: workspace.disabled gates open() with Permission denied", () => {
+  const module = new WebAssembly.Module(readFileSync("packages/perl/dist/engine.wasm"));
+  const archive = readFileSync("packages/perl/dist/stdlib.bin");
+  const workspace = new Workspace();
+  const session = createEmbeddedSession(module, archive, "perl", { workspace, cwd: "/workspace" });
+  workspace.disabled = true;
+
+  const write = session.execute({
+    code: `open(my $fh, '>', '/workspace/a.txt') ? 'ok' : "$!";`,
+  });
+  assert.equal(write.results.length, 1);
+  assert.match(write.results[0].text, /Permission denied/);
+
+  const read = session.execute({
+    code: `open(my $fh, '<', '/workspace/a.txt') ? 'ok' : "$!";`,
+  });
+  assert.equal(read.results.length, 1);
+  assert.match(read.results[0].text, /Permission denied/);
+
+  const cwd = session.execute({ code: "use Cwd; getcwd();" });
+  assert.deepEqual(cwd.results, [{ text: "/workspace" }]);
+
+  assert.equal(session.canSnapshot(), true);
+});
+
+test("perl session: workspace.disabled is read live, not captured at session boot", () => {
+  const module = new WebAssembly.Module(readFileSync("packages/perl/dist/engine.wasm"));
+  const archive = readFileSync("packages/perl/dist/stdlib.bin");
+  const workspace = new Workspace();
+  const session = createEmbeddedSession(module, archive, "perl", { workspace, cwd: "/workspace" });
+  workspace.disabled = true;
+
+  const denied = session.execute({
+    code: `open(my $fh, '>', '/workspace/a.txt') ? 'ok' : "$!";`,
+  });
+  assert.match(denied.results[0].text, /Permission denied/);
+
+  workspace.disabled = false;
+  const allowed = session.execute({
+    code: `open(my $fh, '>', '/workspace/a.txt') ? 'ok' : "$!";`,
+  });
+  assert.deepEqual(allowed.results, [{ text: "ok" }]);
+  assert.equal(allowed.error, undefined);
+});
+
 test("python session: `import lib` resolves modules from /workspace", () => {
   const module = new WebAssembly.Module(readFileSync("packages/python/dist/engine.wasm"));
   const archive = readFileSync("packages/python/dist/stdlib.bin");

@@ -90,7 +90,12 @@ class MountedPreopenDirectory extends PreopenDirectory {
   }
 }
 
-export function createWasi(module, archive, meter, envVars = {}, workspaceDir = null) {
+export function createWasi(module, archive, meter, envVars = {}, workspaceDir = null, options = {}) {
+  // A getter, not a captured boolean: the sandbox can flip
+  // `workspace.disabled` between executions of the same durable session (see
+  // runtime/interpreter.mjs's `_executeInContext`), long after this host was
+  // built at boot/restore time.
+  const workspaceDisabled = options.workspaceDisabled ?? (() => false);
   const chunks = { stdout: [], stderr: [] };
   let size = 0;
   const capture = (level, text) => {
@@ -151,11 +156,17 @@ export function createWasi(module, archive, meter, envVars = {}, workspaceDir = 
     };
   }
   Object.assign((imports.wasi_snapshot_preview1 ??= {}), wasi.wasiImport);
-  // Directory-scoped write ops: allowed when the operation's directory fd
-  // belongs to the mounted /workspace tree (tagged via WORKSPACE_TAG, see
-  // runtime/workspace.mjs), denied everywhere else (e.g. /stdlib stays
-  // read-only). Capture the real implementations before the blanket-deny
-  // loop below replaces them.
+  // Directory-scoped write ops, three-way policy:
+  //  - outside /workspace (e.g. /stdlib): always denied (EPERM) -- read-only
+  //    library mount, never writable regardless of the workspace flag.
+  //  - inside /workspace while the sandbox's File API is disabled
+  //    (`workspaceDisabled()` true): denied (EACCES) -- the guest sees a
+  //    permission error, matching JS's Workspace.disabled behavior.
+  //  - inside /workspace otherwise: allowed, delegated to the real
+  //    implementation.
+  // Directory fd -> "belongs to /workspace" is decided via WORKSPACE_TAG (see
+  // runtime/workspace.mjs). Capture the real implementations before the
+  // blanket-deny loop below replaces them.
   const isWorkspaceFd = (fd) => {
     const entry = wasi.fds[fd];
     return !!(entry && entry.dir && entry.dir[WORKSPACE_TAG]);
@@ -181,16 +192,14 @@ export function createWasi(module, archive, meter, envVars = {}, workspaceDir = 
     )
       imports.wasi_snapshot_preview1[name] = () => 63;
   }
-  imports.wasi_snapshot_preview1.path_create_directory = (fd, ...rest) =>
-    isWorkspaceFd(fd) ? gatedOriginals.path_create_directory(fd, ...rest) : 63;
-  imports.wasi_snapshot_preview1.path_unlink_file = (fd, ...rest) =>
-    isWorkspaceFd(fd) ? gatedOriginals.path_unlink_file(fd, ...rest) : 63;
-  imports.wasi_snapshot_preview1.path_remove_directory = (fd, ...rest) =>
-    isWorkspaceFd(fd) ? gatedOriginals.path_remove_directory(fd, ...rest) : 63;
+  const EACCES = 2, EPERM = 63;
+  // 0 = allowed; EPERM outside /workspace (e.g. /stdlib); EACCES inside
+  // /workspace while the sandbox's File API is disabled.
+  const gate = (fd) => (!isWorkspaceFd(fd) ? EPERM : workspaceDisabled() ? EACCES : 0);
+  for (const name of ["path_create_directory", "path_unlink_file", "path_remove_directory"])
+    imports.wasi_snapshot_preview1[name] = (fd, ...rest) => gate(fd) || gatedOriginals[name](fd, ...rest);
   imports.wasi_snapshot_preview1.path_rename = (fd, oldPtr, oldLen, newFd, ...rest) =>
-    isWorkspaceFd(fd) && isWorkspaceFd(newFd)
-      ? gatedOriginals.path_rename(fd, oldPtr, oldLen, newFd, ...rest)
-      : 63;
+    gate(fd) || gate(newFd) || gatedOriginals.path_rename(fd, oldPtr, oldLen, newFd, ...rest);
   Object.assign((imports.env ??= {}), {
     getpid: () => 1,
     getuid: () => 1000,
@@ -213,9 +222,18 @@ export function createWasi(module, archive, meter, envVars = {}, workspaceDir = 
   // args: (fd, dirflags, path_ptr, path_len, oflags, ...). oflags bits 0
   // (CREAT) and 3 (TRUNC) are the only ones that can turn a read into a
   // write against something that doesn't already exist as a writable file;
-  // gate those per-directory, same as the four ops above.
-  imports.wasi_snapshot_preview1.path_open = (...args) =>
-    args[4] & 9 && !isWorkspaceFd(args[0]) ? 63 : open(...args);
+  // outside /workspace those are always denied (EPERM), same as the four ops
+  // above. Inside /workspace: reads AND writes are refused while disabled
+  // (so a guest sees PermissionError, not FileNotFoundError) -- unlike the
+  // four ops above, this can't be narrowed to just the write-ish oflags
+  // because a plain read-only open must fail too.
+  imports.wasi_snapshot_preview1.path_open = (...args) => {
+    if (isWorkspaceFd(args[0])) return workspaceDisabled() ? EACCES : open(...args);
+    return args[4] & 9 ? EPERM : open(...args);
+  };
+  const readdir = imports.wasi_snapshot_preview1.fd_readdir;
+  imports.wasi_snapshot_preview1.fd_readdir = (fd, ...rest) =>
+    isWorkspaceFd(fd) && workspaceDisabled() ? EACCES : readdir(fd, ...rest);
   imports.wasi_snapshot_preview1.path_filestat_mode = () => 63;
   imports.sandbox = { tick: meter.tick };
   return {

@@ -39,7 +39,10 @@ Add the `Sandbox` Durable Object binding and its migration, plus one Service Bin
     { "binding": "PYTHON", "service": "sandbox-python" },
     { "binding": "JAVASCRIPT", "service": "sandbox-javascript" },
   ],
-  "vars": { "SANDBOX_IDLE_TTL_MS": "86400000" }, // optional; "0" disables expiry
+  "vars": {
+    "SANDBOX_IDLE_TTL_MS": "86400000", // optional; "0" disables expiry
+    // "SANDBOX_FILE_API": "disabled", // optional; turns the File API off (see Environment variables)
+  },
 }
 ```
 

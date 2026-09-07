@@ -194,6 +194,8 @@ export interface SandboxInfo {
   }>;
   /** `files` counts entries (files + directories), as before. */
   workspace: { files: number; bytes: number };
+  /** False when the caller's Worker sets SANDBOX_FILE_API=disabled: file methods throw NotSupportedError and /workspace is empty, read-only for guests, and never persisted. */
+  fileApi: boolean;
   expiresAt: number | null;
 }
 

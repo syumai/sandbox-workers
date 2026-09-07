@@ -98,6 +98,13 @@ export interface InterpreterWorkspaceManifest {
   dirs: string[];
   /** Every file: absolute path -> content hash (`Workspace.hashBytes`). */
   manifest: Record<string, string>;
+  /**
+   * True when the sandbox's File API is disabled (`SANDBOX_FILE_API=disabled`
+   * on the caller's Worker): `dirs`/`manifest` are always empty, `getFiles`
+   * always returns `[]`, and the interpreter must reject every guest access
+   * to /workspace with EACCES (see `Workspace.disabled`).
+   */
+  disabled?: boolean;
 }
 
 /** One file's contents on the RPC wire: raw bytes, no base64 transcoding. */

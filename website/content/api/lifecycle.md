@@ -155,6 +155,7 @@ interface SandboxInfo {
       stale: boolean;
     } | null;
   }>;
+  fileApi: boolean;
   workspace: { files: number; bytes: number };
   expiresAt: number | null;
 }
@@ -164,5 +165,6 @@ interface SandboxInfo {
 - `createdAt`, `lastUsed` — ISO timestamps for the sandbox itself.
 - `envVars` — the env vars currently layered onto the sandbox by `setEnvVars()`.
 - `contexts` — one entry per code context, across every binding. `binding` is the Service Binding name it was created with; `language`/`engine` come from that binding's runtime Worker. `executions` is the number of times that context has run code. `snapshot` describes the context's stored memory snapshot on its runtime Worker: `pages`/`bytes` are the size of the live linear memory, `storedBytes` is the actual on-disk footprint — always a multiple of 1 MiB and at least `bytes`, since snapshots are stored in 1 MiB chunks and a chunk containing even one non-zero page is written whole — `takenAt` is when it was written, and `stale: true` means the most recent execution couldn't be snapshotted cleanly; `snapshot` is `null` before that context's first snapshot. See [Code contexts](/concepts/code-contexts) for how and when snapshots are taken.
-- `workspace` — the number of entries (files and directories) and total bytes currently stored under `/workspace`.
+- `fileApi` — `false` when this Worker's `SANDBOX_FILE_API` is set to `"disabled"`; `true` otherwise. See [Environment variables](/configuration/environment-variables#sandbox_file_api--your-own-worker).
+- `workspace` — the number of entries (files and directories) and total bytes currently stored under `/workspace`; always `{ files: 0, bytes: 0 }` when `fileApi` is `false`, since nothing is persisted while the File API is disabled.
 - `expiresAt` — the epoch-millisecond deadline of the sandbox's idle-expiry alarm, or `null` when expiry is disabled. See [Sandboxes](/concepts/sandboxes) for the expiry behavior and [Environment variables](/configuration/environment-variables) for the `SANDBOX_IDLE_TTL_MS` setting that controls it.

@@ -1,6 +1,6 @@
 ---
 title: Environment variables
-description: Guest envVars per call and per context, setEnvVars layering, per-language access, and the SANDBOX_IDLE_TTL_MS / INTERPRETER_IDLE_TTL_MS settings.
+description: Guest envVars per call and per context, setEnvVars layering, per-language access, the SANDBOX_IDLE_TTL_MS / INTERPRETER_IDLE_TTL_MS settings, and disabling the File API with SANDBOX_FILE_API.
 ---
 
 Environment variables work at two layers: guest-visible `envVars`, passed into executing code, and Worker `vars`, which configure a Worker itself (Wrangler's own environment variables) — and on this side, there are two separate idle-TTL settings, one per Worker.
@@ -90,9 +90,31 @@ Both default to 24 hours (Wrangler `vars` are always strings; unset or invalid v
 
 **Set `INTERPRETER_IDLE_TTL_MS` to at least `SANDBOX_IDLE_TTL_MS`.** If a runtime Worker's interpreter expires first, its memory snapshots are gone while the sandbox's registry still lists the context as live — the next `runCode` against it fails with `ContextNotFoundError` even though `sandbox.getInfo()` still shows the context. See [Sandboxes](/concepts/sandboxes) for the full idle-expiry behavior on both sides.
 
+## Disabling the File API (stateful mode only)
+
+### `SANDBOX_FILE_API` — your own Worker
+
+Turns the File API off for every sandbox your `Sandbox` Durable Object hosts:
+
+```jsonc
+// your wrangler.jsonc
+{
+  "vars": { "SANDBOX_FILE_API": "disabled" }, // optional; unset or any other value keeps it enabled
+}
+```
+
+When disabled:
+
+- Every file method (`writeFile`, `readFile`, `mkdir`, `deleteFile`, `renameFile`, `moveFile`, `listFiles`, `exists`) throws `NotSupportedError` (`code: "NOT_SUPPORTED"`, HTTP 403) instead of running. On the wire, `POST /files` answers 403. See [Errors](/api/errors).
+- `/workspace` is never persisted: the `Sandbox` Durable Object neither reads nor writes its `files` table, and the workspace diff a runtime Worker returns after `runCode` is discarded.
+- Guest code loses `/workspace` too. Every `runCode` sends an empty workspace manifest with `disabled: true`, and the interpreter refuses every read, write, mkdir, delete, rename, and directory listing under `/workspace` with `EACCES` (a JavaScript `fs.*` `Error` with `code: "EACCES"`, a Python `PermissionError`, a Perl `open` failure with `$!` set to `Permission denied`, and a failed `import`/`require` of a module from `/workspace`). `process.cwd()`/`os.getcwd()` still return `/workspace` — the directory still exists as the cwd, just empty and inaccessible. Memory snapshots, globals, and code contexts are unaffected.
+- `sandbox.getInfo()` reports `fileApi: false`, and `workspace` then always reports `{ files: 0, bytes: 0 }`. See [Lifecycle](/api/lifecycle#types).
+- This guest-side lockout requires runtime Workers built from a version that understands the `disabled` manifest flag — an older runtime Worker ignores it. Nothing is stored either way (the sandbox still discards its writes), but guest code on an older runtime Worker wouldn't see `EACCES`.
+
 ## Related resources
 
 - [Wrangler configuration](/configuration/wrangler) — where `vars` and other Worker settings live.
 - [Execute code](/stateless/execute-code) — passing `envVars` to `runCode`.
 - [Code interpreter](/api/interpreter) — `createCodeContext`, `setEnvVars`, and `runCode` signatures.
 - [Sandboxes](/concepts/sandboxes) — idle expiry behavior in full, including what happens when the timers mismatch.
+- [Files](/api/files) — the File API this setting disables, and its error handling.

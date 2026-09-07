@@ -107,6 +107,10 @@ function makeInterpreter({ language, engine, contexts = true }) {
   const calls = [];
   const executeCalls = [];
   const getFilesCalls = [];
+  // Records what `getFiles` answered for the disabled-File-API probe (see
+  // "workspace.disabled === true" below), so a test can assert the sandbox
+  // answered `[]` rather than pulling anything real.
+  const disabledPulls = [];
   // Hook for the "getFiles returns fewer entries than asked" test: applied
   // to whatever `getFiles` returns before the interpreter validates/applies it.
   let transformPulled = (pulled) => pulled;
@@ -180,21 +184,29 @@ function makeInterpreter({ language, engine, contexts = true }) {
         }),
       };
     }
-    let { missing } = mirror.applySync({
-      dirs: args.workspace.dirs,
-      files: [],
-      manifest: args.workspace.manifest,
-    });
-    if (missing.length > 0) {
-      getFilesCalls.push(missing);
-      const pulled = transformPulled(await getFiles(missing));
-      ({ missing } = mirror.applySync({ dirs: args.workspace.dirs, files: pulled, manifest: args.workspace.manifest }));
+    if (args.workspace.disabled === true) {
+      // The File API is disabled: nothing to reconcile against (`dirs`/
+      // `manifest` are always empty) -- probe `getFiles` anyway to confirm
+      // the sandbox answers `[]` rather than pulling anything real.
+      const pulled = await getFiles(["/workspace/probe.txt"]);
+      disabledPulls.push(pulled);
+    } else {
+      let { missing } = mirror.applySync({
+        dirs: args.workspace.dirs,
+        files: [],
+        manifest: args.workspace.manifest,
+      });
       if (missing.length > 0) {
-        return {
-          ok: false,
-          status: 500,
-          body: errorBody(500, "INTERNAL_ERROR", `Sandbox did not provide ${missing.length} workspace file(s)`),
-        };
+        getFilesCalls.push(missing);
+        const pulled = transformPulled(await getFiles(missing));
+        ({ missing } = mirror.applySync({ dirs: args.workspace.dirs, files: pulled, manifest: args.workspace.manifest }));
+        if (missing.length > 0) {
+          return {
+            ok: false,
+            status: 500,
+            body: errorBody(500, "INTERNAL_ERROR", `Sandbox did not provide ${missing.length} workspace file(s)`),
+          };
+        }
       }
     }
 
@@ -257,6 +269,7 @@ function makeInterpreter({ language, engine, contexts = true }) {
     calls,
     executeCalls,
     getFilesCalls,
+    disabledPulls,
     contextsById,
     resetMirror() {
       mirror = new Workspace();
@@ -607,4 +620,63 @@ test("an empty directory created by mkdir reaches the sync payload's dirs on the
   // Also visible through the files API.
   const list = await call(sandbox, "POST", "/files", { op: "list", path: "/workspace" });
   assert.ok(list.body.files.some((f) => f.absolutePath === "/workspace/emptydir" && f.type === "directory"));
+});
+
+// ---- SANDBOX_FILE_API=disabled ----------------------------------------------
+
+test("SANDBOX_FILE_API=disabled: POST /files -> 403 NOT_SUPPORTED", async () => {
+  const js = makeInterpreter({ language: "javascript", engine: "SpiderMonkey" });
+  const { sandbox } = makeSandbox({ env: { JAVASCRIPT: js, SANDBOX_FILE_API: "disabled" } });
+
+  const res = await call(sandbox, "POST", "/files", { op: "write", path: "/workspace/a.txt", content: "hi" });
+  assert.equal(res.status, 403);
+  assert.equal(res.body.code, "NOT_SUPPORTED");
+  assert.equal(res.body.context.feature, "files");
+});
+
+test("SANDBOX_FILE_API=disabled: execute sends an empty/disabled workspace, getFiles answers [], nothing persists", async () => {
+  const js = makeInterpreter({ language: "javascript", engine: "SpiderMonkey" });
+  const { sandbox, db } = makeSandbox({ env: { JAVASCRIPT: js, SANDBOX_FILE_API: "disabled" } });
+
+  const ctx = (await call(sandbox, "POST", "/contexts", { binding: "JAVASCRIPT" })).body;
+  const res = await call(sandbox, "POST", "/execute", {
+    code: writeCmd("/workspace/a.txt", "x"),
+    contextId: ctx.id,
+  });
+  assert.equal(res.status, 200);
+
+  const sentArgs = js.executeCalls.at(-1).args;
+  assert.deepEqual(sentArgs.workspace, { dirs: [], manifest: {}, disabled: true });
+  assert.deepEqual(js.disabledPulls, [[]]);
+
+  const info = await call(sandbox, "GET", "/");
+  assert.equal(info.body.fileApi, false);
+  assert.deepEqual(info.body.workspace, { files: 0, bytes: 0 });
+  assert.equal(info.body.contexts[0].executions, 1);
+
+  assert.equal(db.prepare("SELECT count(*) AS n FROM files").get().n, 0);
+
+  const res2 = await call(sandbox, "POST", "/execute", {
+    code: writeCmd("/workspace/a.txt", "x"),
+    contextId: ctx.id,
+  });
+  assert.equal(res2.status, 200);
+  const info2 = await call(sandbox, "GET", "/");
+  assert.equal(info2.body.contexts[0].executions, 2);
+});
+
+test("default env: GET / has fileApi === true", async () => {
+  const js = makeInterpreter({ language: "javascript", engine: "SpiderMonkey" });
+  const { sandbox } = makeSandbox({ env: { JAVASCRIPT: js } });
+  const info = await call(sandbox, "GET", "/");
+  assert.equal(info.body.fileApi, true);
+});
+
+test("SANDBOX_FILE_API set to any other value behaves as enabled", async () => {
+  const js = makeInterpreter({ language: "javascript", engine: "SpiderMonkey" });
+  const { sandbox } = makeSandbox({ env: { JAVASCRIPT: js, SANDBOX_FILE_API: "enabled" } });
+
+  const res = await call(sandbox, "POST", "/files", { op: "write", path: "/workspace/a.txt", content: "hi" });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.success, true);
 });

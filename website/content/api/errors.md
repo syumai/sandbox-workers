@@ -27,6 +27,7 @@ Every thrown error is `SandboxError` or one of its subclasses, all exported by `
 | `ContextNotFoundError` | `CONTEXT_NOT_FOUND` | `contextId` |
 | `ValidationFailedError` | `VALIDATION_FAILED` | `validationErrors?` (an array of `{ field, message }`) |
 | `CodeExecutionError` | `CODE_EXECUTION_ERROR` | `contextId?`, `ename?`, `evalue?` |
+| `NotSupportedError` | `NOT_SUPPORTED` | `feature` |
 
 ## Binding validation errors
 
@@ -94,6 +95,7 @@ interface ErrorResponse {
 | `CONTEXT_NOT_FOUND` | 404 | Unknown `contextId` |
 | `VALIDATION_FAILED` | 400 | Malformed request (also used with 413/415/405 for request-shape failures) |
 | `CODE_EXECUTION_ERROR` | 500 | The engine failed before producing a result |
+| `NOT_SUPPORTED` | 403 | The File API is disabled for this Worker (`SANDBOX_FILE_API=disabled`) |
 | `INTERNAL_ERROR` | 500 | Anything else, or a non-JSON response |
 
 See [HTTP API](/api/http-api) for the full set of routes and status codes these errors come from.
