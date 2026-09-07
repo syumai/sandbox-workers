@@ -22,7 +22,7 @@ pnpm run deploy
 
 Before publication, install the local tarball produced by the repository's `pnpm run pack`.
 
-The initializer refuses to overwrite existing files. Choose a Worker name in `wrangler.jsonc` that fits your account. Public URLs are disabled.
+The initializer refuses to overwrite existing files. Choose a Worker name in `wrangler.javascript.jsonc` that fits your account. Public URLs are disabled.
 
 ## Existing Worker project
 
@@ -57,7 +57,7 @@ For local development run both Wrangler projects, or pass both `-c` configs to
 one `wrangler dev` command.
 
 This package's `INTERPRETER` Durable Object binding (`Interpreter`, already
-in this Worker's `wrangler.jsonc`) is what backs durable, stateful **code
+in this Worker's `wrangler.javascript.jsonc`) is what backs durable, stateful **code
 contexts** (globals persist across calls). To use them, your own Worker (not
 this one) hosts a `Sandbox` Durable Object from `@sandbox-workers/core` and
 opens contexts bound to this Worker by name, instead of the stateless

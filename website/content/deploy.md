@@ -54,33 +54,33 @@ See Cloudflare's [Deploy button documentation](https://developers.cloudflare.com
 After npm publication, use the shared CLI:
 
 ```sh
-pnpm dlx @sandbox-workers/cli init python my-sandbox
-cd my-sandbox
+pnpm dlx @sandbox-workers/cli init python,javascript my-runtimes
+cd my-runtimes
 pnpm install
 pnpm dry-run
 pnpm run deploy
 ```
 
 ```text
-sandbox-workers init <javascript|python|perl|ruby> [directory] [--stateless]
+sandbox-workers init <runtime>[,<runtime>...] [directory] [--stateless]
 sandbox-workers --help
 ```
 
-The default directory is `sandbox-<runtime>`. The CLI creates an entrypoint, manifest, Wrangler configuration, README, and ignore file. Existing files and symlinks are never overwritten. It does not install packages or deploy automatically. `--stateless` may appear before or after `directory`.
+`<runtime>` is a comma-separated list drawn from `javascript`, `python`, `perl`, `ruby` (order preserved, no duplicates). The default directory is `sandbox-runtimes`. The CLI creates one `wrangler.<runtime>.jsonc` and one `<runtime>.js` entrypoint per runtime, plus a single `package.json` whose `deploy` script deploys all of them, a README, and an ignore file. Existing files and symlinks are never overwritten. It does not install packages or deploy automatically. `--stateless` applies to every runtime in the list, and may appear before or after `directory`.
 
-Each generated entrypoint imports the selected package:
+Each generated entrypoint imports the corresponding package, for example `python.js`:
 
 ```js
 export { default, Interpreter } from "@sandbox-workers/python";
 ```
 
-The generated README links to that runtime's `LICENSE` and `THIRD_PARTY_NOTICES.md`. Read them before use or redistribution. The installed engine has its own upstream licenses in addition to the MIT-licensed adapter.
+The generated README links to each selected runtime's `LICENSE` and `THIRD_PARTY_NOTICES.md`. Read them before use or redistribution. Each installed engine has its own upstream licenses in addition to the MIT-licensed adapter.
 
-This deploys the **runtime Worker** only. It serves both modes: your own Worker (the caller) can call it directly with the free `runCode` for stateless mode, or separately export the `Sandbox` Durable Object from `@sandbox-workers/core` and bind this Worker by name as a Service Binding for stateful mode — see [Get started with stateless mode](/stateless/get-started) and [Get started with stateful mode](/stateful/get-started).
+This deploys **runtime Workers** only, one per selected runtime. Each serves both modes: your own Worker (the caller) can call it directly with the free `runCode` for stateless mode, or separately export the `Sandbox` Durable Object from `@sandbox-workers/core` and bind it by name as a Service Binding for stateful mode — see [Get started with stateless mode](/stateless/get-started) and [Get started with stateful mode](/stateful/get-started).
 
 ### Stateless-only runtime Workers
 
-Pass `--stateless` to scaffold a stateless-only runtime Worker: no `durable_objects`/`migrations` in `wrangler.jsonc`, and the entrypoint exports only `default` (no `Interpreter` Durable Object class), so `GET /interpreter` reports `contexts: false`. This is always the case for Ruby, which has no `Interpreter` class regardless of the flag. A stateless-only runtime Worker still works normally in stateless mode — call it with the free `runCode` function:
+Pass `--stateless` to scaffold stateless-only runtime Workers: no `durable_objects`/`migrations` in any `wrangler.<runtime>.jsonc`, and each entrypoint exports only `default` (no `Interpreter` Durable Object class), so `GET /interpreter` reports `contexts: false` on every one of them. `--stateless` applies to every runtime in the list — there is no way to make some stateful and others stateless in one `init` call; run `init` again in a different directory for a mixed setup. This is always the case for Ruby, which has no `Interpreter` class regardless of the flag. A stateless-only runtime Worker still works normally in stateless mode — call it with the free `runCode` function:
 
 ```ts
 import { runCode } from "@sandbox-workers/core";
@@ -89,7 +89,7 @@ const result = await runCode(env.PYTHON, "1 + 1"); // PYTHON: a Service Binding 
 
 In stateful mode, a stateless-only runtime Worker's `contexts: false` means `createCodeContext({ binding })` against it fails with `ValidationFailedError`, and `sandbox.interpreter.runCode(code, { binding })` (no `context`) falls back to running statelessly instead.
 
-You can get the same result by hand, without the flag: delete the `durable_objects` and `migrations` blocks from an already-generated `wrangler.jsonc` (and drop the `Interpreter` export from `index.js`, though a leftover export is harmless if the binding itself is gone). The Worker still serves plain `/execute` and `GET /interpreter`; every `/interpreters/:key/*` route then answers 400 — see [HTTP API](/api/http-api) for exactly what still works without the binding.
+You can get the same result by hand, without the flag: delete the `durable_objects` and `migrations` blocks from an already-generated `wrangler.<runtime>.jsonc` (and drop the `Interpreter` export from that runtime's `<runtime>.js`, though a leftover export is harmless if the binding itself is gone). The Worker still serves plain `/execute` and `GET /interpreter`; every `/interpreters/:key/*` route then answers 400 — see [HTTP API](/api/http-api) for exactly what still works without the binding.
 
 ### Before npm publication
 
@@ -98,9 +98,9 @@ Use one of the deploy buttons above, or build local packages:
 ```sh
 pnpm install --frozen-lockfile
 pnpm run pack
-node packages/cli/bin/cli.mjs init python /tmp/my-sandbox
-cd /tmp/my-sandbox
-pnpm add /absolute/path/to/dist/sandbox-workers-python-0.1.0.tgz
+node packages/cli/bin/cli.mjs init python,javascript /tmp/my-runtimes
+cd /tmp/my-runtimes
+pnpm add /absolute/path/to/dist/sandbox-workers-python-0.1.0.tgz /absolute/path/to/dist/sandbox-workers-javascript-0.1.0.tgz
 pnpm dry-run
 ```
 

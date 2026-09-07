@@ -529,7 +529,10 @@ UI (`ui/main.js`): no protocol change is needed (`GET` info still has
   CLI (`packages/cli/bin/cli.mjs`): as in "Caller configuration"; READMEs
   show the caller snippet (`export { Sandbox }`, `getSandbox(env.Sandbox, id)`,
   `sandbox.interpreter.createCodeContext({ binding })`) and the caller's
-  `wrangler.jsonc` blocks.
+  `wrangler.jsonc` blocks. (Since 2026-09-07 the CLI's runtime argument is a
+  comma-separated list, generating one `wrangler.<runtime>.jsonc` +
+  `<runtime>.js` per runtime in one project; see
+  `docs/sdk-parity-design.md`.)
 - `package.json` scripts: `dev:caller` / `test:caller` replace
   `dev:do-binding` / `test:do-binding` (the caller fixture now binds two
   runtime Workers, JavaScript and Python).

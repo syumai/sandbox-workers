@@ -412,7 +412,11 @@ added 2026-09-06:
   only `default`, and the README documents the `runCode(env.SANDBOX, code)`
   caller snippet instead of `getSandbox`. Without the flag, the README's
   code-contexts paragraph now also mentions that stateless
-  `runCode(env.SANDBOX, code)` works against the same Worker.
+  `runCode(env.SANDBOX, code)` works against the same Worker. (Since
+  2026-09-07 the runtime argument is a comma-separated list, generating one
+  `wrangler.<runtime>.jsonc` + `<runtime>.js` per runtime in one project,
+  with a single package.json covering all of them; see
+  `packages/cli/bin/cli.mjs`.)
 - **Docs**: `website/content/guides/execute-code.md` now leads with
   `runCode(env.SANDBOX, code, options)` and states plainly that it's the
   stateless path (fresh Wasm instance per call), linking to

@@ -20,7 +20,7 @@ pnpm run deploy
 
 Before publication, install the local tarball produced by the repository's `pnpm run pack`.
 
-The initializer refuses to overwrite existing files. Choose a Worker name in `wrangler.jsonc` that fits your account. Public URLs are disabled. Use a Paid plan for execution: interpreter initialization can exceed the Free plan's CPU allowance.
+The initializer refuses to overwrite existing files. Choose a Worker name in `wrangler.ruby.jsonc` that fits your account. Public URLs are disabled. Use a Paid plan for execution: interpreter initialization can exceed the Free plan's CPU allowance.
 
 ## Existing Worker project
 

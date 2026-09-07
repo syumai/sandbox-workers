@@ -44,14 +44,14 @@ for (const language of ["python", "perl", "ruby"]) {
     );
     assert.equal(pkg.dependencies, undefined);
     const config = JSON.parse(
-      await readFile(join(worker, "wrangler.jsonc"), "utf8"),
+      await readFile(join(worker, `wrangler.${language}.jsonc`), "utf8"),
     );
     assert.equal(config.workers_dev, false);
     assert.equal(config.preview_urls, false);
     // Durable sandboxes (an Interpreter Durable Object backing memory
     // snapshots) are supported for python and perl but not ruby; see
     // docs/sandbox-1-0-design.md.
-    const indexSource = await readFile(join(worker, "index.js"), "utf8");
+    const indexSource = await readFile(join(worker, `${language}.js`), "utf8");
     if (language === "ruby") {
       assert.equal(config.durable_objects, undefined);
       assert.equal(config.migrations, undefined);
@@ -70,6 +70,8 @@ for (const language of ["python", "perl", "ruby"]) {
         join(worker, "node_modules/wrangler/bin/wrangler.js"),
         "deploy",
         "--dry-run",
+        "-c",
+        `wrangler.${language}.jsonc`,
         "--outdir",
         "bundled",
       ],

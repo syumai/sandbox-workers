@@ -51,7 +51,7 @@ try {
   );
   const worker = join(dir, "worker");
   const config = JSON.parse(
-    await readFile(join(worker, "wrangler.jsonc"), "utf8"),
+    await readFile(join(worker, "wrangler.javascript.jsonc"), "utf8"),
   );
   assert.equal(config.workers_dev, false);
   assert.equal(config.preview_urls, false);
@@ -63,7 +63,7 @@ try {
   assert.deepEqual(config.migrations, [
     { tag: "v1", new_sqlite_classes: ["Interpreter"] },
   ]);
-  const indexSource = await readFile(join(worker, "index.js"), "utf8");
+  const indexSource = await readFile(join(worker, "javascript.js"), "utf8");
   assert.equal(
     indexSource,
     'export { default, Interpreter } from "@sandbox-workers/javascript";\n',
@@ -80,6 +80,8 @@ try {
       join(worker, "node_modules/wrangler/bin/wrangler.js"),
       "deploy",
       "--dry-run",
+      "-c",
+      "wrangler.javascript.jsonc",
       "--outdir",
       "bundled",
     ],

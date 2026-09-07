@@ -20,7 +20,7 @@ pnpm run deploy
 
 Before publication, install the local tarball produced by the repository's `pnpm run pack`.
 
-The initializer refuses to overwrite existing files. Choose a Worker name in `wrangler.jsonc` that fits your account. Public URLs are disabled. Use a Paid plan for execution: interpreter initialization can exceed the Free plan's CPU allowance.
+The initializer refuses to overwrite existing files. Choose a Worker name in `wrangler.perl.jsonc` that fits your account. Public URLs are disabled. Use a Paid plan for execution: interpreter initialization can exceed the Free plan's CPU allowance.
 
 ## Existing Worker project
 
@@ -55,7 +55,7 @@ const output = await runCode(env.PERL, "my $x = $ENV{X};\n$x ** 2", {
 ```
 
 This package's `INTERPRETER` Durable Object binding (`Interpreter`, already
-in this Worker's `wrangler.jsonc`) is what backs durable, stateful **code
+in this Worker's `wrangler.perl.jsonc`) is what backs durable, stateful **code
 contexts** (globals persist across calls). To use them, your own Worker (not
 this one) hosts a `Sandbox` Durable Object from `@sandbox-workers/core` and
 opens contexts bound to this Worker by name, instead of the stateless

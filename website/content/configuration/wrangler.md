@@ -48,12 +48,12 @@ The `durable_objects`/`migrations` block is required for stateful mode, since `S
 
 ## The runtime Worker's `wrangler.jsonc`
 
-The CLI initializer (`sandbox-workers init javascript|python|perl|ruby`) and the deploy-to-Cloudflare templates already generate this side of the configuration — you don't normally hand-write it. The generated JavaScript, Python, and Perl templates include:
+The CLI initializer (`sandbox-workers init javascript,python[,perl,ruby]`) and the deploy-to-Cloudflare templates already generate this side of the configuration — you don't normally hand-write it. The CLI generates one `wrangler.<runtime>.jsonc` per runtime in the list. The generated JavaScript, Python, and Perl configs include:
 
 ```jsonc
 {
   "name": "sandbox-javascript",
-  "main": "index.js",
+  "main": "javascript.js",
   "compatibility_date": "2026-09-04",
   "workers_dev": false,
   "preview_urls": false,

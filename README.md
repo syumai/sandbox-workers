@@ -35,7 +35,7 @@ Documentation is built with **Blume** and served at `/docs/` alongside the Playg
 These commands apply after the first npm release. For local tarballs, see the packaging section below.
 
 ```sh
-pnpm dlx @sandbox-workers/cli init javascript my-sandbox
+pnpm dlx @sandbox-workers/cli init javascript,python my-sandbox
 cd my-sandbox
 pnpm install
 pnpm run dry-run
@@ -160,9 +160,9 @@ Package tests install tarballs outside the workspace and verify the initializer,
 To try a local tarball manually:
 
 ```sh
-node packages/cli/bin/cli.mjs init javascript /tmp/my-sandbox
+node packages/cli/bin/cli.mjs init javascript,python /tmp/my-sandbox
 cd /tmp/my-sandbox
-pnpm add /absolute/path/to/dist/sandbox-workers-javascript-0.1.0.tgz
+pnpm add /absolute/path/to/dist/sandbox-workers-javascript-0.1.0.tgz /absolute/path/to/dist/sandbox-workers-python-0.1.0.tgz
 pnpm run dry-run
 ```
 
