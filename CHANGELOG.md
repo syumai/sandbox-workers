@@ -1,5 +1,7 @@
 # Changelog
 
+## [v0.1.1](https://github.com/syumai/sandbox-workers/compare/v0.1.0...v0.1.1) - 2026-09-08
+
 ## [v0.1.0](https://github.com/syumai/sandbox-workers/commits/v0.1.0) - 2026-09-08
 
 Initial release of the `@sandbox-workers` packages on npm.
