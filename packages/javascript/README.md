@@ -2,15 +2,13 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fsyumai%2Fsandbox-workers%2Ftree%2Fmain%2Ftemplates%2Fjavascript)
 
-Use the source template before npm publication. It creates a private Worker; configure your caller’s Service Binding after deployment. The source repository must be public for the button to work.
+Use the source template as an alternative to the npm package. It creates a private Worker; configure your caller’s Service Binding after deployment. The source repository must be public for the button to work.
 
 A Cloudflare Workers Service Binding runtime containing SpiderMonkey (Firefox 147)
 compiled to Wasm via [goccy/spidermonkey-wasm](https://github.com/goccy/spidermonkey-wasm)
-v0.2.6. Version 0.1.0 preview; not yet published to npm.
+v0.2.6.
 
 ## Quick start
-
-After the first npm release:
 
 ```sh
 pnpm dlx @sandbox-workers/cli init javascript my-javascript

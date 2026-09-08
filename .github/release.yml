@@ -1,0 +1,14 @@
+changelog:
+  exclude:
+    labels:
+      - tagpr
+  categories:
+    - title: Breaking changes
+      labels:
+        - major
+    - title: Features
+      labels:
+        - minor
+    - title: Other changes
+      labels:
+        - "*"

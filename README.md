@@ -13,11 +13,11 @@ Deploy Wasm language runtimes to your own Cloudflare account and execute code th
 | `packages/core`               | Shared execution protocol and typed Service Binding client  | `@sandbox-workers/core`       |
 | Root `src/`, `ui/`, `engine/` | Playground gateway, editor UI, and deployment configuration | Private; not published to npm |
 
-Version 0.1.0 packages are prepared, but **have not been published to npm**. JavaScript, Python, Perl, and Ruby each run in a separate Worker. See [language runtimes](docs/languages.md) for compatibility limits and the PHP evaluation.
+Version 0.1.0 packages are published on npm under the `@sandbox-workers` scope. JavaScript, Python, Perl, and Ruby each run in a separate Worker. See [language runtimes](docs/languages.md) for compatibility limits and the PHP evaluation.
 
 ## Deploy to Cloudflare
 
-Each button creates one private runtime Worker. Add its deployed name as a Service Binding in your caller afterward. These source templates do not depend on unpublished npm packages.
+Each button creates one private runtime Worker. Add its deployed name as a Service Binding in your caller afterward. These source templates build from source and do not depend on the npm packages.
 
 | Runtime    | Deploy                                                                                                                                                                                                         |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -32,7 +32,7 @@ Documentation is built with **Blume** and served at `/docs/` alongside the Playg
 
 ## Deploy a runtime
 
-These commands apply after the first npm release. For local tarballs, see the packaging section below.
+These commands use the published npm packages. For local tarballs, see the packaging section below.
 
 ```sh
 pnpm dlx @sandbox-workers/cli init javascript,python my-sandbox
@@ -146,12 +146,12 @@ Use a Paid plan for runtime performance evaluation. The 64 MiB upload limit is s
 
 ```sh
 pnpm run pack
-# dist/sandbox-workers-cli-0.1.0.tgz
-# dist/sandbox-workers-core-0.1.0.tgz
-# dist/sandbox-workers-javascript-0.1.0.tgz
-# dist/sandbox-workers-python-0.1.0.tgz
-# dist/sandbox-workers-perl-0.1.0.tgz
-# dist/sandbox-workers-ruby-0.1.0.tgz
+# dist/sandbox-workers-cli-<version>.tgz
+# dist/sandbox-workers-core-<version>.tgz
+# dist/sandbox-workers-javascript-<version>.tgz
+# dist/sandbox-workers-python-<version>.tgz
+# dist/sandbox-workers-perl-<version>.tgz
+# dist/sandbox-workers-ruby-<version>.tgz
 pnpm run test:package
 ```
 
@@ -162,28 +162,23 @@ To try a local tarball manually:
 ```sh
 node packages/cli/bin/cli.mjs init javascript,python /tmp/my-sandbox
 cd /tmp/my-sandbox
-pnpm add /absolute/path/to/dist/sandbox-workers-javascript-0.1.0.tgz /absolute/path/to/dist/sandbox-workers-python-0.1.0.tgz
+pnpm add /absolute/path/to/dist/sandbox-workers-javascript-<version>.tgz /absolute/path/to/dist/sandbox-workers-python-<version>.tgz
 pnpm run dry-run
 ```
 
 ## Release
 
-1. Log in to npm with permission to publish under the `@sandbox-workers` scope.
-2. Update package versions, Playground dependencies, and runtime metadata together, then run `pnpm add`.
-3. Run `pnpm run pack`, `pnpm run check`, `pnpm test`, and `pnpm run test:package`.
-4. Review each runtime's upstream licenses and corresponding sources in its `THIRD_PARTY_NOTICES.md`.
-5. Publish the exact tarballs that were validated.
+Releases are automated with [tagpr](https://github.com/Songmu/tagpr), configured in `.tagpr`. Every pull request merged to `main` may carry a `minor` or `major` label; a PR with neither label produces a patch release.
 
-```sh
-npm publish dist/sandbox-workers-cli-0.1.0.tgz --access public
-npm publish dist/sandbox-workers-core-0.1.0.tgz --access public
-npm publish dist/sandbox-workers-javascript-0.1.0.tgz --access public
-npm publish dist/sandbox-workers-python-0.1.0.tgz --access public
-npm publish dist/sandbox-workers-perl-0.1.0.tgz --access public
-npm publish dist/sandbox-workers-ruby-0.1.0.tgz --access public
-```
+1. Merge pull requests as usual, adding a `minor` or `major` label when a change should bump beyond a patch. tagpr keeps a "Release vX.Y.Z" pull request open and up to date, bumping the version across all six `packages/*/package.json` files and each runtime's `src/metadata.ts`, and updating `CHANGELOG.md`.
+2. Review the open release pull request: check `CHANGELOG.md`, the bumped version files, and — for any runtime whose engine changed — that runtime's `THIRD_PARTY_NOTICES.md`.
+3. Merge the release pull request. `.github/workflows/release.yml` rebuilds and validates the merge commit (`build:languages`, `build:packages`, `check`, `test`, `scripts/pack.mjs`, `test:package`), tags `vX.Y.Z`, creates a GitHub Release with the six tarballs attached, and publishes `@sandbox-workers/{core,javascript,python,perl,ruby,cli}` to npm using npm trusted publishing (OIDC; no long-lived npm token is stored).
 
-These are release instructions; publication has not been performed. Deploy the Playground separately with `pnpm run deploy:engines`, followed by `pnpm run deploy:gateway`. Updating an npm dependency does not update a running Worker until the consumer redeploys it.
+Deploy the Playground separately with `pnpm run deploy:engines`, followed by `pnpm run deploy:gateway`. Updating an npm dependency does not update a running Worker until the consumer redeploys it.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs the full build, tests, packaging, and package tests on every pull request, caching the downloaded and instrumented engines so runs stay fast.
 
 ## Add another runtime
 

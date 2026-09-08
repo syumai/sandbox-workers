@@ -4,6 +4,15 @@
   "description": "Typed Service Binding client and execution protocol for sandbox-workers",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/syumai/sandbox-workers.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/syumai/sandbox-workers/tree/main/packages/core#readme",
+  "bugs": {
+    "url": "https://github.com/syumai/sandbox-workers/issues"
+  },
   "files": [
     "dist",
     "README.md",

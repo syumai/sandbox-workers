@@ -1,0 +1,94 @@
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      upload-tarballs:
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Must run before setup-node (cache: pnpm needs pnpm on PATH). The version
+      # comes from package.json "packageManager"; do not pass `version` here.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Upstream wasm/stdlib downloads, verified against scripts/runtime-sources.json.
+      - name: Cache upstream language sources
+        uses: actions/cache@v4
+        with:
+          path: engine/.build/languages
+          key: languages-${{ hashFiles('scripts/runtime-sources.json') }}
+
+      # Instrumented engines. No restore-keys: a partial match would silently
+      # reuse a stale engine. The lockfile pins binaryen and Ruby's wasm source.
+      - name: Cache metered engine.wasm
+        id: metered
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/javascript/dist/engine.wasm
+            packages/python/dist/engine.wasm
+            packages/perl/dist/engine.wasm
+            packages/ruby/dist/engine.wasm
+          key: metered-${{ runner.os }}-${{ hashFiles('scripts/runtime-sources.json', 'scripts/instrument.mjs', 'scripts/meter-languages.mjs', 'pnpm-lock.yaml') }}
+
+      # Always runs: cheap on a cache hit, and it also copies the Python/Perl
+      # stdlib zips into packages/<lang>/dist/stdlib.bin.
+      - name: Fetch language sources
+        run: node scripts/fetch-languages.mjs
+
+      - name: Meter language engines
+        if: steps.metered.outputs.cache-hit != 'true'
+        run: node --max-old-space-size=8192 scripts/meter-languages.mjs javascript python perl ruby
+
+      - name: Verify metered engine hashes
+        if: steps.metered.outputs.cache-hit == 'true'
+        run: node scripts/meter-languages.mjs --hash-only javascript python perl ruby
+
+      - name: Build packages
+        run: pnpm run build:packages
+
+      - name: Check
+        run: pnpm run check
+
+      - name: Test
+        run: pnpm test
+
+      - name: Pack packages
+        run: node scripts/pack.mjs
+
+      - name: Test packages
+        run: pnpm run test:package
+
+      - name: Upload tarballs
+        if: inputs.upload-tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarballs
+          path: dist/*.tgz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

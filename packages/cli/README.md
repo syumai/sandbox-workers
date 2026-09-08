@@ -1,6 +1,6 @@
 # @sandbox-workers/cli
 
-One initializer for JavaScript, Python, Perl, and Ruby sandbox Workers. Version 0.1.0 preview; npm publication is pending.
+One initializer for JavaScript, Python, Perl, and Ruby sandbox Workers.
 
 ```sh
 pnpm dlx @sandbox-workers/cli init python,javascript my-runtimes
@@ -16,4 +16,4 @@ The CLI creates one Worker entrypoint (`<runtime>.js`) and one Wrangler configur
 
 Review each selected runtime's `LICENSE`, `THIRD_PARTY_NOTICES.md`, and bundled licenses before use or redistribution. The MIT license for sandbox-workers code does not replace the upstream interpreter licenses. The generated README links to those documents; installed copies live in `node_modules/@sandbox-workers/<runtime>/`.
 
-For a local unreleased build, run `node packages/cli/bin/cli.mjs init python,javascript /tmp/my-runtimes`, then install the runtime tarballs in that directory.
+To use a local build instead, run `node packages/cli/bin/cli.mjs init python,javascript /tmp/my-runtimes`, then install the runtime tarballs in that directory.

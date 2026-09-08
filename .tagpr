@@ -1,0 +1,8 @@
+[tagpr]
+	vPrefix = true
+	releaseBranch = main
+	versionFile = packages/core/package.json,packages/cli/package.json,packages/javascript/package.json,packages/python/package.json,packages/perl/package.json,packages/ruby/package.json,packages/javascript/src/metadata.ts,packages/python/src/metadata.ts,packages/perl/src/metadata.ts,packages/ruby/src/metadata.ts
+	changelog = true
+	release = true
+	majorLabels = major
+	minorLabels = minor

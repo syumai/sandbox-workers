@@ -37,7 +37,7 @@ Initial builds take several minutes. The generated runtime retains upstream lice
 
 ## How the templates work
 
-Cloudflare treats the selected `templates/<language>` directory as a new repository root. Each template is independent: its build script downloads an immutable source archive, verifies the SHA-256 digest in `runtime-source.json`, and builds only the chosen Wasm engine. It does not depend on sibling workspace packages or unpublished npm packages. The pinned historical snapshot builds internally with its own npm lockfile; current project development uses pnpm.
+Cloudflare treats the selected `templates/<language>` directory as a new repository root. Each template is independent: its build script downloads an immutable source archive, verifies the SHA-256 digest in `runtime-source.json`, and builds only the chosen Wasm engine. It does not depend on sibling workspace packages or on the npm packages. The pinned historical snapshot builds internally with its own npm lockfile; current project development uses pnpm.
 
 Wrangler invokes the build before deployment. A manifest verifies existing output and skips a rebuild only when its hashes and source pin match. Source verification also applies to offline test archives.
 
@@ -51,7 +51,7 @@ See Cloudflare's [Deploy button documentation](https://developers.cloudflare.com
 
 ## Use the CLI
 
-After npm publication, use the shared CLI:
+Use the shared CLI from npm:
 
 ```sh
 pnpm dlx @sandbox-workers/cli init python,javascript my-runtimes
@@ -91,16 +91,16 @@ In stateful mode, a stateless-only runtime Worker's `contexts: false` means `cre
 
 You can get the same result by hand, without the flag: delete the `durable_objects` and `migrations` blocks from an already-generated `wrangler.<runtime>.jsonc` (and drop the `Interpreter` export from that runtime's `<runtime>.js`, though a leftover export is harmless if the binding itself is gone). The Worker still serves plain `/execute` and `GET /interpreter`; every `/interpreters/:key/*` route then answers 400 — see [HTTP API](/api/http-api) for exactly what still works without the binding.
 
-### Before npm publication
+### Use a local build
 
-Use one of the deploy buttons above, or build local packages:
+To try changes that are not on npm yet, use one of the deploy buttons above, or build local packages:
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm run pack
 node packages/cli/bin/cli.mjs init python,javascript /tmp/my-runtimes
 cd /tmp/my-runtimes
-pnpm add /absolute/path/to/dist/sandbox-workers-python-0.1.0.tgz /absolute/path/to/dist/sandbox-workers-javascript-0.1.0.tgz
+pnpm add /absolute/path/to/dist/sandbox-workers-python-<version>.tgz /absolute/path/to/dist/sandbox-workers-javascript-<version>.tgz
 pnpm dry-run
 ```
 

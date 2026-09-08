@@ -112,4 +112,4 @@ Every run creates a fresh Wasm instance unless it runs in a code context. Fuel, 
 - [Runtimes](/runtimes/javascript): per-language details for JavaScript, Python, Perl, and Ruby.
 - [Platform](/platform): limits, licenses, and troubleshooting.
 
-The npm packages are currently previews and have not been published. Source-based deployment templates work independently of npm publication once this repository and the template directories are public. Read [runtime licenses](/platform/licenses) and [limits](/platform/limits) before use.
+The npm packages are published under the `@sandbox-workers` scope. Source-based deployment templates build from source and work independently of the npm packages, once this repository and the template directories are public. Read [runtime licenses](/platform/licenses) and [limits](/platform/limits) before use.

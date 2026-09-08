@@ -4,6 +4,15 @@
   "description": "Deployable SpiderMonkey (goccy/spidermonkey-wasm) WebAssembly sandbox for Cloudflare Workers Service Bindings",
   "type": "module",
   "license": "MIT AND Apache-2.0 AND MPL-2.0 AND Unicode-3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/syumai/sandbox-workers.git",
+    "directory": "packages/javascript"
+  },
+  "homepage": "https://github.com/syumai/sandbox-workers/tree/main/packages/javascript#readme",
+  "bugs": {
+    "url": "https://github.com/syumai/sandbox-workers/issues"
+  },
   "files": [
     "dist",
     "bin",

@@ -43,4 +43,4 @@ A build with smaller initial memory, fewer extensions, and a restricted WASI or 
 
 Tests execute real Wasm under Node and cover JSON, Unicode, stdout, errors, fuel limits, denied host access, and shipped examples. Validation also covers HTTP execution through all four Service Bindings in local workerd, type checking, the UI build, browser sample execution, independent package installation, and dry-run builds for every Worker.
 
-The packages have not been published to npm or deployed to production. A Paid plan is intended for execution because interpreter startup can exceed the Free plan's CPU budget. Production CPU usage, concurrent workloads, and long-running operations still require measurement.
+The packages are published on npm, but production CPU usage, concurrent workloads, and long-running operations still require measurement. A Paid plan is intended for execution because interpreter startup can exceed the Free plan's CPU budget.

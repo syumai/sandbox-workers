@@ -4,6 +4,15 @@
   "description": "Deployable Ruby WebAssembly sandbox for Cloudflare Workers Service Bindings",
   "type": "module",
   "license": "SEE LICENSE IN THIRD_PARTY_NOTICES.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/syumai/sandbox-workers.git",
+    "directory": "packages/ruby"
+  },
+  "homepage": "https://github.com/syumai/sandbox-workers/tree/main/packages/ruby#readme",
+  "bugs": {
+    "url": "https://github.com/syumai/sandbox-workers/issues"
+  },
   "files": [
     "dist",
     "bin",

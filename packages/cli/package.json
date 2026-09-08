@@ -4,6 +4,15 @@
   "description": "Initialize private sandbox runtime Workers for Cloudflare Service Bindings",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/syumai/sandbox-workers.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/syumai/sandbox-workers/tree/main/packages/cli#readme",
+  "bugs": {
+    "url": "https://github.com/syumai/sandbox-workers/issues"
+  },
   "bin": {
     "sandbox-workers": "./bin/cli.mjs"
   },

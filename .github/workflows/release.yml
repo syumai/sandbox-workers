@@ -1,0 +1,92 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+  id-token: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+    with:
+      upload-tarballs: true
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run tagpr
+        id: tagpr
+        uses: Songmu/tagpr@v1
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
+      # Everything below runs only when the release PR was just merged and a tag
+      # was created. Publishing lives in this job because tags pushed with
+      # GITHUB_TOKEN do not trigger other workflows.
+      - name: Set up Node.js
+        if: steps.tagpr.outputs.tag != ''
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+          # No registry-url: setup-node would write a placeholder auth token to
+          # .npmrc, which gets in the way of OIDC trusted publishing.
+
+      - name: Ensure npm supports Trusted Publishing
+        if: steps.tagpr.outputs.tag != ''
+        run: npm install -g npm@latest && npm --version
+
+      - name: Download tarballs
+        if: steps.tagpr.outputs.tag != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: tarballs
+          path: dist
+
+      # Authenticates with npm trusted publishing (OIDC). No --provenance flag:
+      # npm adds provenance automatically once the repository is public, and
+      # the flag fails while it is private.
+      - name: Publish to npm
+        if: steps.tagpr.outputs.tag != ''
+        env:
+          TAG: "${{ steps.tagpr.outputs.tag }}"
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          names="core javascript python perl ruby cli"
+          for name in $names; do
+            [ -f "dist/sandbox-workers-${name}-${version}.tgz" ] || { echo "::error::tarball for ${name}@${version} missing (versions and tag disagree)"; exit 1; }
+          done
+          for name in $names; do
+            if npm view "@sandbox-workers/${name}@${version}" version >/dev/null 2>&1; then
+              echo "@sandbox-workers/${name}@${version} already published; skipping"; continue
+            fi
+            # "./" is required: a bare "dist/<file>" is parsed as a GitHub owner/repo spec.
+            npm publish "./dist/sandbox-workers-${name}-${version}.tgz" --access public
+          done
+
+      - name: Attach tarballs to the GitHub Release
+        if: steps.tagpr.outputs.tag != ''
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          TAG: "${{ steps.tagpr.outputs.tag }}"
+        run: gh release upload "$TAG" dist/*.tgz --clobber
