@@ -3,7 +3,7 @@ import { defineConfig } from "blume";
 export default defineConfig({
   title: "sandbox-workers",
   description:
-    "Deploy isolated JavaScript, Python, Perl, and Ruby runtimes to Cloudflare Workers and call them through Service Bindings.",
+    "Self-hosted code sandboxes on Cloudflare Workers for JavaScript, Python, Perl, and Ruby.",
   logo: { text: "sandbox-workers", href: "/docs/" },
   basePath: "/docs",
   content: { root: "content" },

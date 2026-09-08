@@ -1,6 +1,6 @@
 # sandbox-workers
 
-Deploy Wasm language runtimes to your own Cloudflare account and execute code through Service Bindings. This repository's website is the **sandbox-workers Playground**, a demo that uses the same runtime packages you deploy.
+Self-hosted code sandboxes on Cloudflare Workers for JavaScript, Python, Perl, and Ruby. Each language runs as a Wasm runtime Worker in your own account, called through Service Bindings. This repository's website is the **sandbox-workers Playground**, a demo that uses the same runtime packages you deploy.
 
 | Project                       | Purpose                                                     | Package                       |
 | ----------------------------- | ----------------------------------------------------------- | ----------------------------- |
