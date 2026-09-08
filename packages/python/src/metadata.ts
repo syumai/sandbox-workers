@@ -2,7 +2,7 @@ export const pythonRuntime = {
   id: "python",
   name: "Python",
   package: "@sandbox-workers/python",
-  version: "0.1.0",
+  version: "0.1.1",
   engine: "CPython 3.14.6 / goccy v0.2.0",
   enabled: true,
   mode: "script",

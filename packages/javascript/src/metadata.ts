@@ -2,7 +2,7 @@ export const javascriptRuntime = {
   id: "javascript",
   name: "JavaScript",
   package: "@sandbox-workers/javascript",
-  version: "0.1.0",
+  version: "0.1.1",
   engine: "SpiderMonkey 147 / goccy spidermonkey-wasm v0.2.6",
   enabled: true,
   mode: "script",
