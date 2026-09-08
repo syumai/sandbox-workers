@@ -1,6 +1,6 @@
 {
   "name": "@sandbox-workers/javascript",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Deployable SpiderMonkey (goccy/spidermonkey-wasm) WebAssembly sandbox for Cloudflare Workers Service Bindings",
   "type": "module",
   "license": "MIT AND Apache-2.0 AND MPL-2.0 AND Unicode-3.0",

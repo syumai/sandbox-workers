@@ -2,7 +2,7 @@ export const rubyRuntime = {
   id: "ruby",
   name: "Ruby",
   package: "@sandbox-workers/ruby",
-  version: "0.1.0",
+  version: "0.1.1",
   engine: "CRuby 4.0.0 / ruby.wasm 2.10.1",
   enabled: true,
   mode: "script",
