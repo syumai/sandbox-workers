@@ -4,7 +4,7 @@
 
 Use the source template as an alternative to the npm package. It creates a private Worker; configure your caller’s Service Binding after deployment. The source repository must be public for the button to work.
 
-A Cloudflare Workers Service Binding runtime containing CRuby 4.0.0 compiled to Wasm.
+A Cloudflare Workers Service Binding runtime containing CRuby 4.0.0 compiled to Wasm by [ruby.wasm](https://github.com/ruby/ruby.wasm) 2.10.1.
 
 ## Quick start
 

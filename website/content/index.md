@@ -87,14 +87,14 @@ Every sandbox owns a writable `/workspace` directory, reachable from guest code 
 
 ## Choose an engine
 
-| Runtime                            | Engine                       | Env vars accessed as |
-| ----------------------------------- | ---------------------------- | --------------------- |
-| [JavaScript](/runtimes/javascript) | SpiderMonkey 147 / goccy spidermonkey-wasm v0.2.6 | `process.env.NAME`    |
-| [Python](/runtimes/python)         | CPython 3.14.6               | `os.environ["NAME"]`  |
-| [Perl](/runtimes/perl)             | Perl 5.42.2                  | `$ENV{NAME}`          |
-| [Ruby](/runtimes/ruby)             | CRuby 4.0.0                  | `ENV["NAME"]`         |
+| Runtime                            | Engine                                                                              | Env vars accessed as  |
+| ----------------------------------- | ------------------------------------------------------------------------------------ | ---------------------- |
+| [JavaScript](/runtimes/javascript) | SpiderMonkey 147 via [goccy/spidermonkey-wasm](https://github.com/goccy/spidermonkey-wasm) v0.2.6 | `process.env.NAME`    |
+| [Python](/runtimes/python)         | CPython 3.14.6 via [goccy/python-wasm](https://github.com/goccy/python-wasm) v0.2.0   | `os.environ["NAME"]`  |
+| [Perl](/runtimes/perl)             | Perl 5.42.2 via [goccy/perl-wasm](https://github.com/goccy/perl-wasm) v0.2.1          | `$ENV{NAME}`           |
+| [Ruby](/runtimes/ruby)             | CRuby 4.0.0 via [ruby.wasm](https://github.com/ruby/ruby.wasm) 2.10.1                 | `ENV["NAME"]`          |
 
-Every run creates a fresh Wasm instance unless it runs in a code context. Fuel, memory, and output bounds limit guest execution. Standard libraries depend on the selected engine; host networking, host files, and package installation are unavailable. **Ruby is stateless-only** — its runtime Worker always answers `contexts: false`, so it works in stateless mode only.
+Every run creates a fresh Wasm instance unless it runs in a code context. Fuel, memory, and output bounds limit guest execution. Standard libraries depend on the selected engine; host networking, host files, and package installation are unavailable. **Ruby is stateless-only** — its runtime Worker always answers `contexts: false`, so it works in stateless mode only. These engines are upstream Wasm builds; sandbox-workers adds fuel metering and the Worker wrapper around them.
 
 ## Start here
 

@@ -4,7 +4,7 @@
 
 Use the source template as an alternative to the npm package. It creates a private Worker; configure your caller’s Service Binding after deployment. The source repository must be public for the button to work.
 
-A Cloudflare Workers Service Binding runtime containing CPython 3.14.6 compiled to Wasm.
+A Cloudflare Workers Service Binding runtime containing CPython 3.14.6 compiled to Wasm by [goccy/python-wasm](https://github.com/goccy/python-wasm) v0.2.0.
 
 ## Quick start
 

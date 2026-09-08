@@ -2,18 +2,27 @@
 
 Self-hosted code sandboxes on Cloudflare Workers for JavaScript, Python, Perl, and Ruby. Each language runs as a Wasm runtime Worker in your own account, called through Service Bindings. This repository's website is the **sandbox-workers Playground**, a demo that uses the same runtime packages you deploy.
 
-| Project                       | Purpose                                                     | Package                       |
-| ----------------------------- | ----------------------------------------------------------- | ----------------------------- |
-| `packages/javascript`         | SpiderMonkey Wasm, host adapter, and Worker                 | `@sandbox-workers/javascript` |
-| `packages/python`             | CPython 3.14.6 Wasm, standard library, and Worker           | `@sandbox-workers/python`     |
-| `packages/perl`               | Perl 5.42.2 Wasm, standard library, and Worker              | `@sandbox-workers/perl`       |
-| `packages/ruby`               | CRuby 4.0.0 Wasm, standard library, and Worker              | `@sandbox-workers/ruby`       |
-| `packages/cli`                | Shared runtime initializer                                  | `@sandbox-workers/cli`        |
-| `website`                     | Blume documentation site                                    | Private workspace package     |
-| `packages/core`               | Shared execution protocol and typed Service Binding client  | `@sandbox-workers/core`       |
-| Root `src/`, `ui/`, `engine/` | Playground gateway, editor UI, and deployment configuration | Private; not published to npm |
+| Project                       | Purpose                                                              | Package                       |
+| ----------------------------- | --------------------------------------------------------------------- | ----------------------------- |
+| `packages/javascript`         | SpiderMonkey Wasm from goccy/spidermonkey-wasm, host adapter, and Worker | `@sandbox-workers/javascript` |
+| `packages/python`             | CPython 3.14.6 Wasm from goccy/python-wasm, standard library, and Worker | `@sandbox-workers/python`     |
+| `packages/perl`               | Perl 5.42.2 Wasm from goccy/perl-wasm, standard library, and Worker  | `@sandbox-workers/perl`       |
+| `packages/ruby`               | CRuby 4.0.0 Wasm from ruby.wasm, standard library, and Worker        | `@sandbox-workers/ruby`       |
+| `packages/cli`                | Shared runtime initializer                                           | `@sandbox-workers/cli`        |
+| `website`                     | Blume documentation site                                             | Private workspace package     |
+| `packages/core`               | Shared execution protocol and typed Service Binding client           | `@sandbox-workers/core`       |
+| Root `src/`, `ui/`, `engine/` | Playground gateway, editor UI, and deployment configuration          | Private; not published to npm |
 
 Version 0.1.0 packages are published on npm under the `@sandbox-workers` scope. JavaScript, Python, Perl, and Ruby each run in a separate Worker. See [language runtimes](docs/languages.md) for compatibility limits and the PHP evaluation.
+
+## Engines
+
+- [goccy/spidermonkey-wasm](https://github.com/goccy/spidermonkey-wasm) v0.2.6 — SpiderMonkey 147
+- [goccy/python-wasm](https://github.com/goccy/python-wasm) v0.2.0 — CPython 3.14.6
+- [goccy/perl-wasm](https://github.com/goccy/perl-wasm) v0.2.1 — Perl 5.42.2
+- [ruby.wasm](https://github.com/ruby/ruby.wasm) 2.10.1 — CRuby 4.0.0
+
+This project doesn't build these interpreters itself: it downloads each upstream Wasm binary, verifies it by SHA-256 against `scripts/runtime-sources.json`, adds fuel metering and memory caps with Binaryen, and wraps the result in a Worker.
 
 ## Deploy to Cloudflare
 

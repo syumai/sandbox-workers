@@ -5,13 +5,15 @@ description: Execute code with SpiderMonkey 147 (goccy/spidermonkey-wasm v0.2.6)
 
 Package: `@sandbox-workers/javascript`. Code is a script: the value of the last expression is the result. Supports `await`, promises, modern JavaScript syntax, and `Intl`. There are no Web builtins (no `fetch`, `URL`, `Response`, timers); ES modules, Node/npm resolution, and networking are also unavailable. BigInt results become strings ending in n.
 
+Engine: SpiderMonkey 147 compiled to Wasm by [goccy/spidermonkey-wasm](https://github.com/goccy/spidermonkey-wasm) v0.2.6.
+
 TypeScript is accepted automatically — no `language` option, no separate mode. Code is parsed as JavaScript first, so valid JavaScript never changes meaning; only code that fails to parse as JavaScript falls back to stripping TypeScript-only syntax (types, `interface`, generics, `as`/`satisfies`, `enum`, `namespace`, parameter properties). Types are stripped, not checked — a type error still runs like any other JavaScript mistake. `import`/`export` remain unsupported in both dialects.
 
 ## Deploy
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fsyumai%2Fsandbox-workers%2Ftree%2Fmain%2Ftemplates%2Fjavascript)
 
-Or, after npm publication:
+Or, with the CLI:
 
 ```sh
 pnpm dlx @sandbox-workers/cli init javascript my-sandbox

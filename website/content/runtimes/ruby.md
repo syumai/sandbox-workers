@@ -1,9 +1,11 @@
 ---
 title: Ruby
-description: Execute code with CRuby 4.0.0 inside a dedicated Wasm Worker.
+description: Execute code with CRuby 4.0.0 (ruby.wasm 2.10.1) inside a dedicated Wasm Worker.
 ---
 
 Package: `@sandbox-workers/ruby`. Code is a script: the value of the last expression is the result. Supports Enumerable and the bundled standard library. The JavaScript bridge is disabled. gem installation and arbitrary native extensions are unavailable.
+
+Engine: CRuby 4.0.0 compiled to Wasm by [ruby.wasm](https://github.com/ruby/ruby.wasm) 2.10.1 (`@ruby/4.0-wasm-wasi`).
 
 **Ruby is stateless-only** — its runtime Worker always answers `contexts: false`, so it works in [stateless mode](/stateless) only; see [Code contexts](/concepts/code-contexts) for why.
 
@@ -11,7 +13,7 @@ Package: `@sandbox-workers/ruby`. Code is a script: the value of the last expres
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fsyumai%2Fsandbox-workers%2Ftree%2Fmain%2Ftemplates%2Fruby)
 
-Or, after npm publication:
+Or, with the CLI:
 
 ```sh
 pnpm dlx @sandbox-workers/cli init ruby my-sandbox

@@ -5,6 +5,17 @@ description: Review each runtime license before use or redistribution.
 
 The original sandbox-workers code is MIT licensed, copyright (c) 2026 syumai. This applies to the adapters, shared client, CLI, and site. Bundled interpreters and other third-party software retain their own licenses.
 
+## Upstream engines
+
+These projects produce the Wasm binaries this project ships; each package's `THIRD_PARTY_NOTICES.md` lists their licenses.
+
+| Runtime    | Interpreter    | Wasm build                                                             | Version |
+| ---------- | -------------- | ----------------------------------------------------------------------- | ------- |
+| JavaScript | SpiderMonkey 147 | [goccy/spidermonkey-wasm](https://github.com/goccy/spidermonkey-wasm) | v0.2.6  |
+| Python     | CPython 3.14.6 | [goccy/python-wasm](https://github.com/goccy/python-wasm)             | v0.2.0  |
+| Perl       | Perl 5.42.2    | [goccy/perl-wasm](https://github.com/goccy/perl-wasm)                 | v0.2.1  |
+| Ruby       | CRuby 4.0.0    | [ruby.wasm](https://github.com/ruby/ruby.wasm)                        | 2.10.1  |
+
 | Runtime    | License and upstream notices                                                                                                                                                                                          |
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | JavaScript | [LICENSE](https://github.com/syumai/sandbox-workers/blob/main/packages/javascript/LICENSE) · [THIRD_PARTY_NOTICES.md](https://github.com/syumai/sandbox-workers/blob/main/packages/javascript/THIRD_PARTY_NOTICES.md) |

@@ -4,7 +4,7 @@
 
 Use the source template as an alternative to the npm package. It creates a private Worker; configure your caller’s Service Binding after deployment. The source repository must be public for the button to work.
 
-A Cloudflare Workers Service Binding runtime containing Perl 5.42.2 compiled to Wasm.
+A Cloudflare Workers Service Binding runtime containing Perl 5.42.2 compiled to Wasm by [goccy/perl-wasm](https://github.com/goccy/perl-wasm) v0.2.1.
 
 ## Quick start
 
