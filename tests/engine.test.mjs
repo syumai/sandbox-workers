@@ -1,15 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { runJavaScript, createJavaScriptSession, ExecutionLimitError } from "../runtime/javascript.mjs";
+import { runJavaScript, createJavaScriptSession } from "../packages/javascript/src/engine.mjs";
+import { ExecutionLimitError } from "@sandbox-workers/interpreter/wasi";
 import { transformForAsyncExecution, transformForRepl } from "../packages/javascript/src/transform.mjs";
-import { Workspace } from "../runtime/workspace.mjs";
+import { Workspace } from "@sandbox-workers/core";
 const module = new WebAssembly.Module(
   readFileSync(
     new URL("../packages/javascript/dist/engine.wasm", import.meta.url),
   ),
 );
-const run = (code, envVars) => runJavaScript(module, { code, envVars });
+// The javascript engine's own fuel limit (packages/javascript/src/metadata.ts
+// `limits.fuel`), inlined here rather than importing the built dist/metadata.js
+// so this test file doesn't need `build:packages` to have run first.
+const JAVASCRIPT_FUEL = 50_000_000;
+const limits = { fuel: JAVASCRIPT_FUEL };
+const run = (code, envVars) => runJavaScript(module, { code, envVars }, limits);
 
 test("last top-level expression becomes the result", () => {
   assert.deepEqual(run("1 + 1;").results, [{ text: "2" }]);
@@ -309,11 +315,15 @@ test("transformForRepl leaves a top-level return as raw source (a real SyntaxErr
 function makeSession(cwd = "/workspace") {
   const workspace = new Workspace();
   const cwdChanges = [];
-  const session = createJavaScriptSession(module, {
-    workspace,
-    cwd,
-    onCwdChange: (next) => cwdChanges.push(next),
-  });
+  const session = createJavaScriptSession(
+    module,
+    {
+      workspace,
+      cwd,
+      onCwdChange: (next) => cwdChanges.push(next),
+    },
+    limits,
+  );
   return { session, workspace, cwdChanges };
 }
 
@@ -368,7 +378,9 @@ test("session: import() is served from the workspace", () => {
 test("session: fuel exhaustion is reported without invalidating the instance", () => {
   const { session } = makeSession();
   session.execute({ code: "var survivor = 42" });
-  assert.throws(() => session.execute({ code: "while (true) {}" }), ExecutionLimitError);
+  const looped = session.execute({ code: "while (true) {}" });
+  assert.equal(looped.error.name, "ExecutionLimitError");
+  assert.equal(session.invalid, false);
   const result = session.execute({ code: "survivor" });
   assert.deepEqual(result.results, [{ text: "42" }]);
 });
@@ -382,7 +394,7 @@ test("session: an ordinary guest exception does not clobber prior globals", () =
   assert.deepEqual(result.results, [{ text: "1" }]);
 });
 
-// ---- workspace.disabled: guest /workspace lockout (runtime/wasi.mjs) -----
+// ---- workspace.disabled: guest /workspace lockout (@sandbox-workers/interpreter/wasi) -----
 
 test("session: workspace.disabled gates fs.* with EACCES", () => {
   const { session, workspace } = makeSession();

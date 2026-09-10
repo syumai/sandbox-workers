@@ -1,9 +1,9 @@
-// Linear-memory snapshot helpers shared by createJavaScriptSession/
-// restoreJavaScriptSession (runtime/javascript.mjs) and createEmbeddedSession/
-// restoreEmbeddedSession (runtime/embedded.mjs), and consumed by the Durable
-// Object (runtime/sandbox.mjs) to decide what to write to the `chunks` table
-// (docs/snapshot-cost-design.md: 1 MiB chunks of 16 pages each, not one row
-// per changed 64 KiB page).
+// Linear-memory snapshot helpers shared by an `Engine`'s session
+// boot/restore functions and consumed by `InterpreterServer` to decide what
+// to write to the `chunks` table (docs/snapshot-cost-design.md: 1 MiB chunks
+// of 16 pages each, not one row per changed 64 KiB page). TypeScript port of
+// the pre-split, now-deleted snapshot.mjs, exported (unstable, internal) from
+// `@sandbox-workers/interpreter/snapshot`.
 //
 // Deviation from docs/sessions-design.md, agreed up front: pages are stored
 // RAW, not deflated. A prototype measured per-page deflate at ~450 ms for a
@@ -21,7 +21,7 @@
 export const PAGE_BYTES = 65536; // 64 KiB: the Wasm page size.
 const WORDS_PER_PAGE = PAGE_BYTES / 4;
 
-function hashWords(u32, start) {
+function hashWords(u32: Uint32Array, start: number): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < WORDS_PER_PAGE; i++) {
     h = (h ^ u32[start + i]) >>> 0;
@@ -30,12 +30,12 @@ function hashWords(u32, start) {
   return h >>> 0;
 }
 
-function isZero(u32, start) {
+function isZero(u32: Uint32Array, start: number): boolean {
   for (let i = 0; i < WORDS_PER_PAGE; i++) if (u32[start + i] !== 0) return false;
   return true;
 }
 
-export function memoryPageCount(memory) {
+export function memoryPageCount(memory: WebAssembly.Memory): number {
   return memory.buffer.byteLength / PAGE_BYTES;
 }
 
@@ -44,10 +44,10 @@ export function memoryPageCount(memory) {
 // fine for reading). Returns a Map<pageIndex, hash:uint32>; all-zero pages
 // are omitted so a freshly grown (zero-filled) region costs nothing to scan
 // past for the caller's diff.
-export function hashMemory(memory) {
+export function hashMemory(memory: WebAssembly.Memory): Map<number, number> {
   const u32 = new Uint32Array(memory.buffer);
   const pages = memoryPageCount(memory);
-  const hashes = new Map();
+  const hashes = new Map<number, number>();
   for (let page = 0; page < pages; page++) {
     const start = page * WORDS_PER_PAGE;
     if (isZero(u32, start)) continue;
@@ -60,16 +60,21 @@ export function hashMemory(memory) {
 // Uint8Array: Durable Object SQLite BLOB binding rejects a SharedArrayBuffer
 // view directly, but `.slice()` on the Uint8Array view produces a copy on a
 // fresh ArrayBuffer, which binds fine.
-export function readPage(memory, page) {
+export function readPage(memory: WebAssembly.Memory, page: number): Uint8Array {
   return new Uint8Array(memory.buffer, page * PAGE_BYTES, PAGE_BYTES).slice();
 }
 
 // Writes a previously-read page's bytes back into `memory` at `page`,
-// starting from an already zero-filled instance (see restore in
-// runtime/javascript.mjs / runtime/embedded.mjs) -- used to replay a
+// starting from an already zero-filled instance -- used to replay a
 // snapshot's non-zero pages into a freshly instantiated engine.
-export function writePage(memory, page, data) {
+export function writePage(memory: WebAssembly.Memory, page: number, data: Uint8Array): void {
   new Uint8Array(memory.buffer, page * PAGE_BYTES, PAGE_BYTES).set(data);
+}
+
+export interface PageDiff {
+  hashes: Map<number, number>;
+  changed: Array<[number, Uint8Array]>;
+  removed: number[];
 }
 
 // Diffs `memory`'s current non-zero pages against `prevHashes` (a
@@ -79,13 +84,13 @@ export function writePage(memory, page, data) {
 // before and are all-zero now (the Durable Object deletes those rows rather
 // than storing a zero-filled page). Returns the fresh hash map too, to keep
 // as `prevHashes` for the next call.
-export function diffPages(memory, prevHashes = new Map()) {
+export function diffPages(memory: WebAssembly.Memory, prevHashes: Map<number, number> = new Map()): PageDiff {
   const hashes = hashMemory(memory);
-  const changed = [];
+  const changed: Array<[number, Uint8Array]> = [];
   for (const [page, hash] of hashes) {
     if (prevHashes.get(page) !== hash) changed.push([page, readPage(memory, page)]);
   }
-  const removed = [];
+  const removed: number[] = [];
   for (const page of prevHashes.keys()) if (!hashes.has(page)) removed.push(page);
   return { hashes, changed, removed };
 }
@@ -103,7 +108,7 @@ export const CHUNK_BYTES = CHUNK_PAGES * PAGE_BYTES; // 1 MiB
 
 // The chunk that contains `page` (chunk 0 covers pages 0-15, chunk 1 covers
 // 16-31, and so on).
-export function chunkOf(page) {
+export function chunkOf(page: number): number {
   return Math.floor(page / CHUNK_PAGES);
 }
 
@@ -116,7 +121,7 @@ export function chunkOf(page) {
 // 0` -- in that case the pages that exist are copied and the rest of the
 // 1 MiB buffer is left zero-filled, matching what a freshly grown
 // WebAssembly.Memory already looks like.
-export function readChunk(memory, chunk, memoryPages) {
+export function readChunk(memory: WebAssembly.Memory, chunk: number, memoryPages: number): Uint8Array {
   const startPage = chunk * CHUNK_PAGES;
   const validPages = Math.max(0, Math.min(CHUNK_PAGES, memoryPages - startPage));
   if (validPages === CHUNK_PAGES) {
@@ -129,7 +134,12 @@ export function readChunk(memory, chunk, memoryPages) {
   return chunkData;
 }
 
-// Turns a diffPages() result into the chunk-level writes runtime/sandbox.mjs
+export interface ChunkWrites {
+  upsert: number[];
+  remove: number[];
+}
+
+// Turns a diffPages() result into the chunk-level writes InterpreterServer
 // needs: every chunk touched by a changed or removed page is either
 // rewritten (`upsert`, when at least one of its 16 pages is still non-zero
 // per `hashes`) or dropped entirely (`remove`, when none is -- the whole
@@ -139,12 +149,15 @@ export function readChunk(memory, chunk, memoryPages) {
 // already destructured `{ hashes, changed, removed }` can pass `hashes`
 // straight through). Returns `{ upsert: number[], remove: number[] }`,
 // chunk indices sorted ascending.
-export function chunksToWrite(diff, hashes) {
-  const touched = new Set();
+export function chunksToWrite(
+  diff: { changed: Array<[number, Uint8Array]>; removed: number[] },
+  hashes: Map<number, number>,
+): ChunkWrites {
+  const touched = new Set<number>();
   for (const [page] of diff.changed) touched.add(chunkOf(page));
   for (const page of diff.removed) touched.add(chunkOf(page));
-  const upsert = [];
-  const remove = [];
+  const upsert: number[] = [];
+  const remove: number[] = [];
   for (const chunk of touched) {
     const start = chunk * CHUNK_PAGES;
     let nonZero = false;

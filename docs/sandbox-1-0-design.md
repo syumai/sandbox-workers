@@ -88,9 +88,11 @@ TypeScript in `packages/core/src/sandbox.ts`. It does **not** extend
 `constructor(state, env)`, `fetch()`, and `alarm()`), so the core package
 still has no build-time dependency on Workers types.
 
-**Interpreter** = the runtime Worker's Durable Object (`runtime/interpreter.mjs`,
-renamed from `runtime/sandbox.mjs`; `createInterpreterClass(engine)`,
-exported as `Interpreter` by the JavaScript, Python, and Perl packages).
+**Interpreter** = the runtime Worker's Durable Object (`InterpreterServer` in
+`packages/interpreter/src/server.ts`, formerly the pre-split, now-deleted
+`interpreter.mjs`'s `createInterpreterClass(engine)`; wired up per language via
+`defineInterpreterRuntime(engine)` and exported as `Interpreter` by the
+JavaScript, Python, and Perl packages).
 Keyed by the **sandbox Durable Object's own id** (`ctx.id.toString()` of
 the core object, a 64-hex string), so two callers using the same sandbox id
 against the same runtime Worker never collide. It owns:
@@ -341,7 +343,7 @@ Every route answers `ErrorResponse` on failure.
 
 | Method and path | Body | Response |
 | --- | --- | --- |
-| `GET /interpreter` | | `{ language, engine, contexts: boolean }` — served by every runtime Worker, no Durable Object involved. `contexts` is `false` for Ruby and for a Worker without an `INTERPRETER` binding |
+| `GET /interpreter` | | `{ language, engine, contexts: boolean, protocol?: number }` — served by every runtime Worker, no Durable Object involved. `contexts` is `false` for Ruby and for a Worker without an `INTERPRETER` binding. `protocol` is the wire protocol version the runtime Worker speaks (`INTERPRETER_PROTOCOL_VERSION`); absent means 1 (a runtime Worker built before this field existed) |
 | `POST /interpreters/:key/contexts` | `{ id, cwd }` | `{ id, cwd, createdAt }` (201); 400 when over 8 contexts |
 | `DELETE /interpreters/:key/contexts/:id` | | `{ success: true }`; 404 `CONTEXT_NOT_FOUND` |
 | `DELETE /interpreters/:key` | | `{ success: true }` — wipes snapshots and contexts |
@@ -371,8 +373,8 @@ routes, the context-less stateless `execute` under them,
 `handleStatelessSandboxRoute`, and `readExecution`'s `rejectContextId`
 option are removed.
 
-The interpreter's `executeInContext` method keeps everything
-`runtime/sandbox.mjs`'s old `_execute` did (ensure instance, restore from
+The interpreter's `executeInContext` method keeps everything the pre-split,
+now-deleted `sandbox.mjs`'s old `_execute` did (ensure instance, restore from
 chunks, run, snapshot, chunk diff, persist in one transaction) minus the
 `files` table, plus the mirror reconciliation (create dirs, pull whatever's
 missing via `getFiles`, delete what's no longer wanted) before the run and
@@ -382,16 +384,18 @@ interpreter's context row and echoed to the sandbox, which mirrors it.
 
 ## Workspace module
 
-`runtime/workspace.mjs` moves to **`packages/core/src/workspace.ts`**
+The pre-split, now-deleted `workspace.mjs` moved to **`packages/core/src/workspace.ts`**
 (converted to TypeScript; `@bjorn3/browser_wasi_shim` becomes a
 `dependencies` entry of `@sandbox-workers/core`) and is exported from the
 package root (`Workspace`, `WorkspaceError`, `WorkspaceDirectory`,
-`WorkspaceFile`, `WORKSPACE_TAG`, `LIMITS`, `hashBytes`). `runtime/workspace.mjs`
-becomes a one-line re-export (`export * from "@sandbox-workers/core"`) so
-`runtime/wasi.mjs`, `runtime/javascript.mjs`, and the existing tests keep
-their import path. Because the runtime modules now import the built core
-package, the root `test` script builds core first
-(`pnpm --filter @sandbox-workers/core build && node --test tests/*.test.mjs`).
+`WorkspaceFile`, `WORKSPACE_TAG`, `LIMITS`, `hashBytes`). Every remaining
+engine-host module (`@sandbox-workers/interpreter`'s `wasi.ts`, each
+language package's `engine.mjs`) and the tests now import `Workspace`
+straight from `@sandbox-workers/core` (phase 4: the pre-split, top-level
+runtime directory, including its one-line re-export stubs, is deleted). Because
+these modules import the built core package, the root `test` script builds
+core (and `@sandbox-workers/interpreter`) first
+(`pnpm --filter @sandbox-workers/core build && pnpm --filter @sandbox-workers/interpreter build && node --test tests/*.test.mjs`).
 
 Additions to `Workspace`:
 
@@ -627,3 +631,55 @@ binding, runtime Service Bindings, `SANDBOX_IDLE_TTL_MS` vs
 `packages/<language>/README.md`, `README.md`, `docs/runtime.md`, and the
 template README follow. `docs/sdk-parity-design.md` gets a "Superseded by
 `docs/sandbox-1-0-design.md`" note at the top.
+
+## 2026-09-11: Interpreter server package
+
+The runtime-Worker half of this design (`runtime/interpreter.mjs`'s
+`createInterpreterClass(engine)`, and the WASI/wasmify engine hosts under
+`runtime/`) moved out of this repository's `runtime/` directory into a
+published npm package, **`@sandbox-workers/interpreter`**, alongside
+`@sandbox-workers/core`. The wire protocol above (routes, headers, RPC
+signatures, Durable Object storage format) is unchanged; only where the
+implementation lives changed, so this section is additive, not a
+correction to anything above. See `tmp/interpreter-core-split-design.md`
+for the full design and `packages/interpreter/README.md` for the
+user-facing contract.
+
+- **Package and subpaths.** `.` exports `InterpreterWorker`/
+  `InterpreterDurableObject` (the `cloudflare:workers`-dependent base
+  classes), `defineInterpreterRuntime(engine)` (the entry point every
+  runtime Worker, including this repo's own four, is built on), the
+  `Engine`/`SessionInstance` contract types, and selective re-exports from
+  `@sandbox-workers/core`. `./wasi` and `./wasmify` expose the
+  language-independent Wasm engine hosts (WASI wiring, fuel metering, the
+  wasmify protobuf ABI and embedded-interpreter session host) that used to
+  live in `runtime/wasi.mjs`/`runtime/protobuf.mjs`/`runtime/embedded.mjs`.
+  `./testing` (Node-only) exports `createTestState()` and
+  `runEngineConformance(engine, options)`, a conformance suite this repo's
+  own language packages and a third party both run against their `Engine`
+  (`tests/conformance.test.mjs`).
+- **`protocol`.** `GET /interpreter`'s response gained a `protocol` field
+  (currently `1`), so a caller and a runtime Worker built against different
+  `@sandbox-workers/interpreter`/`@sandbox-workers/core` versions can still
+  be checked for wire compatibility; absent is treated as `1` for
+  interoperability with pre-split deployments.
+- **Session-contract rule.** `SessionInstance.execute()` never throws for a
+  guest-level error or a resource limit -- both come back as `outcome.error`
+  (`name: "ExecutionLimitError"` for a limit); an instance is invalidated
+  by setting `invalid`, never by throwing. `InterpreterServer` (the plain
+  class every `Interpreter` Durable Object delegates to) enforces this
+  uniformly: a throw out of `execute()` is treated as a host bug (a trap:
+  drop the resident, no snapshot); `instance.invalid` after a call drops
+  the resident for the next one; and a round whose outcome is
+  `ExecutionLimitError` is never snapshotted even when the instance
+  survives. This replaced per-engine case analysis (JS's fuel interrupt
+  used to throw and rely on a `.trap` tag; Python/Perl's embedded
+  interpreter already returned `invalid` without throwing) that the
+  pre-split `runtime/interpreter.mjs` had to absorb with a three-way
+  `threw`/`trap`/`invalid` branch -- not something safe to expose as a
+  public contract.
+- **This repo's own four language packages dogfood the published
+  package** -- `packages/<language>/src/worker.ts` builds an `Engine` and
+  calls `defineInterpreterRuntime(engine)`, exactly as a third party's
+  `wrangler.jsonc`-only Worker does (see
+  `tests/fixtures/custom-runtime/`). `runtime/` no longer exists.

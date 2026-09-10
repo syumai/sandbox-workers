@@ -96,7 +96,7 @@ function errorResponse(status, code, message, context = {}) {
  * DELETE /interpreters/<key>, and POST /execute (stateless) over `fetch` --
  * plus the `executeInContext(key, args, getFiles)` RPC method the real
  * runtime Worker forwards to its Interpreter Durable Object (see
- * runtime/interpreter.mjs), reusing the real `Workspace` class for the
+ * `InterpreterServer`, packages/interpreter/src/server.ts), reusing the real `Workspace` class for the
  * mirror-reconciliation / pull contract. `calls` records HTTP calls;
  * `executeCalls` records each `executeInContext` call's `args`;
  * `getFilesCalls` records the `paths` array passed to each `getFiles` call.
@@ -167,7 +167,8 @@ function makeInterpreter({ language, engine, contexts = true }) {
     return errorResponse(404, "VALIDATION_FAILED", "Not found");
   }
 
-  // Mirrors runtime/interpreter.mjs's `_executeInContext`: reconcile against
+  // Mirrors InterpreterServer's `executeInContextImpl` (packages/interpreter/
+  // src/server.ts): reconcile against
   // the manifest, pull whatever's missing via `getFiles`, run the "guest
   // program" (a tiny JSON command interpreted directly against the mirror,
   // so tests can drive concrete workspace mutations without a real Wasm
@@ -247,7 +248,7 @@ function makeInterpreter({ language, engine, contexts = true }) {
   }
 
   // A guest-level error (no throw): the response carries no workspace
-  // changes at all (mirroring runtime/interpreter.mjs's restoreFrom(before)).
+  // changes at all (mirroring InterpreterServer's restoreFrom(before)).
   function buildGuestErrorResult(args, context) {
     return {
       code: args.code,

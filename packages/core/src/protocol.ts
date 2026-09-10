@@ -13,6 +13,43 @@ export const MAX_FILES_REQUEST_BYTES = 2 * 1024 * 1024;
 export const MAX_CODE_BYTES = 64 * 1024;
 const ENV_VAR_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/**
+ * The wire protocol version this build of `@sandbox-workers/core` and the
+ * runtime Worker packages speak (see `InterpreterInfo.protocol` below and
+ * docs/sandbox-1-0-design.md, "Wire protocol: sandbox Durable Object ->
+ * runtime Worker"). Bump this when the protocol changes non-additively.
+ */
+export const INTERPRETER_PROTOCOL_VERSION = 1;
+
+/**
+ * Shape of an interpreter key: the caller-side `Sandbox` Durable Object's
+ * own id, sent as the `x-interpreter-key` header (see
+ * `INTERPRETER_KEY_HEADER`) and as the RPC `key` argument to
+ * `executeInContext`. Shared by every runtime Worker's routing and by the
+ * interpreter Durable Object itself.
+ */
+export const INTERPRETER_KEY_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+
+/**
+ * Header a runtime Worker's `fetch()` sets before forwarding
+ * `/interpreters/:key/...` to `env.INTERPRETER.get(...).fetch()` with the
+ * prefix stripped (see docs/sandbox-1-0-design.md, "Wire protocol: sandbox
+ * Durable Object -> runtime Worker").
+ */
+export const INTERPRETER_KEY_HEADER = "x-interpreter-key";
+
+/** Maximum number of code contexts a single sandbox/interpreter may hold. */
+export const MAX_CONTEXTS = 8;
+
+/**
+ * Message for an `/interpreters/:key/*` route (or `executeInContext` RPC
+ * call) a runtime Worker can't serve when it has no `INTERPRETER` Durable
+ * Object binding (see docs/sandbox-1-0-design.md, "Ruby" / stateless
+ * deployments).
+ */
+export const NO_INTERPRETER_BINDING =
+  "Code contexts are not supported: this Worker has no INTERPRETER Durable Object binding";
+
 export type JsonValue =
   | null
   | boolean
@@ -158,6 +195,24 @@ export type InterpreterExecuteRpcResult =
   | { ok: false; status: number; body: Record<string, unknown> };
 
 /**
+ * A runtime Worker binding as seen for the context execute path: a Service
+ * Binding (`fetch`, used by every other route) that also exposes the
+ * `executeInContext` RPC method (Workers RPC promise-pipelines every method
+ * call through the binding, so `target.executeInContext(...)` needs no
+ * feature probe -- see `Sandbox`'s "Unknown binding" check, which still goes
+ * through `fetch` alone). Not declared structurally further than that: a
+ * real Service Binding to a Worker exporting a `WorkerEntrypoint` subclass
+ * satisfies this at runtime.
+ */
+export type RuntimeBinding = { fetch(request: Request): Promise<Response> } & {
+  executeInContext(
+    key: string,
+    args: InterpreterExecuteArgs,
+    getFiles: GetWorkspaceFiles,
+  ): Promise<InterpreterExecuteRpcResult>;
+};
+
+/**
  * Body of `GET /interpreter`, served by every runtime Worker without a
  * Durable Object round trip (see docs/sandbox-1-0-design.md). `contexts` is
  * `false` for Ruby and for a Worker deployed without an `INTERPRETER`
@@ -167,6 +222,12 @@ export interface InterpreterInfo {
   language: string;
   engine: string;
   contexts: boolean;
+  /**
+   * The wire protocol version this runtime Worker speaks (see
+   * `INTERPRETER_PROTOCOL_VERSION`). Absent means 1: a runtime Worker built
+   * before this field existed.
+   */
+  protocol?: number;
 }
 
 /**
@@ -290,6 +351,26 @@ export async function readExecution(
     }
   }
   return { code: value.code, ...(envVars ? { envVars } : {}) };
+}
+
+/**
+ * Validates an `envVars` object for the interpreter's `executeInContext`
+ * path, where it arrives flat and already merged (sandbox envVars +
+ * context's own + this call's, computed by the `Sandbox` Durable Object --
+ * see docs/sandbox-1-0-design.md, "Env vars"): plain string values only, no
+ * null/unset semantics. Stricter than `readExecution`'s lenient envVars
+ * handling above (which silently drops invalid keys/values instead of
+ * throwing) -- do not use this for `readExecution`'s purpose. Returns `raw`
+ * unchanged, or undefined if `raw` itself is undefined.
+ */
+export function validateEnvVarsObject(raw: unknown): Record<string, string> | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    throw new ApiError(400, "envVars must be an object");
+  for (const value of Object.values(raw as Record<string, unknown>)) {
+    if (typeof value !== "string") throw new ApiError(400, "envVars values must be strings");
+  }
+  return raw as Record<string, string>;
 }
 
 export class ApiError extends Error {

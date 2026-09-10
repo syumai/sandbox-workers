@@ -8,6 +8,7 @@ import {
   readBody,
   readExecution,
   validateSandboxId,
+  InterpreterClient,
   MAX_REQUEST_BYTES,
   MAX_FILES_REQUEST_BYTES,
   type LanguageEngine,
@@ -72,13 +73,7 @@ export default {
         // doubles as the runtimeLanguage a language key in the body is
         // checked against (see packages/core/src/protocol.ts, readExecution).
         const payload = await readExecution(request, { runtimeLanguage: id });
-        return await engine.fetch(
-          new Request("https://engine.internal/execute", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(payload),
-          }),
-        );
+        return await new InterpreterClient(engine, id).execute(payload);
       } catch (error) {
         return errorResponse(error);
       }

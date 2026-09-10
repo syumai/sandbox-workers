@@ -187,10 +187,11 @@ interface Engine {
 
 `Host` is created by `createWasi` with the preopens `/stdlib` (Python, Perl),
 `/dev`, and the writable `/workspace` whose tree comes from
-`runtime/workspace.mjs`. The preopen order is fixed and part of the snapshot
-contract because wasi-libc records preopen fd numbers in linear memory.
+`@sandbox-workers/core`'s `Workspace` (`packages/core/src/workspace.ts`). The
+preopen order is fixed and part of the snapshot contract because wasi-libc
+records preopen fd numbers in linear memory.
 
-`runtime/workspace.mjs` is the single implementation of the workspace: an
+`@sandbox-workers/core`'s `Workspace` is the single implementation of the workspace: an
 in-memory tree built from the WASI shim's `Directory` and `File` classes, path
 normalization against a `cwd`, the operations listed above with their limits
 and error codes, content hashing for change detection, and load/save against
@@ -204,7 +205,7 @@ Storage (SQLite-backed Durable Object; `new_sqlite_classes` migration):
 | --- | --- |
 | `meta` | `{id, language, build, cwd, createdAt, lastUsed, executions, lifetime}` |
 | `files` table | `path TEXT PRIMARY KEY, data BLOB, updated_at INTEGER` |
-| `chunks` table | `context_id TEXT, chunk INTEGER, data BLOB, PRIMARY KEY (context_id, chunk)) WITHOUT ROWID` (1 MiB chunks of 16 pages each, stored raw — see `runtime/snapshot.mjs`'s "stored RAW, not deflated" note; unchanged by this amendment, only the write unit grew from one page to one chunk; see `docs/snapshot-cost-design.md`) |
+| `chunks` table | `context_id TEXT, chunk INTEGER, data BLOB, PRIMARY KEY (context_id, chunk)) WITHOUT ROWID` (1 MiB chunks of 16 pages each, stored raw — see `@sandbox-workers/interpreter/snapshot`'s "stored RAW, not deflated" note; unchanged by this amendment, only the write unit grew from one page to one chunk; see `docs/snapshot-cost-design.md`) |
 | `snapshot` | `{build, pages, bytes, storedBytes, handle, extra}`, embedded in the owning context's own row rather than a separate key; `extra` holds engine integers such as the interrupt addresses |
 
 `lifetime` is rotated on `DELETE` so in-flight work started before a destroy
@@ -276,7 +277,7 @@ and the entrypoint becomes
 
 ## Phases
 
-1. `runtime/workspace.mjs`; the session Durable Object with `/workspace`,
+1. `@sandbox-workers/core`'s `Workspace`; the session Durable Object with `/workspace`,
    `cwd`, the files API, and REPL execution kept alive in memory (no snapshot
    yet); JavaScript `fs`/`process` host functions and the module loader;
    typed client; gateway forwarding; wrangler, template, and CLI wiring;
