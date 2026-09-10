@@ -22,42 +22,22 @@ import {
   errnoErrorResponse,
   errorResponse,
   MAX_CODE_BYTES,
+  MAX_CONTEXTS,
   MAX_FILES_REQUEST_BYTES,
   MAX_REQUEST_BYTES,
   type GetWorkspaceFiles,
-  type InterpreterExecuteArgs,
   type InterpreterExecuteResponse,
   type InterpreterExecuteRpcResult,
   type InterpreterInfo,
   type InterpreterWorkspaceManifest,
+  type RuntimeBinding,
   type WorkspaceFileEntry,
 } from "./protocol.js";
 import { ErrorCode, Operation, type OperationType } from "./errors.js";
 import { Workspace, WorkspaceError, type SerializedRow } from "./workspace.js";
 import { validateSandboxId } from "./client.js";
+import type { DurableObjectStateLike } from "./durable.js";
 
-// --- structural host types ---------------------------------------------
-//
-// Declared here (rather than imported from `@cloudflare/workers-types`) so
-// this package has no build-time dependency on Workers types. A real
-// `DurableObjectState`/its `env` satisfy these structurally.
-
-export interface SqlStorageLike {
-  exec(query: string, ...params: unknown[]): Iterable<Record<string, unknown>>;
-}
-export interface DurableObjectStorageLike {
-  sql: SqlStorageLike;
-  transactionSync<T>(closure: () => T): T;
-  deleteAll(): unknown;
-  getAlarm(): Promise<number | null>;
-  setAlarm(scheduledTime: number | Date): Promise<void>;
-  deleteAlarm(): Promise<void>;
-}
-export interface DurableObjectStateLike {
-  id: { toString(): string };
-  storage: DurableObjectStorageLike;
-  blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
-}
 /**
  * `SANDBOX_IDLE_TTL_MS` and `SANDBOX_FILE_API` plus arbitrary bindings
  * (Service Bindings to runtime Workers, named however the caller likes --
@@ -74,31 +54,17 @@ export interface SandboxEnv {
   [binding: string]: unknown;
 }
 
+// `RuntimeBinding` (the context-execute-path view of a runtime Worker
+// binding, `Fetcher & { executeInContext(...) }`) now lives in
+// `./protocol.js`, shared with the runtime Worker `worker.ts` files.
 type Fetcher = { fetch(request: Request): Promise<Response> };
-/**
- * A runtime Worker binding as seen for the context execute path: a Service
- * Binding (`fetch`, used by every other route) that also exposes the
- * `executeInContext` RPC method (Workers RPC promise-pipelines every method
- * call through the binding, so `target.executeInContext(...)` needs no
- * feature probe -- see the "Unknown binding" check below, which still goes
- * through `fetch` alone). Not declared `extends Fetcher` structurally
- * further than that: a real Service Binding to a Worker exporting a
- * `WorkerEntrypoint` subclass satisfies this at runtime.
- */
-type RuntimeBinding = Fetcher & {
-  executeInContext(
-    key: string,
-    args: InterpreterExecuteArgs,
-    getFiles: GetWorkspaceFiles,
-  ): Promise<InterpreterExecuteRpcResult>;
-};
 
 // --- constants -----------------------------------------------------------
 
 const SANDBOX_ID_HEADER = "x-sandbox-id";
 const BINDING_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ENV_VAR_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const MAX_CONTEXTS = 8;
+// MAX_CONTEXTS now lives in ./protocol.js, shared with the interpreter side.
 const DEFAULT_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const FILE_OPERATION: Record<string, OperationType> = {

@@ -23,8 +23,13 @@ import {
   errorBody,
   errnoErrorResponse,
   errorResponse,
+  ExecutionLimitError,
+  INTERPRETER_KEY_HEADER,
+  INTERPRETER_KEY_PATTERN,
   MAX_CODE_BYTES,
+  MAX_CONTEXTS,
   MAX_REQUEST_BYTES,
+  validateEnvVarsObject,
   Workspace,
   WorkspaceError,
 } from "@sandbox-workers/core";
@@ -38,15 +43,6 @@ import {
   hashMemory,
   diffPages,
 } from "./snapshot.mjs";
-
-const ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
-// Set by the runtime worker's fetch() before forwarding
-// `/interpreters/:key/...` to env.INTERPRETER.get(...).fetch() with the
-// prefix stripped (see docs/sandbox-1-0-design.md, "Wire protocol: sandbox
-// Durable Object -> runtime Worker").
-const INTERPRETER_KEY_HEADER = "x-interpreter-key";
-
-const MAX_CONTEXTS = 8;
 
 // Idle expiry (docs/sessions-design.md phase 3, unchanged mechanics). A
 // Durable Object alarm is (re)armed after every request that touches an
@@ -82,15 +78,9 @@ async function readJsonBody(request, maxBytes = MAX_REQUEST_BYTES) {
 // envVars arrives flat and already merged (sandbox.envVars + context.envVars
 // + call.envVars, computed by the sandbox -- see docs/sandbox-1-0-design.md,
 // "Env vars"): plain string values only, no null/unset semantics here.
-function validateEnvVars(raw) {
-  if (raw === undefined) return undefined;
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    throw new ApiError(400, "envVars must be an object");
-  for (const value of Object.values(raw)) {
-    if (typeof value !== "string") throw new ApiError(400, "envVars values must be strings");
-  }
-  return raw;
-}
+// Validated by @sandbox-workers/core's validateEnvVarsObject (the strict
+// validator; see its doc comment for how it differs from readExecution's
+// lenient one).
 
 // Validates the `workspace` field of an `executeInContext` RPC call (see
 // docs/sandbox-1-0-design.md, "Workspace mirror and sync protocol"): the
@@ -594,7 +584,7 @@ export function createInterpreterClass(engine) {
     async _handle(request) {
       try {
         const key = request.headers.get(INTERPRETER_KEY_HEADER) ?? "";
-        if (!ID_PATTERN.test(key)) throw new ApiError(400, "Invalid interpreter key");
+        if (!INTERPRETER_KEY_PATTERN.test(key)) throw new ApiError(400, "Invalid interpreter key");
         const path = new URL(request.url).pathname;
         const method = request.method;
 
@@ -651,14 +641,14 @@ export function createInterpreterClass(engine) {
     // protocol.ts).
     async _executeInContext(key, args, getFiles) {
       try {
-        if (!ID_PATTERN.test(key)) throw new ApiError(400, "Invalid interpreter key");
+        if (!INTERPRETER_KEY_PATTERN.test(key)) throw new ApiError(400, "Invalid interpreter key");
         const meta = this._ensureInterpreterMeta(key);
 
         if (typeof args?.code !== "string" || !args.code.trim())
           throw new ApiError(400, "Non-empty code is required");
         if (new TextEncoder().encode(args.code).length > MAX_CODE_BYTES)
           throw new ApiError(413, "Code exceeds 64 KiB");
-        const envVars = validateEnvVars(args?.envVars) ?? {};
+        const envVars = validateEnvVarsObject(args?.envVars) ?? {};
         if (typeof args?.contextId !== "string" || !args.contextId)
           throw new ApiError(400, "contextId must be a non-empty string");
         const workspaceManifest = validateWorkspaceManifest(args?.workspace);
@@ -745,7 +735,7 @@ export function createInterpreterClass(engine) {
         // backstop (`error.trap === true`, a genuine trap: the instance does
         // NOT survive that, unlike the clean interrupt case). Anything else
         // escaping is unexpected and is treated the same as a trap.
-        const limited = error?.name === "ExecutionLimitError";
+        const limited = error instanceof ExecutionLimitError;
         const trap = error?.trap === true;
         if ((!limited || trap) && this.resident?.contextId === context.id) this.resident = null;
         result = {

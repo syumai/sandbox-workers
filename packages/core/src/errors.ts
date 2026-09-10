@@ -231,6 +231,26 @@ export class CodeExecutionError extends SandboxError<{
   }
 }
 
+/**
+ * Thrown by an engine (or its WASI host) when a guest execution hits a
+ * resource limit -- fuel exhaustion, an output/console limit, or a result
+ * limit (see `runtime/wasi.mjs`, `runtime/javascript.mjs`,
+ * `runtime/embedded.mjs`). Not a `SandboxError`: this is an engine-internal
+ * signal caught by the interpreter/runtime Worker and turned into a regular
+ * `{ error: { name: "ExecutionLimitError", ... } }` execution result, never
+ * serialized over the wire itself. `runtime/javascript.mjs` sets an
+ * additional `trap` property on some instances (a plain field assignment --
+ * no special support is needed here beyond being an ordinary `Error`
+ * subclass) to distinguish a safe interrupt (the Wasm instance survives)
+ * from the hard fuel backstop (it doesn't).
+ */
+export class ExecutionLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ExecutionLimitError";
+  }
+}
+
 function isErrorResponseShape(
   body: unknown,
 ): body is { code: string; message: string; [key: string]: unknown } {

@@ -9,12 +9,12 @@ import {
 } from "@bjorn3/browser_wasi_shim";
 import { unzipSync } from "fflate";
 import { WORKSPACE_TAG } from "./workspace.mjs";
-export class ExecutionLimitError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "ExecutionLimitError";
-  }
-}
+import { ExecutionLimitError } from "@sandbox-workers/core";
+// Re-exported for every existing importer (runtime/javascript.mjs,
+// runtime/embedded.mjs, runtime/ruby.mjs, the worker.ts files, tests): the
+// class itself now lives in @sandbox-workers/core, so a plain `instanceof`
+// check identifies it consistently across every module that imports it.
+export { ExecutionLimitError };
 export function budget(fuel = 100_000_000) {
   let limit = fuel;
   let remaining = fuel;

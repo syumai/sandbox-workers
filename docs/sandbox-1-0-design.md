@@ -341,7 +341,7 @@ Every route answers `ErrorResponse` on failure.
 
 | Method and path | Body | Response |
 | --- | --- | --- |
-| `GET /interpreter` | | `{ language, engine, contexts: boolean }` — served by every runtime Worker, no Durable Object involved. `contexts` is `false` for Ruby and for a Worker without an `INTERPRETER` binding |
+| `GET /interpreter` | | `{ language, engine, contexts: boolean, protocol?: number }` — served by every runtime Worker, no Durable Object involved. `contexts` is `false` for Ruby and for a Worker without an `INTERPRETER` binding. `protocol` is the wire protocol version the runtime Worker speaks (`INTERPRETER_PROTOCOL_VERSION`); absent means 1 (a runtime Worker built before this field existed) |
 | `POST /interpreters/:key/contexts` | `{ id, cwd }` | `{ id, cwd, createdAt }` (201); 400 when over 8 contexts |
 | `DELETE /interpreters/:key/contexts/:id` | | `{ success: true }`; 404 `CONTEXT_NOT_FOUND` |
 | `DELETE /interpreters/:key` | | `{ success: true }` — wipes snapshots and contexts |

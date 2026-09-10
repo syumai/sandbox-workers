@@ -1,7 +1,12 @@
 import wasm from "./engine.wasm";
 import { ExecutionLimitError } from "../../../runtime/wasi.mjs";
 import { runRuby } from "../../../runtime/ruby.mjs";
-import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
+import {
+  ApiError,
+  errorResponse,
+  INTERPRETER_PROTOCOL_VERSION,
+  readExecution,
+} from "@sandbox-workers/core";
 
 const ENGINE_NAME = "CRuby 4.0.0 / ruby.wasm 2.10.1";
 const NO_CONTEXTS = "Code contexts are not supported for ruby";
@@ -50,7 +55,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/interpreter") {
       return Response.json(
-        { language: "ruby", engine: ENGINE_NAME, contexts: false },
+        { language: "ruby", engine: ENGINE_NAME, contexts: false, protocol: INTERPRETER_PROTOCOL_VERSION },
         { headers: { "cache-control": "no-store" } },
       );
     }
