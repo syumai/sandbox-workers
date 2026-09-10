@@ -1,5 +1,6 @@
-import type { ExecutionError, ExecutionResult, JsonValue } from "./protocol.js";
+import type { ExecutionError, ExecutionRequest, ExecutionResult, JsonValue } from "./protocol.js";
 import { ErrorCode, SandboxError, createErrorFromResponse } from "./errors.js";
+import { InterpreterClient } from "./interpreter-client.js";
 
 /**
  * A Durable Object namespace bound to the caller's own `Sandbox` class (see
@@ -757,13 +758,15 @@ async function runCodeOverServiceBinding(
   options: StatelessRunCodeOptions,
 ): Promise<ExecutionResult> {
   const signal = buildSignal(options);
-  const response = await target.fetch(
-    new Request("https://sandbox.internal/execute", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(buildExecutionRequestBody(code, options)),
-      ...(signal ? { signal } : {}),
-    }),
+  // `target` here is already the resolved Service Binding the caller passed
+  // in directly (there's no env-key name to look it up by, unlike
+  // `Sandbox`'s bindings -- see interpreter-client.ts), so the client's name
+  // is only ever used if `target` itself turns out not to be a binding at
+  // all (missing `fetch`).
+  const client = new InterpreterClient(target, "target");
+  const response = await client.execute(
+    buildExecutionRequestBody(code, options) as unknown as ExecutionRequest,
+    signal ? { signal } : undefined,
   );
   const body = await parseJsonResponse(response);
   const result = validateExecutionResult(body);

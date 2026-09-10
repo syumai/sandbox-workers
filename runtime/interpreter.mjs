@@ -24,11 +24,14 @@ import {
   errnoErrorResponse,
   errorResponse,
   ExecutionLimitError,
+  IdleAlarm,
   INTERPRETER_KEY_HEADER,
   INTERPRETER_KEY_PATTERN,
   MAX_CODE_BYTES,
   MAX_CONTEXTS,
   MAX_REQUEST_BYTES,
+  parseIdleTtlMs,
+  DEFAULT_IDLE_TTL_MS,
   validateEnvVarsObject,
   Workspace,
   WorkspaceError,
@@ -54,8 +57,9 @@ import {
 // disables expiry entirely (no alarm is ever armed, and an existing one is
 // cleared). Per docs/sandbox-1-0-design.md, this should be set to at least
 // the caller's own `SANDBOX_IDLE_TTL_MS`, or a context's globals can be gone
-// while the sandbox still lists it.
-const DEFAULT_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
+// while the sandbox still lists it. The throttled re-arm policy itself is
+// shared with the caller-hosted `Sandbox` Durable Object -- see
+// `@sandbox-workers/core`'s idle-alarm.ts.
 
 function json(body, init = {}) {
   return Response.json(body, { headers: { "cache-control": "no-store" }, ...init });
@@ -178,10 +182,10 @@ export function createInterpreterClass(engine) {
       // table for that context, maintained incrementally so `snapshot.
       // chunkCount` (see snapshotInfo/_execute) never needs an extra read.
       this.resident = null;
-      // In-memory cache of the armed alarm deadline (docs/snapshot-cost-
-      // design.md, "Alarm policy"); may be lost on eviction, in which case
-      // _touchAlarm/alarm() fall back to storage.getAlarm().
-      this.alarmAt = null;
+      this.idleAlarm = new IdleAlarm(
+        ctx.storage,
+        parseIdleTtlMs(env?.INTERPRETER_IDLE_TTL_MS, DEFAULT_IDLE_TTL_MS),
+      );
       this.queue = Promise.resolve();
       ctx.blockConcurrencyWhile(async () => {
         await this._ensureSchema();
@@ -468,59 +472,20 @@ export function createInterpreterClass(engine) {
 
     // --- idle expiry ------------------------------------------------------
 
-    _idleTtlMs() {
-      const raw = this.env?.INTERPRETER_IDLE_TTL_MS;
-      if (raw === undefined || raw === null || raw === "") return DEFAULT_IDLE_TTL_MS;
-      const ms = Number(raw);
-      return Number.isFinite(ms) && ms >= 0 ? ms : DEFAULT_IDLE_TTL_MS;
-    }
-
     // Called after every request that touches this interpreter (everything
     // but DELETE, which has nothing left to expire). Returns the armed
     // `expiresAt` deadline, or null when expiry is disabled
     // (`INTERPRETER_IDLE_TTL_MS` is `"0"`), in which case any previously
-    // armed alarm is cleared.
-    //
-    // docs/snapshot-cost-design.md decision 3: re-arming the alarm and
-    // rewriting `meta.interpreter.lastUsed` are each their own row write
-    // (`setAlarm` and an UPDATE via ON CONFLICT DO UPDATE both count 1), so
-    // both are throttled to only happen when the new deadline (`want`) is
-    // more than `TTL / 10` later than the deadline actually armed right now
-    // — an interpreter may then be wiped after as little as 0.9 x TTL of
-    // inactivity instead of exactly TTL, which is documented. `this.alarmAt`
-    // is an in-memory cache of the armed deadline that can be lost on
-    // eviction; `storage.getAlarm()` (a read, effectively free) is the
-    // fallback so the throttling decision is still correct after a cold
-    // start.
-    //
-    // Deviation from the design doc's pseudocode: it returns `armed ?? want`,
-    // which -- once any alarm has ever been armed -- returns the stale
-    // `armed` value even on a call that just re-armed to `want` (`??` only
-    // falls through when the left side is null/undefined, and `armed` isn't
-    // once one exists). That would make `expiresAt` stop advancing after the
-    // first arm. Returning `want` on the branch that actually re-arms (and
-    // `armed` otherwise) is the fix that matches the doc's own comment ("the
-    // deadline actually armed").
+    // armed alarm is cleared. The throttled re-arm policy itself is
+    // `IdleAlarm` (`@sandbox-workers/core`'s idle-alarm.ts) -- the same class
+    // the caller-hosted `Sandbox` Durable Object uses; see its doc comment
+    // for the throttling rule and the deviation from the design doc's
+    // pseudocode.
     async _touchAlarm(meta) {
-      const ttl = this._idleTtlMs();
-      if (ttl === 0) {
-        const armed = this.alarmAt ?? (await this.ctx.storage.getAlarm());
-        if (armed != null) await this.ctx.storage.deleteAlarm();
-        this.alarmAt = null;
-        return null;
-      }
-      const now = Date.now();
-      const armed = this.alarmAt ?? (await this.ctx.storage.getAlarm());
-      this.alarmAt = armed; // cache a cold-start storage.getAlarm() read even if we don't rearm below
-      const want = now + ttl;
-      if (armed == null || want - armed > ttl / 10) {
-        await this.ctx.storage.setAlarm(want);
-        this.alarmAt = want;
-        meta.lastUsed = new Date(now).toISOString();
+      return this.idleAlarm.touch((nowIso) => {
+        meta.lastUsed = nowIso;
         this._saveInterpreterMeta(meta);
-        return want; // the deadline actually armed
-      }
-      return armed; // unchanged: still the deadline actually armed
+      });
     }
 
     // Shared by DELETE /interpreters/:key and the alarm handler below: wipe
@@ -535,7 +500,7 @@ export function createInterpreterClass(engine) {
       this.resident = null;
       this.workspace = new Workspace();
       this.changesSince = undefined;
-      this.alarmAt = null;
+      this.idleAlarm.reset();
     }
 
     // Durable Object alarm handler: fires at whatever deadline was last
@@ -547,15 +512,8 @@ export function createInterpreterClass(engine) {
     // (docs/snapshot-cost-design.md, "Alarm policy").
     async alarm() {
       const meta = this._loadInterpreterMeta();
-      const ttl = this._idleTtlMs();
-      if (meta == null || ttl === 0) return;
-      const deadline = Date.parse(meta.lastUsed) + ttl;
-      if (deadline > Date.now()) {
-        await this.ctx.storage.setAlarm(deadline);
-        this.alarmAt = deadline;
-        return;
-      }
-      await this._destroy();
+      if (meta == null) return;
+      if ((await this.idleAlarm.onAlarm(meta.lastUsed)) === "destroy") await this._destroy();
     }
 
     // --- HTTP surface and RPC entrypoint --------------------------------

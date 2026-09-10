@@ -30,13 +30,14 @@ import {
   type InterpreterExecuteRpcResult,
   type InterpreterInfo,
   type InterpreterWorkspaceManifest,
-  type RuntimeBinding,
   type WorkspaceFileEntry,
 } from "./protocol.js";
 import { ErrorCode, Operation, type OperationType } from "./errors.js";
 import { Workspace, WorkspaceError, type SerializedRow } from "./workspace.js";
 import { validateSandboxId } from "./client.js";
 import type { DurableObjectStateLike } from "./durable.js";
+import { DEFAULT_IDLE_TTL_MS, IdleAlarm, parseIdleTtlMs } from "./idle-alarm.js";
+import { InterpreterClient } from "./interpreter-client.js";
 
 /**
  * `SANDBOX_IDLE_TTL_MS` and `SANDBOX_FILE_API` plus arbitrary bindings
@@ -54,18 +55,15 @@ export interface SandboxEnv {
   [binding: string]: unknown;
 }
 
-// `RuntimeBinding` (the context-execute-path view of a runtime Worker
-// binding, `Fetcher & { executeInContext(...) }`) now lives in
-// `./protocol.js`, shared with the runtime Worker `worker.ts` files.
-type Fetcher = { fetch(request: Request): Promise<Response> };
+// `InterpreterClient` (the wire-protocol caller side of a runtime Worker
+// binding) now lives in `./interpreter-client.js`, shared with `client.ts`
+// and the gateway.
 
 // --- constants -----------------------------------------------------------
 
 const SANDBOX_ID_HEADER = "x-sandbox-id";
-const BINDING_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ENV_VAR_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // MAX_CONTEXTS now lives in ./protocol.js, shared with the interpreter side.
-const DEFAULT_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const FILE_OPERATION: Record<string, OperationType> = {
   read: Operation.FILE_READ,
@@ -256,16 +254,6 @@ function toFileInfo(
   };
 }
 
-function isInterpreterInfo(body: unknown): body is InterpreterInfo {
-  return (
-    !!body &&
-    typeof body === "object" &&
-    typeof (body as Record<string, unknown>).language === "string" &&
-    typeof (body as Record<string, unknown>).engine === "string" &&
-    typeof (body as Record<string, unknown>).contexts === "boolean"
-  );
-}
-
 // --- the Sandbox Durable Object ---------------------------------------------
 
 export class Sandbox {
@@ -276,12 +264,16 @@ export class Sandbox {
   private changesSince: Map<string, string> | undefined;
   /** Directory paths last written to the `files` table, kept in memory so a directory diff never needs a read. */
   private persistedDirs: Set<string> | null = null;
-  private alarmAt: number | null = null;
+  private readonly idleAlarm: IdleAlarm;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(state: DurableObjectStateLike, env: SandboxEnv) {
     this.state = state;
     this.env = env;
+    this.idleAlarm = new IdleAlarm(
+      state.storage,
+      parseIdleTtlMs(env.SANDBOX_IDLE_TTL_MS, DEFAULT_IDLE_TTL_MS),
+    );
     state.blockConcurrencyWhile(async () => {
       await this.ensureSchema();
     });
@@ -465,53 +457,21 @@ export class Sandbox {
     return this.state.id.toString();
   }
 
-  // The only "does this binding exist" check anywhere on the execute path:
-  // a real Service Binding always reads every property as a function (RPC
-  // promise pipelining), so this checks `fetch` specifically rather than
-  // feature-detecting `executeInContext` -- see `RuntimeBinding` above.
-  private resolveBinding(binding: string): RuntimeBinding {
-    const target = this.env[binding] as RuntimeBinding | undefined;
-    if (!target || typeof target.fetch !== "function")
-      throw new ApiError(400, `Unknown binding '${binding}'`);
-    return target;
-  }
-
-  private async fetchBinding(
-    binding: string,
-    method: string,
-    path: string,
-    body?: unknown,
-  ): Promise<Response> {
-    const target = this.resolveBinding(binding);
-    const init: RequestInit = { method };
-    if (body !== undefined) {
-      init.headers = { "content-type": "application/json" };
-      init.body = JSON.stringify(body);
-    }
-    return target.fetch(new Request(`https://sandbox.internal${path}`, init));
+  // Looks up a Service Binding by name and wraps it in an `InterpreterClient`
+  // (see interpreter-client.ts), which itself throws
+  // `ApiError(400, "Unknown binding '${binding}'")` unless the binding
+  // exists and exposes `fetch` -- the only "does this binding exist" check
+  // anywhere on the execute path.
+  private interpreterClient(binding: string): InterpreterClient {
+    return new InterpreterClient(this.env[binding], binding);
   }
 
   // Full binding validation (name shape, presence, and the GET /interpreter
   // probe): only ever called from createCodeContext/default-context creation
   // (docs/sandbox-1-0-design.md), never per execute.
   private async probeBinding(binding: string): Promise<InterpreterInfo> {
-    if (!BINDING_NAME.test(binding)) throw new ApiError(400, `Unknown binding '${binding}'`);
-    let response: Response;
-    try {
-      response = await this.fetchBinding(binding, "GET", "/interpreter");
-    } catch (error) {
-      if (error instanceof ApiError) throw error;
-      throw new ApiError(400, `Binding '${binding}' is not a sandbox-workers runtime Worker`);
-    }
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch {
-      throw new ApiError(400, `Binding '${binding}' is not a sandbox-workers runtime Worker`);
-    }
-    if (!isInterpreterInfo(body))
-      throw new ApiError(400, `Binding '${binding}' is not a sandbox-workers runtime Worker`);
-    return body;
+    if (!InterpreterClient.isBindingName(binding)) throw new ApiError(400, `Unknown binding '${binding}'`);
+    return this.interpreterClient(binding).info();
   }
 
   // Registers a new context both remotely (POST /interpreters/<key>/contexts)
@@ -532,12 +492,10 @@ export class Sandbox {
         `Code contexts are not supported by binding '${binding}' (${resolvedInfo.language})`,
       );
     const id = crypto.randomUUID();
-    const response = await this.fetchBinding(
-      binding,
-      "POST",
-      `/interpreters/${this.interpreterKey()}/contexts`,
-      { id, cwd },
-    );
+    const response = await this.interpreterClient(binding).createContext(this.interpreterKey(), {
+      id,
+      cwd,
+    });
     if (!response.ok) throw new RelayedResponse(await this.rebuildResponse(response));
     const now = new Date().toISOString();
     const context: ContextRecord = {
@@ -579,11 +537,7 @@ export class Sandbox {
         contextId,
       });
     try {
-      await this.fetchBinding(
-        context.binding,
-        "DELETE",
-        `/interpreters/${this.interpreterKey()}/contexts/${encodeURIComponent(context.id)}`,
-      );
+      await this.interpreterClient(context.binding).deleteContext(this.interpreterKey(), context.id);
     } catch {
       // Best-effort: the interpreter forgets this context on its own idle
       // expiry even if this call fails.
@@ -601,43 +555,27 @@ export class Sandbox {
 
   // --- idle expiry ------------------------------------------------------
 
-  private idleTtlMs(): number {
-    const raw = this.env.SANDBOX_IDLE_TTL_MS;
-    if (raw === undefined || raw === null || raw === "") return DEFAULT_IDLE_TTL_MS;
-    const ms = Number(raw);
-    return Number.isFinite(ms) && ms >= 0 ? ms : DEFAULT_IDLE_TTL_MS;
-  }
-
   private fileApiEnabled(): boolean {
     return this.env.SANDBOX_FILE_API !== "disabled";
   }
 
-  // Same throttled alarm policy as runtime/interpreter.mjs's _touchAlarm
-  // (docs/snapshot-cost-design.md, "Alarm policy"): re-arms only when the new
-  // deadline is more than TTL/10 past the deadline actually armed, so a
-  // sandbox may be destroyed after as little as 0.9 x TTL of inactivity.
-  private async touchAlarm(meta: SandboxMeta, { metaAlreadyWritten = false } = {}): Promise<number | null> {
-    const ttl = this.idleTtlMs();
-    if (ttl === 0) {
-      const armed = this.alarmAt ?? (await this.state.storage.getAlarm());
-      if (armed != null) await this.state.storage.deleteAlarm();
-      this.alarmAt = null;
-      return null;
-    }
-    const now = Date.now();
-    const armed = this.alarmAt ?? (await this.state.storage.getAlarm());
-    this.alarmAt = armed;
-    const want = now + ttl;
-    if (armed == null || want - armed > ttl / 10) {
-      await this.state.storage.setAlarm(want);
-      this.alarmAt = want;
-      if (!metaAlreadyWritten) {
-        meta.lastUsed = new Date(now).toISOString();
-        this.saveSandboxMeta(meta);
-      }
-      return want;
-    }
-    return armed;
+  // Same throttled alarm policy as runtime/interpreter.mjs's `_touchAlarm`
+  // (docs/snapshot-cost-design.md, "Alarm policy"; see idle-alarm.ts for the
+  // mechanics both share). `onRearm` writes `meta.lastUsed` -- unless the
+  // caller already wrote it itself (`metaAlreadyWritten`), in which case it's
+  // a no-op.
+  private async touchAlarm(
+    meta: SandboxMeta,
+    { metaAlreadyWritten = false } = {},
+  ): Promise<number | null> {
+    return this.idleAlarm.touch(
+      metaAlreadyWritten
+        ? () => {}
+        : (nowIso) => {
+            meta.lastUsed = nowIso;
+            this.saveSandboxMeta(meta);
+          },
+    );
   }
 
   // Shared by DELETE / and the alarm handler: best-effort DELETE
@@ -648,9 +586,7 @@ export class Sandbox {
     const key = this.interpreterKey();
     for (const binding of bindings) {
       try {
-        const target = this.env[binding] as Fetcher | undefined;
-        if (target && typeof target.fetch === "function")
-          await target.fetch(new Request(`https://sandbox.internal/interpreters/${key}`, { method: "DELETE" }));
+        await this.interpreterClient(binding).destroy(key);
       } catch {
         // best-effort
       }
@@ -661,20 +597,13 @@ export class Sandbox {
     this.workspace = null;
     this.changesSince = undefined;
     this.persistedDirs = null;
-    this.alarmAt = null;
+    this.idleAlarm.reset();
   }
 
   async alarm(): Promise<void> {
     const meta = this.loadSandboxMeta();
-    const ttl = this.idleTtlMs();
-    if (meta == null || ttl === 0) return;
-    const deadline = Date.parse(meta.lastUsed) + ttl;
-    if (deadline > Date.now()) {
-      await this.state.storage.setAlarm(deadline);
-      this.alarmAt = deadline;
-      return;
-    }
-    await this.destroy();
+    if (meta == null) return;
+    if ((await this.idleAlarm.onAlarm(meta.lastUsed)) === "destroy") await this.destroy();
   }
 
   // --- HTTP surface --------------------------------------------------
@@ -825,7 +754,7 @@ export class Sandbox {
     sandboxMeta: SandboxMeta,
   ): Promise<Response> {
     const envVars = computeExecutionEnv(sandboxMeta.envVars, {}, callEnvVars);
-    const response = await this.fetchBinding(binding, "POST", "/execute", { code, envVars });
+    const response = await this.interpreterClient(binding).execute({ code, envVars });
     await this.touchAlarm(sandboxMeta);
     return this.rebuildResponse(response);
   }
@@ -864,10 +793,10 @@ export class Sandbox {
     const workspace = this.ensureWorkspace();
     const envVars = computeExecutionEnv(sandboxMeta.envVars, context.envVars, callEnvVars);
     const key = this.interpreterKey();
-    const target = this.resolveBinding(context.binding);
+    const client = this.interpreterClient(context.binding);
     const payload = this.buildSyncPayload(workspace);
 
-    // `getFiles` is passed as an RPC argument to `target.executeInContext`;
+    // `getFiles` is passed as an RPC argument to `client.executeInContext`;
     // Workers RPC turns it into a stub the interpreter can call back during
     // this call (auto-disposed once the call returns), and that stub may
     // itself be forwarded over RPC again (runtime Worker entrypoint ->
@@ -893,7 +822,7 @@ export class Sandbox {
 
     let rpcResult: InterpreterExecuteRpcResult;
     try {
-      rpcResult = await target.executeInContext(
+      rpcResult = await client.executeInContext(
         key,
         { contextId: context.id, code: body.code, envVars, workspace: payload },
         getFiles,
