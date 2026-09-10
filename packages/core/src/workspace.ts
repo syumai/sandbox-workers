@@ -7,8 +7,8 @@
 // Moved here (from `runtime/workspace.mjs`) so it can be shared, as built
 // TypeScript, by both the sandbox Durable Object (`packages/core/src/
 // sandbox.ts`) and every runtime Worker's interpreter Durable Object
-// (`runtime/interpreter.mjs`); `runtime/workspace.mjs` is now a one-line
-// re-export of this module.
+// (`InterpreterServer`, packages/interpreter/src/server.ts);
+// `runtime/workspace.mjs` is now a one-line re-export of this module.
 import { Directory, File } from "@bjorn3/browser_wasi_shim";
 import type { Inode } from "@bjorn3/browser_wasi_shim";
 

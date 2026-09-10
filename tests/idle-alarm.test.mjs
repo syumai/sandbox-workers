@@ -1,9 +1,9 @@
 // Pure Node tests for `IdleAlarm` (packages/core/src/idle-alarm.ts), the
 // throttled idle-alarm policy shared by the caller-hosted `Sandbox` Durable
-// Object (sandbox.ts) and the interpreter Durable Object
-// (runtime/interpreter.mjs) -- see docs/snapshot-cost-design.md, "Alarm
-// policy". Run `pnpm --filter @sandbox-workers/core build` first; this
-// imports the built package, not the TypeScript source.
+// Object (sandbox.ts) and the interpreter Durable Object (`InterpreterServer`,
+// packages/interpreter/src/server.ts) -- see docs/snapshot-cost-design.md,
+// "Alarm policy". Run `pnpm --filter @sandbox-workers/core build` first;
+// this imports the built package, not the TypeScript source.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { IdleAlarm } from "../packages/core/dist/index.js";

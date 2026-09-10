@@ -1,0 +1,51 @@
+{
+  "name": "@sandbox-workers/interpreter",
+  "version": "0.1.0",
+  "description": "Build your own sandbox-workers runtime Worker: the Interpreter Durable Object and Worker entrypoint base classes",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/syumai/sandbox-workers.git",
+    "directory": "packages/interpreter"
+  },
+  "homepage": "https://github.com/syumai/sandbox-workers/tree/main/packages/interpreter#readme",
+  "bugs": {
+    "url": "https://github.com/syumai/sandbox-workers/issues"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./snapshot": {
+      "types": "./dist/snapshot.d.ts",
+      "import": "./dist/snapshot.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@sandbox-workers/core": "workspace:*",
+    "@bjorn3/browser_wasi_shim": "^0.4.2",
+    "fflate": "^0.8.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "pnpm run build"
+  }
+}

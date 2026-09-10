@@ -93,8 +93,9 @@ class MountedPreopenDirectory extends PreopenDirectory {
 export function createWasi(module, archive, meter, envVars = {}, workspaceDir = null, options = {}) {
   // A getter, not a captured boolean: the sandbox can flip
   // `workspace.disabled` between executions of the same durable session (see
-  // runtime/interpreter.mjs's `_executeInContext`), long after this host was
-  // built at boot/restore time.
+  // `InterpreterServer`'s `executeInContextImpl`,
+  // packages/interpreter/src/server.ts), long after this host was built at
+  // boot/restore time.
   const workspaceDisabled = options.workspaceDisabled ?? (() => false);
   const chunks = { stdout: [], stderr: [] };
   let size = 0;

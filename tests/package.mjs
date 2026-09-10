@@ -9,9 +9,11 @@ const { version } = JSON.parse(
 );
 const js = join(root, `dist/sandbox-workers-javascript-${version}.tgz`);
 const core = join(root, `dist/sandbox-workers-core-${version}.tgz`);
+const interpreter = join(root, `dist/sandbox-workers-interpreter-${version}.tgz`);
 await access(js);
 const cli = join(root, `dist/sandbox-workers-cli-${version}.tgz`);
 await access(core);
+await access(interpreter);
 await access(cli);
 const dir = await mkdtemp(join(tmpdir(), "sandbox-workers-package-"));
 const run = (cmd, args, cwd = dir) =>
@@ -30,6 +32,7 @@ try {
     "--no-fund",
     js,
     core,
+    interpreter,
     cli,
   ]);
   const pkg = JSON.parse(
@@ -42,6 +45,12 @@ try {
     pkg.dependencies,
     undefined,
     "runtime must not need build tools or workspace dependencies",
+  );
+  await access(
+    join(dir, "node_modules/@sandbox-workers/interpreter/dist/index.js"),
+  );
+  await access(
+    join(dir, "node_modules/@sandbox-workers/interpreter/dist/index.d.ts"),
   );
   const init = join(dir, "node_modules/@sandbox-workers/cli/bin/cli.mjs");
   run(process.execPath, [init, "init", "javascript", "worker"]);

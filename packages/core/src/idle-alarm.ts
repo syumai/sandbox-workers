@@ -1,7 +1,7 @@
 // The throttled idle-alarm policy shared by the caller-hosted `Sandbox`
 // Durable Object (`sandbox.ts`) and the interpreter Durable Object
-// (`runtime/interpreter.mjs`) -- see docs/snapshot-cost-design.md, "Alarm
-// policy". Both sides re-arm a Durable Object alarm after every request that
+// (`InterpreterServer`, packages/interpreter/src/server.ts) -- see
+// docs/snapshot-cost-design.md, "Alarm policy". Both sides re-arm a Durable Object alarm after every request that
 // touches them, and wipe themselves when it fires without having been
 // touched again in the meantime; this class is the mechanics of that,
 // independent of what "wipe" or "touched" mean for either caller.

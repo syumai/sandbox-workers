@@ -88,9 +88,11 @@ TypeScript in `packages/core/src/sandbox.ts`. It does **not** extend
 `constructor(state, env)`, `fetch()`, and `alarm()`), so the core package
 still has no build-time dependency on Workers types.
 
-**Interpreter** = the runtime Worker's Durable Object (`runtime/interpreter.mjs`,
-renamed from `runtime/sandbox.mjs`; `createInterpreterClass(engine)`,
-exported as `Interpreter` by the JavaScript, Python, and Perl packages).
+**Interpreter** = the runtime Worker's Durable Object (`InterpreterServer` in
+`packages/interpreter/src/server.ts`, formerly `runtime/interpreter.mjs`'s
+`createInterpreterClass(engine)`; wired up per language via
+`defineInterpreterRuntime(engine)` and exported as `Interpreter` by the
+JavaScript, Python, and Perl packages).
 Keyed by the **sandbox Durable Object's own id** (`ctx.id.toString()` of
 the core object, a 64-hex string), so two callers using the same sandbox id
 against the same runtime Worker never collide. It owns:

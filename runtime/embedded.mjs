@@ -302,7 +302,7 @@ function buildEmbeddedApi({ instance, handle, host, meter, fuel, workspace, lang
           logs: host.logs,
           results,
           ...(error ? { error } : {}),
-          session: { cwd },
+          cwd,
           usage: meter.usage(instance.exports.memory),
         };
       } catch (err) {
@@ -322,7 +322,7 @@ function buildEmbeddedApi({ instance, handle, host, meter, fuel, workspace, lang
             message: err instanceof Error ? err.message.slice(0, 2048) : "Execution failed",
             traceback: [],
           },
-          session: { cwd },
+          cwd,
           usage,
         };
       }

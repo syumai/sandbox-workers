@@ -495,21 +495,29 @@ function createSessionHost(module, workspace, getCwd, setCwd, onCwdChange) {
 // the shared `workspace`; import() is served from it too.
 function buildSessionApi({ instance, handle, meter, fuel, host, workspace, getCwd, setCwd, onCwdChange, interrupt }) {
   let closed = false;
+  // Set only by a trap (the hard fuel backstop in createMeter, tagged
+  // `.trap`) caught inside execute() below -- see the SessionInstance
+  // contract in packages/interpreter/src/engine.ts: execute() never throws
+  // for a guest error or a resource limit, and `invalid` is how it reports
+  // that the instance can no longer be used.
+  let invalid = false;
   return {
     get cwd() {
       return getCwd();
+    },
+    get invalid() {
+      return invalid;
     },
     close() {
       closed = true;
     },
     // Snapshot rules (docs/sessions-design.md): never while the guest holds
-    // an open file descriptor beyond the preopens. A trap (the hard fuel
-    // backstop in createMeter, tagged `.trap`, or any other exception
-    // escaping execute() uncaught) is not checked here because the caller
-    // (the session Durable Object) drops the instance outright in that case
-    // -- there is no live session left to ask.
+    // an open file descriptor beyond the preopens, and never once `invalid`
+    // (a trap already means there's no live session left to ask, but this
+    // engine's own InterpreterServer caller also never calls canSnapshot()
+    // in that case -- see server.ts's session-contract rule 2/3).
     canSnapshot() {
-      return !closed && !hasOpenGuestFds(host);
+      return !closed && !invalid && !hasOpenGuestFds(host);
     },
     // { handle, extra, memory }: `memory` is exposed directly (a
     // WebAssembly.Memory, backed by a SharedArrayBuffer for this engine) so
@@ -529,57 +537,79 @@ function buildSessionApi({ instance, handle, meter, fuel, host, workspace, getCw
     execute(payload) {
       if (closed) throw new Error("This session instance has been closed");
       meter.reset(fuel);
-
-      if (payload.cwd !== undefined && workspace) {
-        try {
-          const info = workspace.stat(payload.cwd, getCwd());
-          if (info.type === "directory") {
-            const absolute = workspace.normalize(payload.cwd, getCwd()).absolute;
-            setCwd(absolute);
-            onCwdChange?.(absolute);
+      try {
+        if (payload.cwd !== undefined && workspace) {
+          try {
+            const info = workspace.stat(payload.cwd, getCwd());
+            if (info.type === "directory") {
+              const absolute = workspace.normalize(payload.cwd, getCwd()).absolute;
+              setCwd(absolute);
+              onCwdChange?.(absolute);
+            }
+          } catch {
+            // Invalid/missing cwd: keep the session's current cwd, matching
+            // the WASI-language sessions' "reset to /workspace" leniency.
           }
-        } catch {
-          // Invalid/missing cwd: keep the session's current cwd, matching
-          // the WASI-language sessions' "reset to /workspace" leniency.
         }
-      }
 
-      const resetEnvelope = jsEval(
-        instance,
-        handle,
-        `__sandboxSession.reset(${JSON.stringify(JSON.stringify(payload.envVars ?? {}))});`,
-      );
-      checkInterrupted(resetEnvelope);
+        const resetEnvelope = jsEval(
+          instance,
+          handle,
+          `__sandboxSession.reset(${JSON.stringify(JSON.stringify(payload.envVars ?? {}))});`,
+        );
+        checkInterrupted(resetEnvelope);
 
-      const transform = transformForRepl(payload.code);
-      const runEnvelope = jsEval(instance, handle, transform.code);
-      if (!runEnvelope.ok) {
-        if (runEnvelope.error === INTERRUPTED_ERROR)
-          throw new ExecutionLimitError("Execution fuel exhausted");
+        const transform = transformForRepl(payload.code);
+        const runEnvelope = jsEval(instance, handle, transform.code);
+        if (!runEnvelope.ok) {
+          if (runEnvelope.error === INTERRUPTED_ERROR)
+            throw new ExecutionLimitError("Execution fuel exhausted");
+          return {
+            logs: { stdout: [], stderr: [] },
+            results: [],
+            error: parseEngineError(runEnvelope.error),
+            cwd: getCwd(),
+            usage: meter.usage(instance.exports.memory),
+          };
+        }
+
+        const endEnvelope = jsEval(
+          instance,
+          handle,
+          `__sandboxSession.end(${transform.mode === "hoist" ? "true" : "false"});`,
+        );
+        checkInterrupted(endEnvelope);
+        const decoded = decodeValueEncoding(endEnvelope.result);
+        const final = JSON.parse(decoded);
+        return {
+          logs: final.logs,
+          results: final.results,
+          ...(final.error ? { error: final.error } : {}),
+          cwd: getCwd(),
+          usage: meter.usage(instance.exports.memory),
+        };
+      } catch (error) {
+        // ExecutionLimitError here is either a clean, engine-observed
+        // interrupt (thrown just above -- the instance survives, `invalid`
+        // stays false) or the hard fuel backstop from deep inside createMeter
+        // (tagged `.trap === true`, thrown through jsEval's Wasm call and
+        // caught here -- the instance does NOT survive that). Anything else
+        // escaping is a host bug: rethrown, per the SessionInstance contract
+        // (packages/interpreter/src/engine.ts), for the caller to treat as a
+        // trap.
+        if (!(error instanceof ExecutionLimitError)) throw error;
+        if (error.trap === true) invalid = true;
         return {
           logs: { stdout: [], stderr: [] },
           results: [],
-          error: parseEngineError(runEnvelope.error),
-          session: { cwd: getCwd() },
-          usage: meter.usage(instance.exports.memory),
+          error: {
+            name: "ExecutionLimitError",
+            message: String(error?.message ?? error).slice(0, 2048),
+            traceback: [],
+          },
+          cwd: getCwd(),
         };
       }
-
-      const endEnvelope = jsEval(
-        instance,
-        handle,
-        `__sandboxSession.end(${transform.mode === "hoist" ? "true" : "false"});`,
-      );
-      checkInterrupted(endEnvelope);
-      const decoded = decodeValueEncoding(endEnvelope.result);
-      const final = JSON.parse(decoded);
-      return {
-        logs: final.logs,
-        results: final.results,
-        ...(final.error ? { error: final.error } : {}),
-        session: { cwd: getCwd() },
-        usage: meter.usage(instance.exports.memory),
-      };
     },
   };
 }

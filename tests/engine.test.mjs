@@ -368,7 +368,9 @@ test("session: import() is served from the workspace", () => {
 test("session: fuel exhaustion is reported without invalidating the instance", () => {
   const { session } = makeSession();
   session.execute({ code: "var survivor = 42" });
-  assert.throws(() => session.execute({ code: "while (true) {}" }), ExecutionLimitError);
+  const looped = session.execute({ code: "while (true) {}" });
+  assert.equal(looped.error.name, "ExecutionLimitError");
+  assert.equal(session.invalid, false);
   const result = session.execute({ code: "survivor" });
   assert.deepEqual(result.results, [{ text: "42" }]);
 });

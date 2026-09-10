@@ -6,7 +6,8 @@
 // Wasm: code contexts are bound to a runtime Worker (one language each) by
 // the name of a Service Binding in the caller's own environment, and every
 // execution calls that binding's `executeInContext` RPC method, forwarded to
-// its interpreter Durable Object (`runtime/interpreter.mjs`), which mirrors
+// its interpreter Durable Object (`InterpreterServer`,
+// packages/interpreter/src/server.ts), which mirrors
 // `/workspace` in memory and reconciles it on every call by pulling whatever
 // it's missing back from this sandbox over the `getFiles` RPC callback (see
 // "Workspace mirror and sync protocol"). There is no push and no HTTP resync
@@ -559,8 +560,9 @@ export class Sandbox {
     return this.env.SANDBOX_FILE_API !== "disabled";
   }
 
-  // Same throttled alarm policy as runtime/interpreter.mjs's `_touchAlarm`
-  // (docs/snapshot-cost-design.md, "Alarm policy"; see idle-alarm.ts for the
+  // Same throttled alarm policy as InterpreterServer's `touchAlarm`
+  // (packages/interpreter/src/server.ts; docs/snapshot-cost-design.md,
+  // "Alarm policy"; see idle-alarm.ts for the
   // mechanics both share). `onRearm` writes `meta.lastUsed` -- unless the
   // caller already wrote it itself (`metaAlreadyWritten`), in which case it's
   // a no-op.

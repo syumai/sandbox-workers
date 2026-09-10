@@ -13,7 +13,6 @@ import { readFileSync } from "node:fs";
 import {
   createJavaScriptSession,
   restoreJavaScriptSession,
-  ExecutionLimitError as JsExecutionLimitError,
 } from "../runtime/javascript.mjs";
 import {
   createEmbeddedSession,
@@ -83,7 +82,9 @@ test("javascript: canSnapshot() is true after a fuel interrupt", () => {
   const workspace = new Workspace();
   const session = createJavaScriptSession(jsModule, { workspace, cwd: "/workspace" });
   session.execute({ code: "var survivor = 1" });
-  assert.throws(() => session.execute({ code: "while (true) {}" }), JsExecutionLimitError);
+  const looped = session.execute({ code: "while (true) {}" });
+  assert.equal(looped.error.name, "ExecutionLimitError");
+  assert.equal(session.invalid, false);
   assert.equal(session.canSnapshot(), true);
   const after = session.execute({ code: "survivor" });
   assert.deepEqual(after.results, [{ text: "1" }]);
