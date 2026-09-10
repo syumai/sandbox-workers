@@ -27,6 +27,14 @@
       "types": "./dist/snapshot.d.ts",
       "import": "./dist/snapshot.js"
     },
+    "./wasi": {
+      "types": "./dist/wasi.d.ts",
+      "import": "./dist/wasi.js"
+    },
+    "./wasmify": {
+      "types": "./dist/wasmify/index.d.ts",
+      "import": "./dist/wasmify/index.js"
+    },
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"

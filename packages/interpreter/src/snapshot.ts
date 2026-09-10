@@ -2,7 +2,7 @@
 // boot/restore functions and consumed by `InterpreterServer` to decide what
 // to write to the `chunks` table (docs/snapshot-cost-design.md: 1 MiB chunks
 // of 16 pages each, not one row per changed 64 KiB page). TypeScript port of
-// `runtime/snapshot.mjs`, exported (unstable, internal) from
+// the pre-split, now-deleted snapshot.mjs, exported (unstable, internal) from
 // `@sandbox-workers/interpreter/snapshot`.
 //
 // Deviation from docs/sessions-design.md, agreed up front: pages are stored

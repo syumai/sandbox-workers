@@ -38,11 +38,11 @@ Your Worker → Sandbox DO → runtime Worker → Interpreter DO → Wasm engine
                                                    snapshot restore/save)
 ```
 
-Each runtime Worker (`engine/index.ts` and its per-language variants) re-exports a language package under `packages/<language>/src`. On the host side, that package transforms or prepares the submitted code — for example, JavaScript's `runtime/javascript.mjs` wraps the submitted code in an async IIFE before evaluation — and drives the engine through a small runtime layer in `runtime/*.mjs`. A stateless execution gets its own Wasm instance and linear memory every time; a code-context execution restores the engine from its stored snapshot instead of booting fresh (see [Code contexts](/concepts/code-contexts)).
+Each runtime Worker (`engine/index.ts` and its per-language variants) re-exports a language package under `packages/<language>/src`. On the host side, that package transforms or prepares the submitted code — for example, JavaScript's `packages/javascript/src/engine.mjs` wraps the submitted code in an async IIFE before evaluation — and drives the engine through the shared WASI/wasmify host in `@sandbox-workers/interpreter`'s `./wasi` and `./wasmify` subpaths. A stateless execution gets its own Wasm instance and linear memory every time; a code-context execution restores the engine from its stored snapshot instead of booting fresh (see [Code contexts](/concepts/code-contexts)).
 
 ## The two host ABIs
 
-JavaScript, Python, and Perl all talk to their engines through the same **wasmify protobuf ABI** (`runtime/protobuf.mjs`): the host serializes requests to the guest and reads back results, logs, and errors as protobuf messages over a shared calling convention. Ruby is the exception — it uses the official **RubyVM ABI** instead, which is why Ruby has different host-side integration code and different constraints (see [Runtime engines](/concepts/runtimes) and [Code contexts](/concepts/code-contexts)).
+JavaScript, Python, and Perl all talk to their engines through the same **wasmify protobuf ABI** (`@sandbox-workers/interpreter/wasmify`): the host serializes requests to the guest and reads back results, logs, and errors as protobuf messages over a shared calling convention. Ruby is the exception — it uses the official **RubyVM ABI** instead, which is why Ruby has different host-side integration code and different constraints (see [Runtime engines](/concepts/runtimes) and [Code contexts](/concepts/code-contexts)).
 
 ## What this is not
 

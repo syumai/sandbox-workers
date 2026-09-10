@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS chunks   (context_id TEXT, chunk INTEGER, data BLOB,
   access after deploy (the public Playground's TTL is 1 h, so this is a
   non-event there; document it in the upgrade guide anyway).
 
-## Execute flow changes (`runtime/sandbox.mjs`)
+## Execute flow changes (`@sandbox-workers/interpreter`'s server.ts)
 
 Step 4 of the execute sequence in `docs/sessions-design.md` becomes:
 
@@ -122,7 +122,7 @@ Step 4 of the execute sequence in `docs/sessions-design.md` becomes:
 5. Apply decision 3 for `meta.sandbox` and the alarm (0–2 rows).
 6. All of the above inside one `transactionSync`, as today.
 
-`diffPages` stays page-based. Add to `runtime/snapshot.mjs`:
+`diffPages` stays page-based. Add to `@sandbox-workers/interpreter/snapshot`:
 `CHUNK_PAGES = 16`, `CHUNK_BYTES`, `chunkOf(page)`, `readChunk(memory,
 chunk, memoryPages)` (with the zero-fill rule), and `chunksToWrite(diff,
 hashes)` returning `{ upsert: number[], remove: number[] }`. These are pure

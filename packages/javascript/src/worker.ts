@@ -6,17 +6,17 @@ import {
   runJavaScript,
   createJavaScriptSession,
   restoreJavaScriptSession,
-} from "../../../runtime/javascript.mjs";
+} from "./engine.mjs";
 
 const engine: Engine = {
   language: javascriptRuntime.id,
   engineName: javascriptRuntime.engine,
   build: build.sha256,
   limits: javascriptRuntime.limits,
-  run: (payload) => runJavaScript(wasm, payload),
+  run: (payload) => runJavaScript(wasm, payload, javascriptRuntime.limits),
   sessions: {
-    boot: (options) => createJavaScriptSession(wasm, options),
-    restore: (options, snapshot) => restoreJavaScriptSession(wasm, { ...options, snapshot }),
+    boot: (options) => createJavaScriptSession(wasm, options, javascriptRuntime.limits),
+    restore: (options, snapshot) => restoreJavaScriptSession(wasm, options, snapshot, javascriptRuntime.limits),
   },
 };
 

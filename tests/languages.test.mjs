@@ -1,9 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { runEmbedded, createEmbeddedSession } from "../runtime/embedded.mjs";
-import { runRuby } from "../runtime/ruby.mjs";
-import { Workspace } from "../runtime/workspace.mjs";
+import { runWasmify, bootWasmifySession } from "@sandbox-workers/interpreter/wasmify";
+import { pythonDriver } from "../packages/python/src/engine.mjs";
+import { perlDriver } from "../packages/perl/src/engine.mjs";
+import { runRuby } from "../packages/ruby/src/engine.mjs";
+import { Workspace } from "@sandbox-workers/core";
+
+// Each engine's own fuel limit (packages/<lang>/src/metadata.ts `limits.fuel`),
+// inlined here rather than importing the built dist/metadata.js so this test
+// file doesn't need `build:packages` to have run first.
+const FUEL = { python: 100_000_000, perl: 10_000_000, ruby: 30_000_000 };
+const DRIVERS = { python: pythonDriver, perl: perlDriver };
+
 const cases = {
   python: {
     normal:
@@ -36,11 +45,12 @@ for (const [language, samples] of Object.entries(cases)) {
     language === "ruby"
       ? null
       : readFileSync(`packages/${language}/dist/stdlib.bin`);
+  const limits = { fuel: FUEL[language] };
   const run = (code, envVars = { NAME: "世界" }) =>
     language === "ruby"
-      ? runRuby(module, { code, envVars })
+      ? runRuby(module, { code, envVars }, limits)
       : Promise.resolve().then(() =>
-          runEmbedded(module, archive, language, { code, envVars }),
+          runWasmify(module, archive, DRIVERS[language], { code, envVars }, limits),
         );
   test(`${language}: last expression, envVars and stdout`, async () => {
     const r = await run(samples.normal);
@@ -114,7 +124,7 @@ for (const [language, samples] of Object.entries(cases)) {
       assert.deepEqual(r.results, [{ json: { name: "世界" } }]);
     });
 }
-// ---- createEmbeddedSession (durable sessions, phase 1: Python & Perl) ----
+// ---- bootWasmifySession (durable sessions, phase 1: Python & Perl) ----
 
 for (const language of ["python", "perl"]) {
   const module = new WebAssembly.Module(readFileSync(`packages/${language}/dist/engine.wasm`));
@@ -134,7 +144,7 @@ for (const language of ["python", "perl"]) {
 
   test(`${language} session: a variable defined in call 1 is visible in call 2`, () => {
     const workspace = new Workspace();
-    const session = createEmbeddedSession(module, archive, language, { workspace, cwd: "/workspace" });
+    const session = bootWasmifySession(module, archive, DRIVERS[language], { workspace, cwd: "/workspace" }, { fuel: FUEL[language] });
     session.execute({ code: varDef });
     const r = session.execute({ code: varUse });
     assert.deepEqual(r.results, [{ text: "2" }]);
@@ -142,7 +152,7 @@ for (const language of ["python", "perl"]) {
 
   test(`${language} session: files written by the guest are readable via the shared workspace`, () => {
     const workspace = new Workspace();
-    const session = createEmbeddedSession(module, archive, language, { workspace, cwd: "/workspace" });
+    const session = bootWasmifySession(module, archive, DRIVERS[language], { workspace, cwd: "/workspace" }, { fuel: FUEL[language] });
     session.execute({ code: writeCode });
     assert.equal(workspace.read("/workspace/a.txt", "/workspace").content, "hi");
     if (readCode) {
@@ -154,14 +164,14 @@ for (const language of ["python", "perl"]) {
 
   test(`${language} session: cwd persists across calls after chdir`, () => {
     const workspace = new Workspace();
-    const session = createEmbeddedSession(module, archive, language, { workspace, cwd: "/workspace" });
+    const session = bootWasmifySession(module, archive, DRIVERS[language], { workspace, cwd: "/workspace" }, { fuel: FUEL[language] });
     session.execute({ code: chdirCode });
     assert.equal(session.cwd, "/workspace/sub");
   });
 
   test(`${language} session: fuel exhaustion invalidates the instance (caller must rebuild)`, () => {
     const workspace = new Workspace();
-    const session = createEmbeddedSession(module, archive, language, { workspace, cwd: "/workspace" });
+    const session = bootWasmifySession(module, archive, DRIVERS[language], { workspace, cwd: "/workspace" }, { fuel: FUEL[language] });
     session.execute({ code: varDef });
     const r = session.execute({ code: loopCode });
     assert.equal(r.error.name, "ExecutionLimitError");
@@ -170,7 +180,7 @@ for (const language of ["python", "perl"]) {
 
   test(`${language} session: an ordinary guest exception does not invalidate the instance`, () => {
     const workspace = new Workspace();
-    const session = createEmbeddedSession(module, archive, language, { workspace, cwd: "/workspace" });
+    const session = bootWasmifySession(module, archive, DRIVERS[language], { workspace, cwd: "/workspace" }, { fuel: FUEL[language] });
     session.execute({ code: varDef });
     const failCode = language === "python" ? 'raise ValueError("boom")' : 'die "boom";';
     const r = session.execute({ code: failCode });
@@ -181,13 +191,13 @@ for (const language of ["python", "perl"]) {
   });
 }
 
-// ---- workspace.disabled: guest /workspace lockout (runtime/wasi.mjs) -----
+// ---- workspace.disabled: guest /workspace lockout (@sandbox-workers/interpreter/wasi) -----
 
 test("python session: workspace.disabled gates open()/os.* with PermissionError", () => {
   const module = new WebAssembly.Module(readFileSync("packages/python/dist/engine.wasm"));
   const archive = readFileSync("packages/python/dist/stdlib.bin");
   const workspace = new Workspace();
-  const session = createEmbeddedSession(module, archive, "python", { workspace, cwd: "/workspace" });
+  const session = bootWasmifySession(module, archive, DRIVERS["python"], { workspace, cwd: "/workspace" }, { fuel: FUEL["python"] });
   workspace.disabled = true;
 
   const write = session.execute({
@@ -228,7 +238,7 @@ test("python session: workspace.disabled is read live, not captured at session b
   const module = new WebAssembly.Module(readFileSync("packages/python/dist/engine.wasm"));
   const archive = readFileSync("packages/python/dist/stdlib.bin");
   const workspace = new Workspace();
-  const session = createEmbeddedSession(module, archive, "python", { workspace, cwd: "/workspace" });
+  const session = bootWasmifySession(module, archive, DRIVERS["python"], { workspace, cwd: "/workspace" }, { fuel: FUEL["python"] });
   workspace.disabled = true;
 
   const denied = session.execute({
@@ -249,7 +259,7 @@ test("perl session: workspace.disabled gates open() with Permission denied", () 
   const module = new WebAssembly.Module(readFileSync("packages/perl/dist/engine.wasm"));
   const archive = readFileSync("packages/perl/dist/stdlib.bin");
   const workspace = new Workspace();
-  const session = createEmbeddedSession(module, archive, "perl", { workspace, cwd: "/workspace" });
+  const session = bootWasmifySession(module, archive, DRIVERS["perl"], { workspace, cwd: "/workspace" }, { fuel: FUEL["perl"] });
   workspace.disabled = true;
 
   const write = session.execute({
@@ -274,7 +284,7 @@ test("perl session: workspace.disabled is read live, not captured at session boo
   const module = new WebAssembly.Module(readFileSync("packages/perl/dist/engine.wasm"));
   const archive = readFileSync("packages/perl/dist/stdlib.bin");
   const workspace = new Workspace();
-  const session = createEmbeddedSession(module, archive, "perl", { workspace, cwd: "/workspace" });
+  const session = bootWasmifySession(module, archive, DRIVERS["perl"], { workspace, cwd: "/workspace" }, { fuel: FUEL["perl"] });
   workspace.disabled = true;
 
   const denied = session.execute({
@@ -294,7 +304,7 @@ test("python session: `import lib` resolves modules from /workspace", () => {
   const module = new WebAssembly.Module(readFileSync("packages/python/dist/engine.wasm"));
   const archive = readFileSync("packages/python/dist/stdlib.bin");
   const workspace = new Workspace();
-  const session = createEmbeddedSession(module, archive, "python", { workspace, cwd: "/workspace" });
+  const session = bootWasmifySession(module, archive, DRIVERS["python"], { workspace, cwd: "/workspace" }, { fuel: FUEL["python"] });
   session.execute({ code: 'open("/workspace/lib.py", "w").write("val = 7\\n")' });
   const r = session.execute({ code: "import lib\nlib.val" });
   assert.deepEqual(r.results, [{ text: "7" }]);
@@ -318,10 +328,11 @@ for (const [language, files] of Object.entries({
         code: readFileSync(`examples/${language}/${file}`, "utf8"),
         envVars: { NAME: "world", WORDS: "hello,world,hello" },
       };
+      const limits = { fuel: FUEL[language] };
       const result =
         language === "ruby"
-          ? await runRuby(module, payload)
-          : runEmbedded(module, archive, language, payload);
+          ? await runRuby(module, payload, limits)
+          : runWasmify(module, archive, DRIVERS[language], payload, limits);
       assert.equal(result.error, undefined, file);
     }
   });

@@ -89,8 +89,8 @@ TypeScript in `packages/core/src/sandbox.ts`. It does **not** extend
 still has no build-time dependency on Workers types.
 
 **Interpreter** = the runtime Worker's Durable Object (`InterpreterServer` in
-`packages/interpreter/src/server.ts`, formerly `runtime/interpreter.mjs`'s
-`createInterpreterClass(engine)`; wired up per language via
+`packages/interpreter/src/server.ts`, formerly the pre-split, now-deleted
+`interpreter.mjs`'s `createInterpreterClass(engine)`; wired up per language via
 `defineInterpreterRuntime(engine)` and exported as `Interpreter` by the
 JavaScript, Python, and Perl packages).
 Keyed by the **sandbox Durable Object's own id** (`ctx.id.toString()` of
@@ -373,8 +373,8 @@ routes, the context-less stateless `execute` under them,
 `handleStatelessSandboxRoute`, and `readExecution`'s `rejectContextId`
 option are removed.
 
-The interpreter's `executeInContext` method keeps everything
-`runtime/sandbox.mjs`'s old `_execute` did (ensure instance, restore from
+The interpreter's `executeInContext` method keeps everything the pre-split,
+now-deleted `sandbox.mjs`'s old `_execute` did (ensure instance, restore from
 chunks, run, snapshot, chunk diff, persist in one transaction) minus the
 `files` table, plus the mirror reconciliation (create dirs, pull whatever's
 missing via `getFiles`, delete what's no longer wanted) before the run and
@@ -384,16 +384,18 @@ interpreter's context row and echoed to the sandbox, which mirrors it.
 
 ## Workspace module
 
-`runtime/workspace.mjs` moves to **`packages/core/src/workspace.ts`**
+The pre-split, now-deleted `workspace.mjs` moved to **`packages/core/src/workspace.ts`**
 (converted to TypeScript; `@bjorn3/browser_wasi_shim` becomes a
 `dependencies` entry of `@sandbox-workers/core`) and is exported from the
 package root (`Workspace`, `WorkspaceError`, `WorkspaceDirectory`,
-`WorkspaceFile`, `WORKSPACE_TAG`, `LIMITS`, `hashBytes`). `runtime/workspace.mjs`
-becomes a one-line re-export (`export * from "@sandbox-workers/core"`) so
-`runtime/wasi.mjs`, `runtime/javascript.mjs`, and the existing tests keep
-their import path. Because the runtime modules now import the built core
-package, the root `test` script builds core first
-(`pnpm --filter @sandbox-workers/core build && node --test tests/*.test.mjs`).
+`WorkspaceFile`, `WORKSPACE_TAG`, `LIMITS`, `hashBytes`). Every remaining
+engine-host module (`@sandbox-workers/interpreter`'s `wasi.ts`, each
+language package's `engine.mjs`) and the tests now import `Workspace`
+straight from `@sandbox-workers/core` (phase 4: the pre-split, top-level
+runtime directory, including its one-line re-export stubs, is deleted). Because
+these modules import the built core package, the root `test` script builds
+core (and `@sandbox-workers/interpreter`) first
+(`pnpm --filter @sandbox-workers/core build && pnpm --filter @sandbox-workers/interpreter build && node --test tests/*.test.mjs`).
 
 Additions to `Workspace`:
 

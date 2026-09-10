@@ -1,6 +1,6 @@
 // InterpreterServer: the plain-class body of the Interpreter Durable Object
 // every runtime Worker exports (TypeScript port of
-// `createInterpreterClass(engine)` in the pre-split `runtime/interpreter.mjs`
+// `createInterpreterClass(engine)` in the pre-split, now-deleted interpreter.mjs
 // -- see docs/sandbox-1-0-design.md and tmp/interpreter-core-split-design.md
 // section 5.2). An Interpreter is keyed by the caller-side sandbox Durable
 // Object's own id and owns only: per-context memory snapshots (the `chunks`

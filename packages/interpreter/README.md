@@ -68,7 +68,17 @@ To support durable code contexts, add the `sessions` field to your `Engine` and 
 
 - `.` -- everything above.
 - `./snapshot` -- the linear-memory snapshot/chunk helpers `InterpreterServer` uses internally. Unstable: documented for an `Engine` author's own session boot/restore code, not a versioned public contract.
+- `./wasi`, `./wasmify` -- see "Wasm-based engines" below.
 - `./testing` -- `createTestState()`, a fake `DurableObjectStateLike` backed by `node:sqlite`, for driving an `InterpreterServer` from a Node test without a Workers runtime. Node-only.
+
+## Wasm-based engines
+
+Building a WASI-hosted Wasm engine (this repo's `@sandbox-workers/javascript`, `python`, `perl`, `ruby` all are) reuses two subpaths instead of reimplementing WASI wiring or a snapshot-replay recipe from scratch:
+
+- `./wasi` -- `createWasi(module, archive, meter, envVars, workspaceDir, options)` builds the WASI host (stdio capture with the sandbox's output limits, the read-only `/stdlib` archive mount, an optional `/workspace` mount gated by `Workspace.disabled`, and a `sandbox.tick` import wired to a fuel meter), plus `budget(fuel)` (a simple fuel meter) and `hasOpenGuestFds(host)` (the snapshot precondition: false while the guest holds an open file descriptor beyond the fixed preopens). `ExecutionLimitError` is re-exported from here too.
+- `./wasmify` -- the protobuf-ish ABI (`message`, `invoke`) goccy's spidermonkey-wasm-family Python and Perl builds expose, and a language-neutral embedded-interpreter session host (`runWasmify`, `bootWasmifySession`, `restoreWasmifySession`) built on it. A language plugs in the Python-/Perl-specific parts (driver scripts, envelope parsing) as a `WasmifyDriver`: `initMethod` (the wasmify method id that creates the interpreter handle), `sessionBoot` (a script run once when a session boots), `evaluate` (runs one script, capturing stdout/stderr, returning a string result), `sessionExecute` (one session call, returning `{ results, error?, cwd? }`), `runOnce` (one stateless call), and an optional `afterRestore` hook. See `packages/python/src/engine.mjs` and `packages/perl/src/engine.mjs` for worked examples. A non-embedded Wasm engine (e.g. `@sandbox-workers/javascript`, whose SpiderMonkey build talks to the host through its own host-function bridge instead of `wasmify`) uses only `./wasi`.
+
+Both subpaths take resource limits as plain arguments (a `fuel` number) rather than reading them from anywhere global -- pass `pythonRuntime.limits.fuel` (from `./metadata`), not a hard-coded constant.
 
 ## Stability
 

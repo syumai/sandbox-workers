@@ -14,12 +14,12 @@ sandbox-workers                     src/index.ts
         │ JAVASCRIPT
         ▼
 sandbox-engine-javascript          engine/index.ts (public URLs disabled)
-  └── Host-side transform + ABI    runtime/javascript.mjs, packages/javascript/src/transform.mjs
+  └── Host-side transform + ABI    packages/javascript/src/engine.mjs, packages/javascript/src/transform.mjs
         └── Fresh Wasm instance per request
-              └── SpiderMonkey + runtime/javascript-prelude.mjs
+              └── SpiderMonkey + packages/javascript/src/prelude.mjs
 ```
 
-The runtime embeds a prebuilt SpiderMonkey (Firefox 147) Wasm module from `goccy/spidermonkey-wasm` v0.2.6, fuel-instrumented at build time by `scripts/instrument.mjs`, and talks to it through the same wasmify protobuf ABI used by the Python and Perl engines (`runtime/protobuf.mjs`). `runtime/javascript.mjs` transforms the submitted code on the host into an async IIFE with `transformForAsyncExecution` (acorn-based, `packages/javascript/src/transform.mjs`), creates a fresh JS runtime handle (`js_new`) with a 32 MiB heap cap and a 1 MiB native stack quota, evaluates a small prelude (`runtime/javascript-prelude.mjs`) that installs `console` and a `__sandbox` helper, then evaluates the transformed IIFE text with `js_eval`. There is no Wizer snapshot step and no persistent guest state between requests: every call boots a fresh Wasm instance.
+The runtime embeds a prebuilt SpiderMonkey (Firefox 147) Wasm module from `goccy/spidermonkey-wasm` v0.2.6, fuel-instrumented at build time by `scripts/instrument.mjs`, and talks to it through the same wasmify protobuf ABI used by the Python and Perl engines (`@sandbox-workers/interpreter/wasmify`). `packages/javascript/src/engine.mjs` transforms the submitted code on the host into an async IIFE with `transformForAsyncExecution` (acorn-based, `packages/javascript/src/transform.mjs`), creates a fresh JS runtime handle (`js_new`) with a 32 MiB heap cap and a 1 MiB native stack quota, evaluates a small prelude (`packages/javascript/src/prelude.mjs`) that installs `console` and a `__sandbox` helper, then evaluates the transformed IIFE text with `js_eval`. There is no Wizer snapshot step and no persistent guest state between requests: every call boots a fresh Wasm instance.
 
 The host denies every Wasm import it does not explicitly implement (randomness, clocks, and the fuel/interrupt hooks used for metering); unimplemented WASI calls and the never-used `thread-spawn`/`go_host_call` bridges are stubbed out. `SharedArrayBuffer` and `Atomics` are deleted from the guest's `globalThis` before any code runs, even though the engine's linear memory is declared shared (for a thread-spawn path this sandbox never enables).
 

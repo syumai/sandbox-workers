@@ -1,6 +1,6 @@
 // The stateless success/failure envelope shared by every runtime Worker's
 // `POST /execute`, factored out of what used to be duplicated in each
-// worker.ts's `handleExecute` catch and in `runtime/interpreter.mjs` `_run`'s
+// worker.ts's `handleExecute` catch and in the pre-split, now-deleted interpreter.mjs's `_run`'s
 // catch (tmp/interpreter-core-split-design.md section 3).
 
 import { ExecutionLimitError, type ExecutionResult } from "@sandbox-workers/core";
@@ -32,8 +32,8 @@ export function executionEnvelope(
  * host-bug path into an `EngineOutcome` with empty logs/results:
  * `ExecutionLimitError` maps to `{ name: "ExecutionLimitError" }`, anything
  * else to a generic `EngineError`. The message is sliced to 2048 characters,
- * matching every pre-split worker.ts's `handleExecute` catch and
- * `runtime/interpreter.mjs` `_run`'s catch.
+ * matching every pre-split worker.ts's `handleExecute` catch and the
+ * pre-split, now-deleted interpreter.mjs's `_run`'s catch.
  */
 export function engineErrorOutcome(error: unknown): EngineOutcome {
   const limited = error instanceof ExecutionLimitError;
