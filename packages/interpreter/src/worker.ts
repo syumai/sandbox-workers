@@ -1,0 +1,143 @@
+// InterpreterWorker: the base class every runtime Worker's default export
+// extends (directly, or via `defineInterpreterRuntime` -- see `index.ts`).
+// Implements exactly what the three JS-based `worker.ts` files did before
+// the split: `GET /interpreter`, `/interpreters/:key/*` forwarding to the
+// `INTERPRETER` Durable Object binding, `POST /execute` (stateless), and the
+// `executeInContext` RPC method the caller-hosted `Sandbox` Durable Object
+// invokes over the Service Binding to this Worker.
+import { WorkerEntrypoint } from "cloudflare:workers";
+import {
+  ApiError,
+  INTERPRETER_KEY_HEADER,
+  INTERPRETER_KEY_PATTERN,
+  INTERPRETER_PROTOCOL_VERSION,
+  NO_INTERPRETER_BINDING,
+  errorBody,
+  errorResponse,
+  readExecution,
+  type GetWorkspaceFiles,
+  type InterpreterExecuteArgs,
+  type InterpreterExecuteRpcResult,
+  type RuntimeBinding,
+} from "@sandbox-workers/core";
+import { executionEnvelope, engineErrorOutcome } from "./envelope.js";
+import type { Engine } from "./engine.js";
+
+/**
+ * Env `InterpreterWorker` reads from directly. `INTERPRETER` is optional: a
+ * Worker deployed without it (the CLI's `--stateless` flag, or an `Engine`
+ * with no `sessions`, e.g. Ruby) still serves plain `/execute`; `GET
+ * /interpreter` reports `{ contexts: false }`.
+ */
+export interface InterpreterWorkerEnv {
+  INTERPRETER?: DurableObjectNamespace;
+}
+
+const INTERPRETER_ROUTE = /^\/interpreters\/([^/]+)(\/.*)?$/;
+
+export abstract class InterpreterWorker<
+  E extends InterpreterWorkerEnv = InterpreterWorkerEnv,
+> extends WorkerEntrypoint<E> {
+  protected abstract readonly engine: Engine;
+
+  async fetch(request: Request): Promise<Response> {
+    const env = this.env;
+    const url = new URL(request.url);
+
+    if (url.pathname === "/interpreter") {
+      return Response.json(
+        {
+          language: this.engine.language,
+          engine: this.engine.engineName,
+          contexts: !!this.engine.sessions && !!env.INTERPRETER,
+          protocol: INTERPRETER_PROTOCOL_VERSION,
+        },
+        { headers: { "cache-control": "no-store" } },
+      );
+    }
+
+    const interpreterMatch = INTERPRETER_ROUTE.exec(url.pathname);
+    if (interpreterMatch) {
+      const [, key, subpath] = interpreterMatch;
+      if (!INTERPRETER_KEY_PATTERN.test(key)) {
+        return errorResponse(new ApiError(400, "Invalid interpreter key"));
+      }
+      if (!this.engine.sessions) {
+        return errorResponse(new ApiError(400, `Code contexts are not supported for ${this.engine.language}`));
+      }
+      if (!env.INTERPRETER) {
+        return errorResponse(new ApiError(400, NO_INTERPRETER_BINDING));
+      }
+      const stub = env.INTERPRETER.get(env.INTERPRETER.idFromName(key));
+      const headers = new Headers(request.headers);
+      headers.set(INTERPRETER_KEY_HEADER, key);
+      const hasBody = request.method !== "GET" && request.method !== "HEAD";
+      const forwarded = new Request(new URL(subpath || "/", url), {
+        method: request.method,
+        headers,
+        body: hasBody ? await request.arrayBuffer() : undefined,
+      });
+      return stub.fetch(forwarded);
+    }
+
+    if (url.pathname !== "/execute") return new Response("Not found", { status: 404 });
+    if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+    try {
+      return await this.handleExecute(request);
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
+  private async handleExecute(request: Request): Promise<Response> {
+    const payload = await readExecution(request, { runtimeLanguage: this.engine.language });
+    const start = performance.now();
+    try {
+      const outcome = await this.engine.run(payload);
+      return Response.json(executionEnvelope(this.engine, payload.code, start, outcome), {
+        headers: { "cache-control": "no-store" },
+      });
+    } catch (error) {
+      return Response.json(executionEnvelope(this.engine, payload.code, start, engineErrorOutcome(error)), {
+        headers: { "cache-control": "no-store" },
+      });
+    }
+  }
+
+  // RPC method called by the `Sandbox` Durable Object (over the Service
+  // Binding to this Worker) for the context execute path -- see
+  // docs/sandbox-1-0-design.md, "Workspace mirror and sync protocol". Errors
+  // are returned as `{ ok: false, status, body }` rather than thrown
+  // (Workers RPC only serializes `name`/`message`/`stack` off a thrown
+  // `Error`, which would drop the `code`/`details`/HTTP status the sandbox
+  // relies on). A `contexts: false` engine (no `sessions`, e.g. Ruby, or any
+  // engine deployed without the `INTERPRETER` binding) answers the same 400
+  // here as `/interpreters/*` does over HTTP -- harmless even for an engine
+  // that never exports its `Interpreter` DO at all, since the sandbox never
+  // calls this for a binding whose `GET /interpreter` reported `contexts: false`.
+  async executeInContext(
+    key: string,
+    args: InterpreterExecuteArgs,
+    getFiles: GetWorkspaceFiles,
+  ): Promise<InterpreterExecuteRpcResult> {
+    if (!INTERPRETER_KEY_PATTERN.test(key)) {
+      const { status, body } = errorBody(new ApiError(400, "Invalid interpreter key"));
+      return { ok: false, status, body };
+    }
+    if (!this.engine.sessions) {
+      const { status, body } = errorBody(
+        new ApiError(400, `Code contexts are not supported for ${this.engine.language}`),
+      );
+      return { ok: false, status, body };
+    }
+    if (!this.env.INTERPRETER) {
+      const { status, body } = errorBody(new ApiError(400, NO_INTERPRETER_BINDING));
+      return { ok: false, status, body };
+    }
+    const stub = this.env.INTERPRETER.get(this.env.INTERPRETER.idFromName(key)) as unknown as RuntimeBinding;
+    // Forwarded directly: a stub received over RPC (`getFiles`, from the
+    // `Sandbox` Durable Object) may be forwarded over RPC again to another
+    // Worker/Durable Object, per Cloudflare's RPC contract.
+    return stub.executeInContext(key, args, getFiles);
+  }
+}

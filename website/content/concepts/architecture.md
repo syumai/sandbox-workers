@@ -27,6 +27,8 @@ Runtime Worker, one per language   (@sandbox-workers/<language>, deployed privat
 
 **`Interpreter`** is each runtime Worker's own Durable Object class (renamed in place from the earlier `Sandbox`), keyed by **the caller's `Sandbox` Durable Object's own id** — so two callers using the same sandbox id against the same runtime Worker never collide. It owns per-context memory snapshots and an in-memory-only mirror of `/workspace`, reconciled at the top of every `executeInContext` call by pulling whatever it's missing back from the `Sandbox` over a Workers RPC callback. There is no `files` table on this side any more: `/workspace` has exactly one source of truth, the caller's `Sandbox`.
 
+Every runtime Worker — the four in this repository and any third party's — is built on **`@sandbox-workers/interpreter`**, a separate published package from `@sandbox-workers/core`: its `InterpreterWorker`/`InterpreterDurableObject` base classes (usually via the `defineInterpreterRuntime(engine)` helper) implement the wire protocol above (routing, the Durable Object's storage, the workspace mirror, snapshot diffing, idle expiry) once, so a language package supplies only an `Engine` — the Wasm module or other interpreter, resource limits, and, for durable code contexts, session boot/restore. See [Build your own runtime](/runtimes/custom) and the package's own README for the full contract.
+
 ## Request flow
 
 A code execution in a context makes two hops, over Workers RPC rather than HTTP: your Worker calls its own `Sandbox` (over the Durable Object binding), which resolves the context and calls the binding's runtime Worker's `executeInContext(key, args, getFiles)` RPC method — `args.workspace` is only the *shape* of `/workspace` (directories and file hashes), and `getFiles` is a callback the runtime Worker forwards, still as an RPC stub, to its own `Interpreter` (keyed by `<key>`, the sandbox's id). The `Interpreter` reconciles its mirror (calling `getFiles` back for whatever content it's missing), runs the code, snapshots memory, and returns a workspace diff. The `Sandbox` applies that diff to its own tree and answers your Worker. A stateless call — stateless mode's free `runCode` against a Service Binding directly, or the stateful-mode fallback (`sandbox.interpreter.runCode({ binding })` against a `contexts: false` binding) — skips the `Interpreter` and the workspace mirror entirely: it's a single HTTP hop to the runtime Worker's plain `POST /execute`.
@@ -38,11 +40,11 @@ Your Worker → Sandbox DO → runtime Worker → Interpreter DO → Wasm engine
                                                    snapshot restore/save)
 ```
 
-Each runtime Worker (`engine/index.ts` and its per-language variants) re-exports a language package under `packages/<language>/src`. On the host side, that package transforms or prepares the submitted code — for example, JavaScript's `runtime/javascript.mjs` wraps the submitted code in an async IIFE before evaluation — and drives the engine through a small runtime layer in `runtime/*.mjs`. A stateless execution gets its own Wasm instance and linear memory every time; a code-context execution restores the engine from its stored snapshot instead of booting fresh (see [Code contexts](/concepts/code-contexts)).
+Each runtime Worker (`engine/index.ts` and its per-language variants) re-exports a language package under `packages/<language>/src`. On the host side, that package transforms or prepares the submitted code — for example, JavaScript's `packages/javascript/src/engine.mjs` wraps the submitted code in an async IIFE before evaluation — and drives the engine through the shared WASI/wasmify host in `@sandbox-workers/interpreter`'s `./wasi` and `./wasmify` subpaths. A stateless execution gets its own Wasm instance and linear memory every time; a code-context execution restores the engine from its stored snapshot instead of booting fresh (see [Code contexts](/concepts/code-contexts)).
 
 ## The two host ABIs
 
-JavaScript, Python, and Perl all talk to their engines through the same **wasmify protobuf ABI** (`runtime/protobuf.mjs`): the host serializes requests to the guest and reads back results, logs, and errors as protobuf messages over a shared calling convention. Ruby is the exception — it uses the official **RubyVM ABI** instead, which is why Ruby has different host-side integration code and different constraints (see [Runtime engines](/concepts/runtimes) and [Code contexts](/concepts/code-contexts)).
+JavaScript, Python, and Perl all talk to their engines through the same **wasmify protobuf ABI** (`@sandbox-workers/interpreter/wasmify`): the host serializes requests to the guest and reads back results, logs, and errors as protobuf messages over a shared calling convention. Ruby is the exception — it uses the official **RubyVM ABI** instead, which is why Ruby has different host-side integration code and different constraints (see [Runtime engines](/concepts/runtimes) and [Code contexts](/concepts/code-contexts)).
 
 ## What this is not
 
@@ -55,3 +57,4 @@ There is no process execution, no terminals, no ports or tunnels, no backups, no
 - [Runtime engines](/concepts/runtimes)
 - [Security model](/concepts/security)
 - [Configuration: wrangler.jsonc](/configuration/wrangler)
+- [Build your own runtime](/runtimes/custom)

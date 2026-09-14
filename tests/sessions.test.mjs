@@ -2,7 +2,7 @@
 // a snapshot from a live session, restoring a brand-new session instance
 // from it (with a fresh Workspace object, as a Durable Object does after
 // eviction), and canSnapshot()/page-diff behavior. See
-// docs/sessions-design.md and runtime/snapshot.mjs.
+// docs/sessions-design.md and @sandbox-workers/interpreter/snapshot.
 //
 // Unlike tests/engine.test.mjs / tests/languages.test.mjs (one process-wide
 // module per language), this file also measures a snapshot's own cost, so it
@@ -13,14 +13,19 @@ import { readFileSync } from "node:fs";
 import {
   createJavaScriptSession,
   restoreJavaScriptSession,
-  ExecutionLimitError as JsExecutionLimitError,
-} from "../runtime/javascript.mjs";
-import {
-  createEmbeddedSession,
-  restoreEmbeddedSession,
-} from "../runtime/embedded.mjs";
-import { Workspace } from "../runtime/workspace.mjs";
-import { diffPages, memoryPageCount, PAGE_BYTES } from "../runtime/snapshot.mjs";
+} from "../packages/javascript/src/engine.mjs";
+import { bootWasmifySession, restoreWasmifySession } from "@sandbox-workers/interpreter/wasmify";
+import { pythonDriver } from "../packages/python/src/engine.mjs";
+import { perlDriver } from "../packages/perl/src/engine.mjs";
+import { Workspace } from "@sandbox-workers/core";
+import { diffPages, memoryPageCount, PAGE_BYTES } from "@sandbox-workers/interpreter/snapshot";
+
+// Each engine's own fuel limit (packages/<lang>/src/metadata.ts `limits.fuel`),
+// inlined here rather than importing the built dist/metadata.js so this test
+// file doesn't need `build:packages` to have run first.
+const JAVASCRIPT_LIMITS = { fuel: 50_000_000 };
+const PYTHON_LIMITS = { fuel: 100_000_000 };
+const PERL_LIMITS = { fuel: 10_000_000 };
 
 const jsModule = new WebAssembly.Module(
   readFileSync(new URL("../packages/javascript/dist/engine.wasm", import.meta.url)),
@@ -33,7 +38,7 @@ const perlArchive = readFileSync("packages/perl/dist/stdlib.bin");
 // Full first snapshot: diffPages() against an empty hash map returns every
 // non-zero page already copied out, which is exactly what a from-scratch
 // restore needs (a Durable Object taking its first snapshot does the same
-// thing — see runtime/sandbox.mjs's _ensureInstance/_execute).
+// thing — see @sandbox-workers/interpreter's server.ts's ensureInstance/executeInContextImpl).
 function captureSnapshot(session) {
   const snap = session.snapshot();
   const diff = diffPages(snap.memory, new Map());
@@ -51,7 +56,7 @@ function captureSnapshot(session) {
 
 test("javascript: a snapshot restores into a brand-new session with a fresh workspace", () => {
   const workspace = new Workspace();
-  const session = createJavaScriptSession(jsModule, { workspace, cwd: "/workspace" });
+  const session = createJavaScriptSession(jsModule, { workspace, cwd: "/workspace" }, JAVASCRIPT_LIMITS);
   session.execute({
     code: "var counter = 1; function greet(name) { return 'hi ' + name; } class Box { constructor(v) { this.v = v; } get() { return this.v; } }",
   });
@@ -63,11 +68,12 @@ test("javascript: a snapshot restores into a brand-new session with a fresh work
   assert.ok(snapshot.pageCount > 0);
 
   const freshWorkspace = new Workspace();
-  const restored = restoreJavaScriptSession(jsModule, {
-    workspace: freshWorkspace,
-    cwd: "/workspace",
+  const restored = restoreJavaScriptSession(
+    jsModule,
+    { workspace: freshWorkspace, cwd: "/workspace" },
     snapshot,
-  });
+    JAVASCRIPT_LIMITS,
+  );
   const result = restored.execute({ code: "counter + 1 + '/' + greet('world') + '/' + new Box(42).get()" });
   assert.deepEqual(result.results, [{ text: "'2/hi world/42'" }]);
 
@@ -81,9 +87,11 @@ test("javascript: a snapshot restores into a brand-new session with a fresh work
 
 test("javascript: canSnapshot() is true after a fuel interrupt", () => {
   const workspace = new Workspace();
-  const session = createJavaScriptSession(jsModule, { workspace, cwd: "/workspace" });
+  const session = createJavaScriptSession(jsModule, { workspace, cwd: "/workspace" }, JAVASCRIPT_LIMITS);
   session.execute({ code: "var survivor = 1" });
-  assert.throws(() => session.execute({ code: "while (true) {}" }), JsExecutionLimitError);
+  const looped = session.execute({ code: "while (true) {}" });
+  assert.equal(looped.error.name, "ExecutionLimitError");
+  assert.equal(session.invalid, false);
   assert.equal(session.canSnapshot(), true);
   const after = session.execute({ code: "survivor" });
   assert.deepEqual(after.results, [{ text: "1" }]);
@@ -91,7 +99,7 @@ test("javascript: canSnapshot() is true after a fuel interrupt", () => {
 
 test("javascript: page diff reports only the pages that actually changed", () => {
   const workspace = new Workspace();
-  const session = createJavaScriptSession(jsModule, { workspace, cwd: "/workspace" });
+  const session = createJavaScriptSession(jsModule, { workspace, cwd: "/workspace" }, JAVASCRIPT_LIMITS);
   session.execute({ code: "var a = 1;" });
   const snap1 = session.snapshot();
   const first = diffPages(snap1.memory, new Map());
@@ -117,10 +125,13 @@ test("javascript: page diff reports only the pages that actually changed", () =>
 
 test("python: a snapshot restores into a brand-new session with a fresh workspace", () => {
   const workspace = new Workspace();
-  const session = createEmbeddedSession(pythonModule, pythonArchive, "python", {
-    workspace,
-    cwd: "/workspace",
-  });
+  const session = bootWasmifySession(
+    pythonModule,
+    pythonArchive,
+    pythonDriver,
+    { workspace, cwd: "/workspace" },
+    PYTHON_LIMITS,
+  );
   session.execute({ code: "counter = 1\ndef greet(name):\n    return 'hi ' + name\n" });
   assert.equal(session.canSnapshot(), true);
 
@@ -130,11 +141,14 @@ test("python: a snapshot restores into a brand-new session with a fresh workspac
   assert.ok(snapshot.pageCount > 0);
 
   const freshWorkspace = new Workspace();
-  const restored = restoreEmbeddedSession(pythonModule, pythonArchive, "python", {
-    workspace: freshWorkspace,
-    cwd: "/workspace",
+  const restored = restoreWasmifySession(
+    pythonModule,
+    pythonArchive,
+    pythonDriver,
+    { workspace: freshWorkspace, cwd: "/workspace" },
     snapshot,
-  });
+    PYTHON_LIMITS,
+  );
   const result = restored.execute({ code: "counter + 1" });
   assert.deepEqual(result.results, [{ text: "2" }]);
   const called = restored.execute({ code: "greet('world')" });
@@ -150,10 +164,13 @@ test("python: a snapshot restores into a brand-new session with a fresh workspac
 
 test("python: canSnapshot() is false after a fuel trap", () => {
   const workspace = new Workspace();
-  const session = createEmbeddedSession(pythonModule, pythonArchive, "python", {
-    workspace,
-    cwd: "/workspace",
-  });
+  const session = bootWasmifySession(
+    pythonModule,
+    pythonArchive,
+    pythonDriver,
+    { workspace, cwd: "/workspace" },
+    PYTHON_LIMITS,
+  );
   session.execute({ code: "x = 1" });
   assert.equal(session.canSnapshot(), true);
   const looped = session.execute({ code: "while True: pass" });
@@ -163,21 +180,28 @@ test("python: canSnapshot() is false after a fuel trap", () => {
 });
 
 test("python: Math.random-equivalent caveat — random is re-seeded after restore", () => {
-  // random.seed() is called once by restoreEmbeddedSession; this just checks
-  // the restored interpreter is still functional and `random` still imports
-  // and produces a value (not that any particular value comes out).
+  // random.seed() is called once by restoreWasmifySession's afterRestore
+  // hook (pythonDriver.afterRestore); this just checks the restored
+  // interpreter is still functional and `random` still imports and produces
+  // a value (not that any particular value comes out).
   const workspace = new Workspace();
-  const session = createEmbeddedSession(pythonModule, pythonArchive, "python", {
-    workspace,
-    cwd: "/workspace",
-  });
+  const session = bootWasmifySession(
+    pythonModule,
+    pythonArchive,
+    pythonDriver,
+    { workspace, cwd: "/workspace" },
+    PYTHON_LIMITS,
+  );
   session.execute({ code: "import random" });
   const snapshot = captureSnapshot(session);
-  const restored = restoreEmbeddedSession(pythonModule, pythonArchive, "python", {
-    workspace: new Workspace(),
-    cwd: "/workspace",
+  const restored = restoreWasmifySession(
+    pythonModule,
+    pythonArchive,
+    pythonDriver,
+    { workspace: new Workspace(), cwd: "/workspace" },
     snapshot,
-  });
+    PYTHON_LIMITS,
+  );
   const result = restored.execute({ code: "0 <= random.random() < 1" });
   assert.deepEqual(result.results, [{ text: "True" }]);
 });
@@ -186,10 +210,13 @@ test("python: Math.random-equivalent caveat — random is re-seeded after restor
 
 test("perl: a snapshot restores into a brand-new session with a fresh workspace", () => {
   const workspace = new Workspace();
-  const session = createEmbeddedSession(perlModule, perlArchive, "perl", {
-    workspace,
-    cwd: "/workspace",
-  });
+  const session = bootWasmifySession(
+    perlModule,
+    perlArchive,
+    perlDriver,
+    { workspace, cwd: "/workspace" },
+    PERL_LIMITS,
+  );
   session.execute({ code: "our $counter = 1; sub greet { return 'hi ' . $_[0]; } 1;" });
   assert.equal(session.canSnapshot(), true);
 
@@ -199,11 +226,14 @@ test("perl: a snapshot restores into a brand-new session with a fresh workspace"
   assert.ok(snapshot.pageCount > 0);
 
   const freshWorkspace = new Workspace();
-  const restored = restoreEmbeddedSession(perlModule, perlArchive, "perl", {
-    workspace: freshWorkspace,
-    cwd: "/workspace",
+  const restored = restoreWasmifySession(
+    perlModule,
+    perlArchive,
+    perlDriver,
+    { workspace: freshWorkspace, cwd: "/workspace" },
     snapshot,
-  });
+    PERL_LIMITS,
+  );
   const result = restored.execute({ code: "$counter + 1" });
   assert.deepEqual(result.results, [{ text: "2" }]);
   const called = restored.execute({ code: "greet('world')" });
@@ -218,10 +248,13 @@ test("perl: a snapshot restores into a brand-new session with a fresh workspace"
 
 test("perl: canSnapshot() is false after a fuel trap", () => {
   const workspace = new Workspace();
-  const session = createEmbeddedSession(perlModule, perlArchive, "perl", {
-    workspace,
-    cwd: "/workspace",
-  });
+  const session = bootWasmifySession(
+    perlModule,
+    perlArchive,
+    perlDriver,
+    { workspace, cwd: "/workspace" },
+    PERL_LIMITS,
+  );
   session.execute({ code: "our $x = 1;" });
   assert.equal(session.canSnapshot(), true);
   const looped = session.execute({ code: "while(1) {}" });
@@ -234,10 +267,13 @@ test("perl: canSnapshot() is false after a fuel trap", () => {
 
 test("python: canSnapshot() is false while the guest holds an open file descriptor", () => {
   const workspace = new Workspace();
-  const session = createEmbeddedSession(pythonModule, pythonArchive, "python", {
-    workspace,
-    cwd: "/workspace",
-  });
+  const session = bootWasmifySession(
+    pythonModule,
+    pythonArchive,
+    pythonDriver,
+    { workspace, cwd: "/workspace" },
+    PYTHON_LIMITS,
+  );
   session.execute({ code: 'open("/workspace/x.txt", "w").write("hi")' }); // closed via GC/refcounting normally, but...
   // Explicitly keep a handle open across the execute() boundary via a global.
   session.execute({ code: '__leaked_fh = open("/workspace/x.txt")' });

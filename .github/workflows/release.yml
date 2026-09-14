@@ -72,7 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          names="core javascript python perl ruby cli"
+          names="core interpreter javascript python perl ruby cli"
           for name in $names; do
             [ -f "dist/sandbox-workers-${name}-${version}.tgz" ] || { echo "::error::tarball for ${name}@${version} missing (versions and tag disagree)"; exit 1; }
           done

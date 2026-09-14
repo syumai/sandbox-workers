@@ -1,69 +1,22 @@
 import wasm from "./engine.wasm";
-import { ExecutionLimitError } from "../../../runtime/wasi.mjs";
-import { runRuby } from "../../../runtime/ruby.mjs";
-import { ApiError, errorResponse, readExecution } from "@sandbox-workers/core";
+import build from "./engine-build.json";
+import { defineInterpreterRuntime, type Engine } from "@sandbox-workers/interpreter";
+import { rubyRuntime } from "./metadata.js";
+import { runRuby } from "./engine.mjs";
 
-const ENGINE_NAME = "CRuby 4.0.0 / ruby.wasm 2.10.1";
-const NO_CONTEXTS = "Code contexts are not supported for ruby";
+// No `sessions`: code contexts are not supported for ruby (see
+// engine.mjs). `defineInterpreterRuntime` still returns an
+// `Interpreter` class, but it's not exported here -- an engine with no
+// `sessions` never gets its Durable Object bound in wrangler config, and
+// `InterpreterWorker`/`InterpreterServer` already answer 400 for every
+// `/interpreters/*` route and the `executeInContext` RPC call when
+// `engine.sessions` is undefined.
+const engine: Engine = {
+  language: rubyRuntime.id,
+  engineName: rubyRuntime.engine,
+  build: build.sha256,
+  limits: rubyRuntime.limits,
+  run: (payload) => runRuby(wasm, payload, rubyRuntime.limits),
+};
 
-const INTERPRETER_ROUTE = /^\/interpreters\/([^/]+)(\/.*)?$/;
-
-async function handleExecute(request: Request): Promise<Response> {
-  const payload = await readExecution(request, { runtimeLanguage: "ruby" });
-  const start = performance.now();
-  try {
-    const result = await runRuby(wasm, payload);
-    return Response.json(
-      {
-        code: payload.code,
-        language: "ruby",
-        engine: ENGINE_NAME,
-        durationMs: performance.now() - start,
-        ...result,
-      },
-      { headers: { "cache-control": "no-store" } },
-    );
-  } catch (error) {
-    const limited = error instanceof ExecutionLimitError;
-    return Response.json(
-      {
-        code: payload.code,
-        language: "ruby",
-        engine: ENGINE_NAME,
-        durationMs: performance.now() - start,
-        logs: { stdout: [], stderr: [] },
-        results: [],
-        error: {
-          name: limited ? "ExecutionLimitError" : "EngineError",
-          message:
-            error instanceof Error ? error.message.slice(0, 2048) : "Execution failed",
-          traceback: [],
-        },
-      },
-      { headers: { "cache-control": "no-store" } },
-    );
-  }
-}
-
-export default {
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    if (url.pathname === "/interpreter") {
-      return Response.json(
-        { language: "ruby", engine: ENGINE_NAME, contexts: false },
-        { headers: { "cache-control": "no-store" } },
-      );
-    }
-    if (INTERPRETER_ROUTE.test(url.pathname)) {
-      return errorResponse(new ApiError(400, NO_CONTEXTS));
-    }
-    if (url.pathname !== "/execute") return new Response("Not found", { status: 404 });
-    if (request.method !== "POST")
-      return new Response("Method not allowed", { status: 405 });
-    try {
-      return await handleExecute(request);
-    } catch (error) {
-      return errorResponse(error);
-    }
-  },
-} satisfies ExportedHandler;
+export default defineInterpreterRuntime(engine).Worker;

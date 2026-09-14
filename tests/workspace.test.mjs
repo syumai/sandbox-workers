@@ -1,7 +1,7 @@
-// Pure Node unit tests for runtime/workspace.mjs. No Workers runtime needed.
+// Pure Node unit tests for @sandbox-workers/core's Workspace. No Workers runtime needed.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Workspace, WorkspaceError, LIMITS } from "../runtime/workspace.mjs";
+import { Workspace, WorkspaceError, LIMITS } from "@sandbox-workers/core";
 
 test("write then read round-trips utf-8 content", () => {
   const ws = new Workspace();
@@ -253,7 +253,7 @@ test("moduleSource only serves .js/.mjs/.json under /workspace", () => {
 });
 
 test("WASI-created directories/files are upgraded and tagged for the mount policy", async () => {
-  const { WORKSPACE_TAG } = await import("../runtime/workspace.mjs");
+  const { WORKSPACE_TAG } = await import("@sandbox-workers/core");
   const ws = new Workspace();
   // Simulate what the WASI shim does when a guest calls mkdir/open(O_CREAT):
   // it calls Directory.create_entry_for_path directly on the mounted dir.

@@ -1,5 +1,5 @@
 import { RubyVM } from "@ruby/wasm-wasi";
-import { createWasi, budget, ExecutionLimitError } from "./wasi.mjs";
+import { createWasi, budget, ExecutionLimitError } from "@sandbox-workers/interpreter/wasi";
 const encoder = new TextEncoder();
 // Hex-encodes the code so it can be embedded as a Ruby string literal
 // without worrying about quoting/escaping; the driver script decodes it
@@ -9,16 +9,16 @@ const hex = (value) =>
 // RubyVM initialization is asynchronous; serialize it so two guest memories
 // cannot be live concurrently within one Worker isolate.
 let pending = Promise.resolve();
-export function runRuby(module, payload) {
-  const result = pending.then(() => execute(module, payload));
+export function runRuby(module, payload, limits) {
+  const result = pending.then(() => execute(module, payload, limits));
   pending = result.then(
     () => {},
     () => {},
   );
   return result;
 }
-async function execute(module, payload) {
-  const meter = budget(30_000_000),
+async function execute(module, payload, limits) {
+  const meter = budget(limits.fuel),
     host = createWasi(module, null, meter, payload.envVars ?? {}),
     vm = new RubyVM();
   vm.addToImports(host.imports);

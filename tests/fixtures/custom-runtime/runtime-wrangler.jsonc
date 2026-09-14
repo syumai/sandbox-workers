@@ -1,0 +1,11 @@
+{
+  "name": "sandbox-custom-runtime-fixture-engine",
+  "main": "runtime.ts",
+  "compatibility_date": "2026-09-04",
+  "workers_dev": false,
+  "preview_urls": false,
+  // No durable_objects/migrations: this engine has no `sessions`, so
+  // GET /interpreter reports { contexts: false } and every /interpreters/*
+  // route (and the executeInContext RPC method) answers 400 -- see
+  // @sandbox-workers/interpreter's README.md, "Code contexts".
+}

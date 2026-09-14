@@ -11,6 +11,7 @@ Self-hosted code sandboxes on Cloudflare Workers for JavaScript, Python, Perl, a
 | `packages/cli`                | Shared runtime initializer                                           | `@sandbox-workers/cli`        |
 | `website`                     | Blume documentation site                                             | Private workspace package     |
 | `packages/core`               | Shared execution protocol and typed Service Binding client           | `@sandbox-workers/core`       |
+| `packages/interpreter`        | Runtime Worker base classes (build your own runtime)                 | `@sandbox-workers/interpreter` |
 | Root `src/`, `ui/`, `engine/` | Playground gateway, editor UI, and deployment configuration          | Private; not published to npm |
 
 Version 0.1.0 packages are published on npm under the `@sandbox-workers` scope. JavaScript, Python, Perl, and Ruby each run in a separate Worker. See [language runtimes](docs/languages.md) for compatibility limits and the PHP evaluation.
@@ -157,6 +158,7 @@ Use a Paid plan for runtime performance evaluation. The 64 MiB upload limit is s
 pnpm run pack
 # dist/sandbox-workers-cli-<version>.tgz
 # dist/sandbox-workers-core-<version>.tgz
+# dist/sandbox-workers-interpreter-<version>.tgz
 # dist/sandbox-workers-javascript-<version>.tgz
 # dist/sandbox-workers-python-<version>.tgz
 # dist/sandbox-workers-perl-<version>.tgz
@@ -179,9 +181,9 @@ pnpm run dry-run
 
 Releases are automated with [tagpr](https://github.com/Songmu/tagpr), configured in `.tagpr`. Every pull request merged to `main` may carry a `minor` or `major` label; a PR with neither label produces a patch release.
 
-1. Merge pull requests as usual, adding a `minor` or `major` label when a change should bump beyond a patch. tagpr keeps a "Release vX.Y.Z" pull request open and up to date, bumping the version across all six `packages/*/package.json` files and each runtime's `src/metadata.ts`, and updating `CHANGELOG.md`.
+1. Merge pull requests as usual, adding a `minor` or `major` label when a change should bump beyond a patch. tagpr keeps a "Release vX.Y.Z" pull request open and up to date, bumping the version across all seven `packages/*/package.json` files and each runtime's `src/metadata.ts`, and updating `CHANGELOG.md`.
 2. Review the open release pull request: check `CHANGELOG.md`, the bumped version files, and — for any runtime whose engine changed — that runtime's `THIRD_PARTY_NOTICES.md`.
-3. Merge the release pull request. `.github/workflows/release.yml` rebuilds and validates the merge commit (`build:languages`, `build:packages`, `check`, `test`, `scripts/pack.mjs`, `test:package`), tags `vX.Y.Z`, creates a GitHub Release with the six tarballs attached, and publishes `@sandbox-workers/{core,javascript,python,perl,ruby,cli}` to npm using npm trusted publishing (OIDC; no long-lived npm token is stored).
+3. Merge the release pull request. `.github/workflows/release.yml` rebuilds and validates the merge commit (`build:languages`, `build:packages`, `check`, `test`, `scripts/pack.mjs`, `test:package`), tags `vX.Y.Z`, creates a GitHub Release with the seven tarballs attached, and publishes `@sandbox-workers/{core,interpreter,javascript,python,perl,ruby,cli}` to npm using npm trusted publishing (OIDC; no long-lived npm token is stored).
 
 Deploy the Playground separately with `pnpm run deploy:engines`, followed by `pnpm run deploy:gateway`. Updating an npm dependency does not update a running Worker until the consumer redeploys it.
 
@@ -192,6 +194,8 @@ Deploy the Playground separately with `pnpm run deploy:engines`, followed by `pn
 ## Add another runtime
 
 Create `packages/<language>` with an independent Worker, Wasm engine, and metadata export, published as `@sandbox-workers/<language>`. Keep the shared JSON contract in core and language-specific engines, dependencies, and limits in their runtime packages. Register it in the shared CLI, then add a Service Binding, registry entry, editor extension, and examples to the Playground.
+
+A runtime Worker's own Durable Object/Worker-entrypoint plumbing doesn't need reimplementing: `@sandbox-workers/interpreter` is the published package all four of this repo's runtime Workers are built on (`defineInterpreterRuntime(engine)`), and it's what a **third party** builds a sandbox-workers-compatible runtime for another language on too, without depending on this repository at all — see [Build your own runtime](https://github.com/syumai/sandbox-workers/tree/main/packages/interpreter#readme) and `tests/fixtures/custom-runtime/` for a worked example.
 
 [JavaScript architecture](docs/runtime.md) · [Language runtimes](docs/languages.md) · [JavaScript package](packages/javascript/README.md) · [Shared client](packages/core/README.md)
 

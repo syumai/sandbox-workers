@@ -4,7 +4,7 @@ import { instrument } from "./instrument.mjs";
 
 // engine-build.json is each session-capable worker.ts's engine identity: the
 // sha256 of its own metered dist/engine.wasm, used as `meta.build`/
-// `snapshot.build` by the Durable Object (runtime/sandbox.mjs) to decide
+// `snapshot.build` by the Durable Object (@sandbox-workers/interpreter's server.ts) to decide
 // whether a stored snapshot still matches the running engine. Written next
 // to worker.ts (packages/<language>/src) rather than dist/ so the plain
 // relative `import build from "./engine-build.json"` in worker.ts resolves
@@ -32,7 +32,7 @@ for (const language of languages) {
   if (hashOnly) {
     // Standalone mode: hash an already-built packages/<language>/dist/engine.wasm
     // without re-running the (multi-minute) instrument() step. Useful when only
-    // runtime/packaging code changed, not the engine itself.
+    // only interpreter-package/packaging code changed, not the engine itself.
     await stat(`packages/${language}/dist/engine.wasm`).catch(() => {
       throw new Error(
         `packages/${language}/dist/engine.wasm does not exist; run the full build:languages first`,

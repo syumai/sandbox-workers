@@ -4,11 +4,10 @@
 // the JavaScript host `fs` facade both call. See docs/sessions-design.md and
 // docs/sandbox-1-0-design.md ("Workspace module").
 //
-// Moved here (from `runtime/workspace.mjs`) so it can be shared, as built
-// TypeScript, by both the sandbox Durable Object (`packages/core/src/
-// sandbox.ts`) and every runtime Worker's interpreter Durable Object
-// (`runtime/interpreter.mjs`); `runtime/workspace.mjs` is now a one-line
-// re-export of this module.
+// Moved here (from the pre-split, now-deleted workspace.mjs) so it can be
+// shared, as built TypeScript, by both the sandbox Durable Object
+// (`packages/core/src/sandbox.ts`) and every runtime Worker's interpreter
+// Durable Object (`InterpreterServer`, packages/interpreter/src/server.ts).
 import { Directory, File } from "@bjorn3/browser_wasi_shim";
 import type { Inode } from "@bjorn3/browser_wasi_shim";
 
@@ -19,7 +18,7 @@ export const LIMITS = {
 };
 
 // Tagged on the prototypes of WorkspaceDirectory/WorkspaceFile below, so
-// runtime/wasi.mjs can tell "this fd's directory belongs to /workspace" (for
+// @sandbox-workers/interpreter's wasi.ts can tell "this fd's directory belongs to /workspace" (for
 // the write-capable path_open/path_create_directory/unlink/rename/rmdir
 // policy) without importing the classes themselves. Instances created
 // through the WASI layer itself (guest `mkdir`, `open(..., O_CREAT)`) are

@@ -1,16 +1,9 @@
-import { createWasi, ExecutionLimitError, hasOpenGuestFds } from "./wasi.mjs";
-import { memoryPageCount, writePage } from "./snapshot.mjs";
-import { invoke } from "./protobuf.mjs";
-import {
-  javascriptPrelude,
-  javascriptSessionPrelude,
-  javascriptFsFacade,
-} from "./javascript-prelude.mjs";
-import {
-  transformForAsyncExecution,
-  transformForRepl,
-} from "../packages/javascript/src/transform.mjs";
-import { WorkspaceError } from "./workspace.mjs";
+import { createWasi, ExecutionLimitError, hasOpenGuestFds } from "@sandbox-workers/interpreter/wasi";
+import { memoryPageCount, writePage } from "@sandbox-workers/interpreter/snapshot";
+import { invoke } from "@sandbox-workers/interpreter/wasmify";
+import { javascriptPrelude, javascriptSessionPrelude, javascriptFsFacade } from "./prelude.mjs";
+import { transformForAsyncExecution, transformForRepl } from "./transform.mjs";
+import { WorkspaceError } from "@sandbox-workers/core";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -31,15 +24,16 @@ const JS_INTERRUPT_BITS_VALUE = "w_0_23";
 
 const INTERRUPTED_ERROR = "JS execution interrupted";
 
-// Wasm-level fuel meter for the JS engine. Unlike the generic budget() in wasi.mjs
-// (which throws the instant fuel runs out), this meter cannot throw as soon as it
-// hits zero: SpiderMonkey's interrupt is a request, not a synchronous abort, and it
-// is only observed at the JS bytecode interpreter's own periodic check. So once the
-// budget is exhausted the meter instead writes the interrupt words (once) and lets
+// Wasm-level fuel meter for the JS engine. Unlike the generic budget() in
+// @sandbox-workers/interpreter/wasi (which throws the instant fuel runs
+// out), this meter cannot throw as soon as it hits zero: SpiderMonkey's
+// interrupt is a request, not a synchronous abort, and it is only observed
+// at the JS bytecode interpreter's own periodic check. So once the budget is
+// exhausted the meter instead writes the interrupt words (once) and lets
 // the guest keep running until SpiderMonkey notices; a hard backstop throws
-// ExecutionLimitError only if ticking continues for another full budget past zero,
-// covering the case where the interrupt is never observed (e.g. a long single
-// non-looping host call) so a request can never run forever.
+// ExecutionLimitError only if ticking continues for another full budget past
+// zero, covering the case where the interrupt is never observed (e.g. a long
+// single non-looping host call) so a request can never run forever.
 function createMeter(fuel) {
   let limit = fuel;
   let remaining = fuel;
@@ -359,8 +353,8 @@ function checkInterrupted(envelope) {
   throw new Error(`JavaScript engine error: ${envelope.error}`);
 }
 
-export function runJavaScript(module, payload) {
-  const fuel = 50_000_000;
+export function runJavaScript(module, payload, limits) {
+  const fuel = limits.fuel;
   const meter = createMeter(fuel);
   const host = createWasi(module, null, meter);
 
@@ -466,8 +460,7 @@ export function runJavaScript(module, payload) {
 // `workspace`. The instance itself doesn't exist yet when this runs, so the
 // bridge and random_get override close over a mutable box the caller fills
 // in right after `new WebAssembly.Instance(...)`.
-function createSessionHost(module, workspace, getCwd, setCwd, onCwdChange) {
-  const fuel = 50_000_000;
+function createSessionHost(module, workspace, getCwd, setCwd, onCwdChange, fuel) {
   const meter = createMeter(fuel);
   const host = createWasi(module, null, meter, {}, workspace?.root ?? null, {
     workspaceDisabled: () => workspace?.disabled === true,
@@ -495,26 +488,35 @@ function createSessionHost(module, workspace, getCwd, setCwd, onCwdChange) {
 // the shared `workspace`; import() is served from it too.
 function buildSessionApi({ instance, handle, meter, fuel, host, workspace, getCwd, setCwd, onCwdChange, interrupt }) {
   let closed = false;
+  // Set only by a trap (the hard fuel backstop in createMeter, tagged
+  // `.trap`) caught inside execute() below -- see the SessionInstance
+  // contract in @sandbox-workers/interpreter's engine.ts: execute() never
+  // throws for a guest error or a resource limit, and `invalid` is how it
+  // reports that the instance can no longer be used.
+  let invalid = false;
   return {
     get cwd() {
       return getCwd();
+    },
+    get invalid() {
+      return invalid;
     },
     close() {
       closed = true;
     },
     // Snapshot rules (docs/sessions-design.md): never while the guest holds
-    // an open file descriptor beyond the preopens. A trap (the hard fuel
-    // backstop in createMeter, tagged `.trap`, or any other exception
-    // escaping execute() uncaught) is not checked here because the caller
-    // (the session Durable Object) drops the instance outright in that case
-    // -- there is no live session left to ask.
+    // an open file descriptor beyond the preopens, and never once `invalid`
+    // (a trap already means there's no live session left to ask, but this
+    // engine's own InterpreterServer caller also never calls canSnapshot()
+    // in that case -- see server.ts's session-contract rule 2/3).
     canSnapshot() {
-      return !closed && !hasOpenGuestFds(host);
+      return !closed && !invalid && !hasOpenGuestFds(host);
     },
     // { handle, extra, memory }: `memory` is exposed directly (a
     // WebAssembly.Memory, backed by a SharedArrayBuffer for this engine) so
-    // the caller can hash/copy pages with runtime/snapshot.mjs without this
-    // module needing to know about the `pages` table or hashing at all.
+    // the caller can hash/copy pages with @sandbox-workers/interpreter/snapshot
+    // without this module needing to know about the `chunks` table or
+    // hashing at all.
     snapshot() {
       return {
         handle,
@@ -529,65 +531,74 @@ function buildSessionApi({ instance, handle, meter, fuel, host, workspace, getCw
     execute(payload) {
       if (closed) throw new Error("This session instance has been closed");
       meter.reset(fuel);
+      try {
+        const resetEnvelope = jsEval(
+          instance,
+          handle,
+          `__sandboxSession.reset(${JSON.stringify(JSON.stringify(payload.envVars ?? {}))});`,
+        );
+        checkInterrupted(resetEnvelope);
 
-      if (payload.cwd !== undefined && workspace) {
-        try {
-          const info = workspace.stat(payload.cwd, getCwd());
-          if (info.type === "directory") {
-            const absolute = workspace.normalize(payload.cwd, getCwd()).absolute;
-            setCwd(absolute);
-            onCwdChange?.(absolute);
-          }
-        } catch {
-          // Invalid/missing cwd: keep the session's current cwd, matching
-          // the WASI-language sessions' "reset to /workspace" leniency.
+        const transform = transformForRepl(payload.code);
+        const runEnvelope = jsEval(instance, handle, transform.code);
+        if (!runEnvelope.ok) {
+          if (runEnvelope.error === INTERRUPTED_ERROR)
+            throw new ExecutionLimitError("Execution fuel exhausted");
+          return {
+            logs: { stdout: [], stderr: [] },
+            results: [],
+            error: parseEngineError(runEnvelope.error),
+            cwd: getCwd(),
+            usage: meter.usage(instance.exports.memory),
+          };
         }
-      }
 
-      const resetEnvelope = jsEval(
-        instance,
-        handle,
-        `__sandboxSession.reset(${JSON.stringify(JSON.stringify(payload.envVars ?? {}))});`,
-      );
-      checkInterrupted(resetEnvelope);
-
-      const transform = transformForRepl(payload.code);
-      const runEnvelope = jsEval(instance, handle, transform.code);
-      if (!runEnvelope.ok) {
-        if (runEnvelope.error === INTERRUPTED_ERROR)
-          throw new ExecutionLimitError("Execution fuel exhausted");
+        const endEnvelope = jsEval(
+          instance,
+          handle,
+          `__sandboxSession.end(${transform.mode === "hoist" ? "true" : "false"});`,
+        );
+        checkInterrupted(endEnvelope);
+        const decoded = decodeValueEncoding(endEnvelope.result);
+        const final = JSON.parse(decoded);
+        return {
+          logs: final.logs,
+          results: final.results,
+          ...(final.error ? { error: final.error } : {}),
+          cwd: getCwd(),
+          usage: meter.usage(instance.exports.memory),
+        };
+      } catch (error) {
+        // ExecutionLimitError here is either a clean, engine-observed
+        // interrupt (thrown just above -- the instance survives, `invalid`
+        // stays false) or the hard fuel backstop from deep inside createMeter
+        // (tagged `.trap === true`, thrown through jsEval's Wasm call and
+        // caught here -- the instance does NOT survive that). Anything else
+        // escaping is a host bug: rethrown, per the SessionInstance contract
+        // (@sandbox-workers/interpreter's engine.ts), for the caller to treat
+        // as a trap.
+        if (!(error instanceof ExecutionLimitError)) throw error;
+        if (error.trap === true) invalid = true;
         return {
           logs: { stdout: [], stderr: [] },
           results: [],
-          error: parseEngineError(runEnvelope.error),
-          session: { cwd: getCwd() },
-          usage: meter.usage(instance.exports.memory),
+          error: {
+            name: "ExecutionLimitError",
+            message: String(error?.message ?? error).slice(0, 2048),
+            traceback: [],
+          },
+          cwd: getCwd(),
         };
       }
-
-      const endEnvelope = jsEval(
-        instance,
-        handle,
-        `__sandboxSession.end(${transform.mode === "hoist" ? "true" : "false"});`,
-      );
-      checkInterrupted(endEnvelope);
-      const decoded = decodeValueEncoding(endEnvelope.result);
-      const final = JSON.parse(decoded);
-      return {
-        logs: final.logs,
-        results: final.results,
-        ...(final.error ? { error: final.error } : {}),
-        session: { cwd: getCwd() },
-        usage: meter.usage(instance.exports.memory),
-      };
     },
   };
 }
 
 // A durable session: one JS engine instance kept alive in memory across many
-// execute() calls, and snapshottable to a Durable Object's `pages` table via
-// .snapshot()/.canSnapshot() (see runtime/snapshot.mjs and runtime/sandbox.mjs).
-export function createJavaScriptSession(module, options = {}) {
+// execute() calls, and snapshottable to a Durable Object's `chunks` table via
+// .snapshot()/.canSnapshot() (see @sandbox-workers/interpreter/snapshot and
+// @sandbox-workers/interpreter's server.ts).
+export function createJavaScriptSession(module, options, limits) {
   const workspace = options.workspace ?? null;
   let cwd = options.cwd ?? "/workspace";
   const onCwdChange = options.onCwdChange;
@@ -595,7 +606,7 @@ export function createJavaScriptSession(module, options = {}) {
   const setCwd = (next) => {
     cwd = next;
   };
-  const { host, meter, fuel, box } = createSessionHost(module, workspace, getCwd, setCwd, onCwdChange);
+  const { host, meter, fuel, box } = createSessionHost(module, workspace, getCwd, setCwd, onCwdChange, limits.fuel);
 
   const instance = new WebAssembly.Instance(module, host.imports);
   box.instance = instance;
@@ -633,7 +644,7 @@ export function createJavaScriptSession(module, options = {}) {
     instance,
     handle,
     meter,
-    fuel,
+    fuel: limits.fuel,
     host,
     workspace,
     getCwd,
@@ -643,23 +654,24 @@ export function createJavaScriptSession(module, options = {}) {
   });
 }
 
-// Restores a session from a previous .snapshot() (see runtime/sandbox.mjs):
-// instantiates fresh, then -- per docs/sessions-design.md's verified restore
-// recipe -- points wasi.inst at the instance directly (no wasi.initialize(),
-// no _initialize, no wasm_init()), grows memory to the snapshot's page count,
-// copies its non-zero pages back in, and reuses the stored interpreter
-// handle and interrupt addresses instead of re-deriving them. Guest-defined
+// Restores a session from a previous .snapshot() (see
+// @sandbox-workers/interpreter's server.ts): instantiates fresh, then -- per
+// docs/sessions-design.md's verified restore recipe -- points wasi.inst at
+// the instance directly (no wasi.initialize(), no _initialize, no
+// wasm_init()), grows memory to the snapshot's page count, copies its
+// non-zero pages back in, and reuses the stored interpreter handle and
+// interrupt addresses instead of re-deriving them. Guest-defined
 // host-function stubs (js_define_function) already live in the restored
 // memory; only the host-side dispatch map is rebuilt (by createSessionHost
 // above, with the same dispatch keys), so the prelude, session prelude, and
 // js_define_function calls are not re-run.
 //
-// `options.snapshot` is `{ handle, extra, memoryPages, readPage }`, where
+// `snapshot` is `{ handle, extra, memoryPages, readPage }`, where
 // `readPage(page)` returns that page's stored bytes (a Uint8Array) or
 // undefined for a page with no row (meaning it was all-zero when the
 // snapshot was taken -- a freshly grown WebAssembly.Memory is already
 // zero-filled, so there is nothing to write).
-export function restoreJavaScriptSession(module, options = {}) {
+export function restoreJavaScriptSession(module, options, snapshot, limits) {
   const workspace = options.workspace ?? null;
   let cwd = options.cwd ?? "/workspace";
   const onCwdChange = options.onCwdChange;
@@ -667,13 +679,13 @@ export function restoreJavaScriptSession(module, options = {}) {
   const setCwd = (next) => {
     cwd = next;
   };
-  const { host, meter, fuel, box } = createSessionHost(module, workspace, getCwd, setCwd, onCwdChange);
+  const { host, meter, fuel, box } = createSessionHost(module, workspace, getCwd, setCwd, onCwdChange, limits.fuel);
 
   const instance = new WebAssembly.Instance(module, host.imports);
   box.instance = instance;
   host.wasi.inst = instance;
 
-  const { handle, extra, memoryPages, readPage: readSnapshotPage } = options.snapshot;
+  const { handle, extra, memoryPages, readPage: readSnapshotPage } = snapshot;
   const currentPages = memoryPageCount(instance.exports.memory);
   if (memoryPages > currentPages) instance.exports.memory.grow(memoryPages - currentPages);
   for (let page = 0; page < memoryPages; page++) {
@@ -687,7 +699,7 @@ export function restoreJavaScriptSession(module, options = {}) {
     instance,
     handle,
     meter,
-    fuel,
+    fuel: limits.fuel,
     host,
     workspace,
     getCwd,

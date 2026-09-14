@@ -1,23 +1,22 @@
 // Pure-Node tests for docs/snapshot-cost-design.md decision 1 (1 MiB chunks
-// instead of one row per changed 64 KiB page): the pure helpers added to
-// runtime/snapshot.mjs (chunkOf, readChunk, chunksToWrite), plus a
-// chunk-store round trip through the unmodified restore functions for all
-// three snapshot languages (a port of the design doc's measurement script,
-// section D) proving a chunk-keyed `readPage` closure like
-// runtime/sandbox.mjs's `_ensureInstance` builds is a drop-in replacement
-// for the old page-keyed one.
+// instead of one row per changed 64 KiB page): the pure helpers in
+// @sandbox-workers/interpreter/snapshot (chunkOf, readChunk, chunksToWrite),
+// plus a chunk-store round trip through the unmodified restore functions for
+// all three snapshot languages (a port of the design doc's measurement
+// script, section D) proving a chunk-keyed `readPage` closure like
+// @sandbox-workers/interpreter's server.ts's `ensureInstance` builds is a
+// drop-in replacement for the old page-keyed one.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   createJavaScriptSession,
   restoreJavaScriptSession,
-} from "../runtime/javascript.mjs";
-import {
-  createEmbeddedSession,
-  restoreEmbeddedSession,
-} from "../runtime/embedded.mjs";
-import { Workspace } from "../runtime/workspace.mjs";
+} from "../packages/javascript/src/engine.mjs";
+import { bootWasmifySession, restoreWasmifySession } from "@sandbox-workers/interpreter/wasmify";
+import { pythonDriver } from "../packages/python/src/engine.mjs";
+import { perlDriver } from "../packages/perl/src/engine.mjs";
+import { Workspace } from "@sandbox-workers/core";
 import {
   PAGE_BYTES,
   CHUNK_PAGES,
@@ -27,7 +26,14 @@ import {
   chunksToWrite,
   diffPages,
   memoryPageCount,
-} from "../runtime/snapshot.mjs";
+} from "@sandbox-workers/interpreter/snapshot";
+
+// Each engine's own fuel limit (packages/<lang>/src/metadata.ts `limits.fuel`),
+// inlined here rather than importing the built dist/metadata.js so this test
+// file doesn't need `build:packages` to have run first.
+const JAVASCRIPT_LIMITS = { fuel: 50_000_000 };
+const PYTHON_LIMITS = { fuel: 100_000_000 };
+const PERL_LIMITS = { fuel: 10_000_000 };
 
 // ---- chunkOf ---------------------------------------------------------------
 
@@ -152,13 +158,13 @@ test("chunksToWrite: a first snapshot upserts every chunk that has a non-zero pa
 
 // ---- chunk-store round trip through the unmodified restore functions ------
 //
-// This is the same shape runtime/sandbox.mjs's _ensureInstance builds: take
-// a snapshot, split it into 1 MiB chunks (readChunk), simulate storing and
-// reading back the chunks table, and hand restoreJavaScriptSession/
-// restoreEmbeddedSession a chunk-keyed readPage closure -- proving those
-// functions (unmodified: they just call readPage(page) for every page and
-// writePage() whatever's truthy) work unchanged against the new storage
-// shape.
+// This is the same shape @sandbox-workers/interpreter's server.ts's
+// ensureInstance builds: take a snapshot, split it into 1 MiB chunks
+// (readChunk), simulate storing and reading back the chunks table, and hand
+// restoreJavaScriptSession/restoreWasmifySession a chunk-keyed readPage
+// closure -- proving those functions (unmodified: they just call
+// readPage(page) for every page and writePage() whatever's truthy) work
+// unchanged against the new storage shape.
 
 function captureAsChunks(session) {
   const snap = session.snapshot();
@@ -189,35 +195,42 @@ const perlArchive = readFileSync("packages/perl/dist/stdlib.bin");
 
 test("javascript: a chunk-store snapshot restores correctly (readPage sliced from 1 MiB chunks)", () => {
   const workspace = new Workspace();
-  const session = createJavaScriptSession(jsModule, { workspace, cwd: "/workspace" });
+  const session = createJavaScriptSession(jsModule, { workspace, cwd: "/workspace" }, JAVASCRIPT_LIMITS);
   session.execute({ code: "var counter = 1; function greet(name) { return 'hi ' + name; }" });
   assert.equal(session.canSnapshot(), true);
 
   const snapshot = captureAsChunks(session);
-  const restored = restoreJavaScriptSession(jsModule, {
-    workspace: new Workspace(),
-    cwd: "/workspace",
+  const restored = restoreJavaScriptSession(
+    jsModule,
+    { workspace: new Workspace(), cwd: "/workspace" },
     snapshot,
-  });
+    JAVASCRIPT_LIMITS,
+  );
   const result = restored.execute({ code: "counter + 1 + '/' + greet('world')" });
   assert.deepEqual(result.results, [{ text: "'2/hi world'" }]);
 });
 
 test("python: a chunk-store snapshot restores correctly (readPage sliced from 1 MiB chunks)", () => {
   const workspace = new Workspace();
-  const session = createEmbeddedSession(pythonModule, pythonArchive, "python", {
-    workspace,
-    cwd: "/workspace",
-  });
+  const session = bootWasmifySession(
+    pythonModule,
+    pythonArchive,
+    pythonDriver,
+    { workspace, cwd: "/workspace" },
+    PYTHON_LIMITS,
+  );
   session.execute({ code: "counter = 1\ndef greet(name):\n    return 'hi ' + name\n" });
   assert.equal(session.canSnapshot(), true);
 
   const snapshot = captureAsChunks(session);
-  const restored = restoreEmbeddedSession(pythonModule, pythonArchive, "python", {
-    workspace: new Workspace(),
-    cwd: "/workspace",
+  const restored = restoreWasmifySession(
+    pythonModule,
+    pythonArchive,
+    pythonDriver,
+    { workspace: new Workspace(), cwd: "/workspace" },
     snapshot,
-  });
+    PYTHON_LIMITS,
+  );
   const result = restored.execute({ code: "counter + 1" });
   assert.deepEqual(result.results, [{ text: "2" }]);
   const called = restored.execute({ code: "greet('world')" });
@@ -226,19 +239,25 @@ test("python: a chunk-store snapshot restores correctly (readPage sliced from 1 
 
 test("perl: a chunk-store snapshot restores correctly (readPage sliced from 1 MiB chunks)", () => {
   const workspace = new Workspace();
-  const session = createEmbeddedSession(perlModule, perlArchive, "perl", {
-    workspace,
-    cwd: "/workspace",
-  });
+  const session = bootWasmifySession(
+    perlModule,
+    perlArchive,
+    perlDriver,
+    { workspace, cwd: "/workspace" },
+    PERL_LIMITS,
+  );
   session.execute({ code: "our $counter = 1; sub greet { return 'hi ' . $_[0]; } 1;" });
   assert.equal(session.canSnapshot(), true);
 
   const snapshot = captureAsChunks(session);
-  const restored = restoreEmbeddedSession(perlModule, perlArchive, "perl", {
-    workspace: new Workspace(),
-    cwd: "/workspace",
+  const restored = restoreWasmifySession(
+    perlModule,
+    perlArchive,
+    perlDriver,
+    { workspace: new Workspace(), cwd: "/workspace" },
     snapshot,
-  });
+    PERL_LIMITS,
+  );
   const result = restored.execute({ code: "$counter + 1" });
   assert.deepEqual(result.results, [{ text: "2" }]);
   const called = restored.execute({ code: "greet('world')" });

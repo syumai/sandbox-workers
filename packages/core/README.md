@@ -165,3 +165,12 @@ try {
 See `docs/sandbox-1-0-design.md` for the full model (the sandbox/interpreter
 split, the workspace mirror and sync protocol, and the wire contracts on
 both sides).
+
+## Building a runtime Worker
+
+This package is the **caller** side only. If you're building the other end
+-- a runtime Worker for a language this project doesn't already support --
+see [`@sandbox-workers/interpreter`](https://github.com/syumai/sandbox-workers/tree/main/packages/interpreter#readme):
+the `Interpreter` Durable Object and Worker entrypoint base classes every
+runtime Worker (including this repo's own JavaScript/Python/Perl/Ruby ones)
+is built on.
