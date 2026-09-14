@@ -183,7 +183,9 @@ Releases are automated with [tagpr](https://github.com/Songmu/tagpr), configured
 
 1. Merge pull requests as usual, adding a `minor` or `major` label when a change should bump beyond a patch. tagpr keeps a "Release vX.Y.Z" pull request open and up to date, bumping the version across all seven `packages/*/package.json` files and each runtime's `src/metadata.ts`, and updating `CHANGELOG.md`.
 2. Review the open release pull request: check `CHANGELOG.md`, the bumped version files, and — for any runtime whose engine changed — that runtime's `THIRD_PARTY_NOTICES.md`.
-3. Merge the release pull request. `.github/workflows/release.yml` rebuilds and validates the merge commit (`build:languages`, `build:packages`, `check`, `test`, `scripts/pack.mjs`, `test:package`), tags `vX.Y.Z`, creates a GitHub Release with the seven tarballs attached, and publishes `@sandbox-workers/{core,interpreter,javascript,python,perl,ruby,cli}` to npm using npm trusted publishing (OIDC; no long-lived npm token is stored).
+3. Merge the release pull request. `.github/workflows/release.yml` rebuilds and validates the merge commit (`build:languages`, `build:packages`, `check`, `test`, `scripts/pack.mjs`, `test:package`), tags `vX.Y.Z`, creates a GitHub Release with the seven tarballs attached, publishes `@sandbox-workers/{core,interpreter,javascript,python,perl,ruby,cli}` to npm using npm trusted publishing (OIDC; no long-lived npm token is stored), and re-pins `templates/*` (the "Deploy to Cloudflare" buttons) to the new tag, pushing that as a follow-up commit to `main`.
+
+To re-pin the templates by hand, run `pnpm templates:pin <ref>` (e.g. a tag) and commit the result. `pnpm test:templates` verifies a pin end to end by building and dry-running all four templates in isolation (four full engine builds, several minutes).
 
 Deploy the Playground separately with `pnpm run deploy:engines`, followed by `pnpm run deploy:gateway`. Updating an npm dependency does not update a running Worker until the consumer redeploys it.
 

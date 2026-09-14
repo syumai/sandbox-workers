@@ -1,7 +1,9 @@
 import { mkdir, readFile, writeFile, copyFile } from "node:fs/promises";
-const commit = "875197e65d1c712a69cf14ec77968a007524f707";
-const sha256 =
-  "b6ae7ac6750770a55cff77bfdfae5e0d5e18ec13974f5ac0c3501c5b746e3dcd";
+// The pin (commit + sha256 of its tarball) lives in template-pin.json so
+// scripts/pin-templates.mjs can update it without touching this script.
+const { commit, sha256 } = JSON.parse(
+  await readFile("scripts/template-pin.json", "utf8"),
+);
 for (const language of ["javascript", "python", "perl", "ruby"]) {
   const directory = `templates/${language}`;
   await mkdir(directory, { recursive: true });
