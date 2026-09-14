@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.2.1](https://github.com/syumai/sandbox-workers/compare/v0.2.0...v0.2.1) - 2026-09-14
+
+### Other changes
+- Allow release.yml to publish an existing tag via workflow_dispatch by @syumai in https://github.com/syumai/sandbox-workers/pull/4
+- Pin the deploy templates to v0.2.0 by @syumai in https://github.com/syumai/sandbox-workers/pull/6
+- Re-pin the deploy templates automatically after each release by @syumai in https://github.com/syumai/sandbox-workers/pull/7
+
 ## [v0.2.0](https://github.com/syumai/sandbox-workers/compare/v0.1.0...v0.2.0) - 2026-09-14
 
 ### Features
