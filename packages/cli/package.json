@@ -1,6 +1,6 @@
 {
   "name": "@sandbox-workers/cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Initialize private sandbox runtime Workers for Cloudflare Service Bindings",
   "type": "module",
   "license": "MIT",
