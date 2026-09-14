@@ -1,6 +1,6 @@
 {
   "name": "@sandbox-workers/interpreter",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Build your own sandbox-workers runtime Worker: the Interpreter Durable Object and Worker entrypoint base classes",
   "type": "module",
   "license": "MIT",
