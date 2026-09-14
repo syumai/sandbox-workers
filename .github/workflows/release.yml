@@ -3,6 +3,16 @@ name: release
 on:
   push:
     branches: [main]
+  # Publish an existing tag whose publish step failed (e.g. tagpr already
+  # created the tag and GitHub Release, but npm publish errored partway
+  # through). Re-running the push-triggered job can't do this: tagpr only
+  # outputs a tag in the run that creates it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish, e.g. v0.2.0"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -21,6 +31,9 @@ jobs:
       contents: read
     with:
       upload-tarballs: true
+      # Build the dispatched tag's tree rather than main's HEAD; empty on a
+      # push event, which ci.yml's checkout treats as its default behaviour.
+      ref: ${{ inputs.tag }}
 
   release:
     needs: ci
@@ -35,15 +48,36 @@ jobs:
 
       - name: Run tagpr
         id: tagpr
+        if: github.event_name == 'push'
         uses: Songmu/tagpr@v1
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 
-      # Everything below runs only when the release PR was just merged and a tag
-      # was created. Publishing lives in this job because tags pushed with
-      # GITHUB_TOKEN do not trigger other workflows.
+      # On push, the tag (if any) comes from tagpr. On workflow_dispatch, it's
+      # the given tag input, verified to actually exist.
+      - name: Resolve tag
+        id: resolve
+        env:
+          DISPATCH_TAG: "${{ inputs.tag }}"
+          TAGPR_TAG: "${{ steps.tagpr.outputs.tag }}"
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if ! git rev-parse "refs/tags/$DISPATCH_TAG" >/dev/null 2>&1; then
+              echo "::error::tag $DISPATCH_TAG does not exist"
+              exit 1
+            fi
+            echo "tag=$DISPATCH_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$TAGPR_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Everything below runs only when there is a tag to publish: the release
+      # PR was just merged and tagpr created a tag, or this run was dispatched
+      # to (re)publish an existing one. Publishing lives in this job because
+      # tags pushed with GITHUB_TOKEN do not trigger other workflows.
       - name: Set up Node.js
-        if: steps.tagpr.outputs.tag != ''
+        if: steps.resolve.outputs.tag != ''
         uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -52,11 +86,11 @@ jobs:
           # .npmrc, which gets in the way of OIDC trusted publishing.
 
       - name: Ensure npm supports Trusted Publishing
-        if: steps.tagpr.outputs.tag != ''
+        if: steps.resolve.outputs.tag != ''
         run: npm install -g npm@latest && npm --version
 
       - name: Download tarballs
-        if: steps.tagpr.outputs.tag != ''
+        if: steps.resolve.outputs.tag != ''
         uses: actions/download-artifact@v4
         with:
           name: tarballs
@@ -66,9 +100,9 @@ jobs:
       # npm adds provenance automatically once the repository is public, and
       # the flag fails while it is private.
       - name: Publish to npm
-        if: steps.tagpr.outputs.tag != ''
+        if: steps.resolve.outputs.tag != ''
         env:
-          TAG: "${{ steps.tagpr.outputs.tag }}"
+          TAG: "${{ steps.resolve.outputs.tag }}"
         run: |
           set -euo pipefail
           version="${TAG#v}"
@@ -84,9 +118,18 @@ jobs:
             npm publish "./dist/sandbox-workers-${name}-${version}.tgz" --access public
           done
 
-      - name: Attach tarballs to the GitHub Release
-        if: steps.tagpr.outputs.tag != ''
+      # On push, tagpr already created the Release. On dispatch, this run may
+      # be the first attempt at publishing, so create it if missing.
+      - name: Ensure GitHub Release exists
+        if: steps.resolve.outputs.tag != '' && github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          TAG: "${{ steps.tagpr.outputs.tag }}"
+          TAG: "${{ steps.resolve.outputs.tag }}"
+        run: gh release view "$TAG" || gh release create "$TAG" --title "$TAG" --notes "See CHANGELOG.md"
+
+      - name: Attach tarballs to the GitHub Release
+        if: steps.resolve.outputs.tag != ''
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          TAG: "${{ steps.resolve.outputs.tag }}"
         run: gh release upload "$TAG" dist/*.tgz --clobber

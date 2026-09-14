@@ -9,6 +9,12 @@ on:
         type: boolean
         required: false
         default: false
+      # Empty means the default checkout behaviour (main's HEAD). Set by
+      # release.yml when publishing an existing tag via workflow_dispatch.
+      ref:
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -20,6 +26,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
 
       # Must run before setup-node (cache: pnpm needs pnpm on PATH). The version
       # comes from package.json "packageManager"; do not pass `version` here.
