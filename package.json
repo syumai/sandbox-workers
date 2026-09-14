@@ -28,6 +28,7 @@
     "docs:dev": "pnpm --filter @sandbox-workers/docs dev",
     "docs:check": "pnpm --filter @sandbox-workers/docs validate",
     "templates:generate": "node scripts/generate-templates.mjs",
+    "templates:pin": "node scripts/pin-templates.mjs",
     "test:templates": "node scripts/test-templates.mjs"
   },
   "dependencies": {

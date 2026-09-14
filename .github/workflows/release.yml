@@ -133,3 +133,49 @@ jobs:
           GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
           TAG: "${{ steps.resolve.outputs.tag }}"
         run: gh release upload "$TAG" dist/*.tgz --clobber
+
+      # Re-pins templates/* to this release so the "Deploy to Cloudflare"
+      # buttons always build from a tagged commit. The pinned commit can't
+      # contain its own pin, so it necessarily lands as a follow-up commit
+      # here. That commit is pushed with GITHUB_TOKEN, which does not trigger
+      # other workflows, so this cannot loop; it rides into the next tagpr
+      # release PR as an ordinary chore commit. Does not run
+      # `pnpm test:templates` (4 full engine builds, >10 minutes) — run it
+      # manually to verify a pin end to end.
+      - name: Pin the deploy templates to this release
+        if: steps.resolve.outputs.tag != ''
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          TAG: "${{ steps.resolve.outputs.tag }}"
+        run: |
+          set -euo pipefail
+          latest="$(git tag --list 'v*' --sort=-v:refname | head -1)"
+          if [ "$TAG" != "$latest" ]; then
+            echo "::notice::$TAG is not the newest release ($latest); leaving the deploy templates as they are"
+            exit 0
+          fi
+
+          node scripts/pin-templates.mjs "$TAG"
+
+          if [ -z "$(git status --porcelain -- scripts/template-pin.json templates)" ]; then
+            echo "templates already pinned to $TAG"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/template-pin.json templates
+          git commit -m "Pin the deploy templates to $TAG"
+
+          push() {
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
+          }
+          if ! push; then
+            echo "::notice::push rejected, retrying after rebasing onto origin/main"
+            git pull --rebase origin main
+            if ! push; then
+              echo "::warning::could not push the template pin for $TAG; run 'pnpm templates:pin $TAG' manually and push the result"
+              exit 0
+            fi
+          fi
