@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.2.0](https://github.com/syumai/sandbox-workers/compare/v0.1.0...v0.2.0) - 2026-09-14
+
+### Features
+- Add @sandbox-workers/interpreter and move the runtime Workers onto it by @syumai in https://github.com/syumai/sandbox-workers/pull/3
+
 ## [v0.1.0](https://github.com/syumai/sandbox-workers/commits/v0.1.0) - 2026-09-08
 
 Initial release of the `@sandbox-workers` packages on npm.
