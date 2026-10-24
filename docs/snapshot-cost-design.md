@@ -89,7 +89,10 @@ CREATE TABLE IF NOT EXISTS chunks   (context_id TEXT, chunk INTEGER, data BLOB,
 
 - `chunks.data` is exactly `CHUNK_BYTES = 16 * PAGE_BYTES = 1 MiB`, raw. A
   chunk whose 16 pages are all zero has no row (same rule as today's zero
-  pages). The Durable Object row limit is 2 MB; 1 MiB leaves headroom.
+  pages). 1 MiB is decision 1's measured tradeoff. It also sat under the
+  2 MB row limit the public docs stated at the time; see "Row-size limit"
+  below for the 2026-09-24 runtime increase and why the chunk size did not
+  move.
 - `contexts.value` JSON: `{ id, language, cwd, envVars, createdAt, lastUsed,
   executions, snapshot }` where `snapshot` is `null` or
   `{ build, handle, extra, memoryPages, pageCount, bytes, chunkCount,
@@ -188,13 +191,51 @@ still disables expiry entirely.
   this is noise; at `SESSION_IDLE_TTL_MS = "0"` it is $0.0055 per context per
   month.
 
+## Row-size limit (rechecked 2026-10-24)
+
+Decision 1 did not pick 1 MiB because a larger chunk was impossible. It
+picked 1 MiB because rows written are what the bill measures, and 256 KiB
+chunks cost more rows for less byte amplification. The public limits page's
+2 MB cap was only the headroom check: a 2 MiB chunk is 2,097,152 bytes, over
+the 2,000,000 bytes that page stated, so 16 pages (1 MiB) was the largest
+power-of-two chunk under that number.
+
+On 2026-09-24 workerd raised `SQLITE_LIMIT_LENGTH` from an implemented 4 MiB
+to `8 * 1024 * 1024 + 34` (8 MiB plus 34 bytes of V8-serialization padding):
+[workerd #7493](https://github.com/cloudflare/workerd/pull/7493), commit
+`1b9b6ea`, shipped in
+[v1.20260925.1](https://github.com/cloudflare/workerd/releases/tag/v1.20260925.1).
+The in-tree test comment says the documented limit is 8 MB and the enforced
+limit is 8 MiB. Nothing else in `setupSecurity` moved: SQL statement length
+stays 100,000 bytes, bound parameters 100, columns 100, `LIKE`/`GLOB` pattern
+length 50 bytes. There is no `compatibility_date`, compatibility flag, or
+plan gate on the change. A deployed Durable Object measured on 2026-10-21
+(`compatibility_date` `2026-10-20`) accepted a TEXT/BLOB through 8,388,627
+bytes and rejected 8,388,628 with `SQLITE_TOOBIG`
+([cloudflare-docs #34502](https://github.com/cloudflare/cloudflare-docs/issues/34502)).
+As of 2026-10-24 the public
+[limits](https://developers.cloudflare.com/durable-objects/platform/limits/)
+page (last updated 2026-06-01) and the Durable Objects changelog still say
+2 MB, and that docs issue is open on whether 2 MB remains the supported
+guarantee. D1's limits page is a separate product and still says 2,000,000
+bytes.
+
+Chunk size stays 1 MiB. A 4 MiB or 8 MiB write unit would rewrite more bytes
+per changed 64 KiB page (write time tracks bytes; decision 1 already paid
++15–25 ms to go from 64 KiB rows to 1 MiB chunks), inflate `storedBytes`
+(a public multiple of 1 MiB), and need a new on-disk format. Existing
+`chunks` rows are exactly 1 MiB and are not split to dodge the old cap, so
+there is nothing to migrate. Workspace files are one BLOB per path, capped
+at 1 MiB by the workspace and HTTP request limits (`LIMITS.MAX_FILE_BYTES`,
+`MAX_FILES_REQUEST_BYTES`), not by splitting a value across rows.
+
 ## Risks and how they were checked
 
 | Risk | Check | Result |
 | --- | --- | --- |
 | `WITHOUT ROWID` unsupported in Durable Object SQLite | created and used the table in workerd | supported; insert counts 1 row |
 | Row counting differs from the assumption | `SqlStorageCursor.rowsWritten/rowsRead` per statement in workerd | see "Problem"; matches the D1 pricing definitions |
-| 1 MiB values rejected | inserted 1, 1.9, and 2.5 MiB blobs locally | all accepted locally; local workerd does not enforce the production 2 MB limit, so the design keeps 1 MiB with the documented limit as the bound |
+| 1 MiB values rejected | inserted 1, 1.9, and 2.5 MiB blobs locally (2026-09-06) | all accepted locally; that workerd did not enforce the 2 MB figure on the public limits page, so the design kept 1 MiB under the documented bound. The 2026-09-24 runtime increase is in "Row-size limit" and does not change the chunk size |
 | Chunk writes too slow | 21 × 1 MiB vs 336 × 64 KiB in one transaction | same time for the same bytes (40–85 ms per 21 MiB) |
 | Restore from chunks corrupts state | chunk store → unmodified restore → read a variable back, all three languages | passes |
 | Boot-image diff (rejected alternative) | hash two fresh boots | non-deterministic in all three languages |
